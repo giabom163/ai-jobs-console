@@ -11,7 +11,7 @@
 
   <header class="top">
     <div>
-      <p class="eyebrow">LOCAL INTELLIGENCE · M2</p>
+      <p class="eyebrow">LOCAL INTELLIGENCE · M3</p>
       <h1>舆情观察台</h1>
       <p class="sub">公开 RSS · 手动采集 · 本地证据留痕 · 全部标签未复核</p>
     </div>
@@ -162,10 +162,21 @@
     <!-- 视图三：报告模板 -->
     <section id="view-report" class="view" role="tabpanel" aria-labelledby="tab-report" tabindex="0" hidden>
       <section class="panel">
+        <p class="eyebrow">M3 · EVIDENCE WORKFLOW</p><h2>证据分析与人工复核</h2>
+        <p>仅限人工指定分组，不代表自动事件聚类。创建证据包会校验快照；生产模型未配置时明确阻塞，不发送请求。候选阈值未校准，基线不足不比较，不发送通知。</p>
+        <form id="analysis-form">
+          <label>人工分组 ID<input name="group_id" required maxlength="100" placeholder="例如 acceptance-m3"></label>
+          <label>记录 ID（每行一个，受当前批次限额约束）<textarea name="record_ids" required rows="3"></textarea></label>
+          <button type="submit" class="primary">创建证据包</button>
+        </form>
+        <button id="analysis-load" type="button" class="secondary">读取分析队列</button>
+        <div id="analysis-body" aria-live="polite">尚未读取分析队列。</div>
+      </section>
+      <section class="panel">
         <div class="section-title"><div><p class="eyebrow">SAMPLE ONLY</p><h2>未复核样本报告模板</h2></div></div>
         <p class="muted">
           本视图只从当前已读取的 /api/data 键值拼装一份**未复核样本模板**，列出各来源与时间质量。
-          它不生成结论、不认定事件、不触发任何预警；事件 / 预警 / 通知 / 模型调用接口当前均未接入。
+          它不生成结论、不认定事件、不触发任何预警；自动事件聚类、可靠预警、外部通知与生产模型当前均未接入。
         </p>
         <div class="card-actions">
           <button id="report-generate" class="primary" type="button">生成未复核模板</button>
@@ -220,7 +231,7 @@
         <div class="section-title"><div><p class="eyebrow">NOT CONNECTED</p><h2>未接入能力</h2></div></div>
         <ul class="plain">
           <li>事件聚类 / 事件 API：<b>未接入</b>（后端无对应接口，不编造事件）。</li>
-          <li>预警 / 通知 / 推送：<b>未接入</b>（不触发、不伪造预警）。</li>
+          <li>可靠预警 / 通知 / 推送：<b>未接入</b>（M3 仅提供未校准的质量与基线候选）。</li>
           <li>模型调用与用量：<b>未接入</b>（情感标签为本地词典粗筛，不产生模型用量）。</li>
           <li>批次取消 / 中止：<b>未接入</b>（无取消接口，只能等待批次结束）。</li>
           <li>导出 / 删除 / 权限：<b>未接入</b>。</li>

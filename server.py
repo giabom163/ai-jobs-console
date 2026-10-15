@@ -17,6 +17,7 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from pathlib import Path
 import storage
+import analysis
 
 ROOT = Path(__file__).resolve().parent
 DB = ROOT / "sentiment.db"
@@ -33,6 +34,7 @@ NEGATIVE = {"下跌", "亏损", "投诉", "事故", "风险", "处罚", "下滑"
 def connect():
     db = storage.connect(DB)
     try:
+        analysis.init(db)
         with db:
             yield db
     finally:
@@ -172,6 +174,9 @@ class Handler(BaseHTTPRequestHandler):
         path = urllib.parse.urlsplit(self.path).path
         if path == "/api/runtime":
             return self.send(200, RUNTIME)
+        if path == "/api/analysis":
+            with connect() as db:
+                return self.send(200, analysis.overview(db))
         if path == "/":
             return self.send(200, (ROOT / "index.html").read_bytes(), "text/html; charset=utf-8")
         if path == "/app.js":
@@ -224,6 +229,19 @@ class Handler(BaseHTTPRequestHandler):
         try:
             value = self.body()
             path = urllib.parse.urlsplit(self.path).path
+            if path == "/api/analysis":
+                if set(value) != {'group_id', 'record_ids'}:
+                    raise ValueError("只接受 group_id 和 record_ids")
+                with connect() as db:
+                    result = analysis.create_job(db, ROOT, value['group_id'], value['record_ids'], LIMIT)
+                    analysis.candidate(db, result['id'])
+                return self.send(201, result)
+            if path == "/api/analysis/decision":
+                if set(value) != {'job_id', 'decision', 'reason'}:
+                    raise ValueError("决定字段不符合契约")
+                with connect() as db:
+                    result = analysis.decide(db, value['job_id'], value['decision'], value['reason'])
+                return self.send(200, result)
             if path == "/api/feeds":
                 name = clean(str(value.get("name", "")))[:100]
                 url = safe_url(str(value.get("url", "")).strip())
@@ -293,11 +311,13 @@ if __name__ == "__main__":
                "storage_module": str(Path(storage.__file__).resolve()), "database": str(DB),
                "snapshot_root": str(ROOT / "snapshots"), "manual_limit": LIMIT,
                "loaded_sha256": {name: storage.digest((ROOT / name).read_bytes())
-                                 for name in ("server.py", "storage.py")}}
+                                 for name in ("server.py", "storage.py", "analysis.py")},
+               "analysis_module": str(Path(analysis.__file__).resolve()), "production_adapter": "not_configured"}
     server = ThreadingHTTPServer((HOST, PORT), Handler)
     try:
         with connect() as db:
             storage.recover_runs(db)
+            analysis.recover(db)
         print(f"本地舆情面板：http://{HOST}:{PORT}（手动批次上限 {LIMIT}；Ctrl+C 停止）", flush=True)
         server.serve_forever()
     except KeyboardInterrupt:

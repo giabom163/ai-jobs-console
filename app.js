@@ -439,7 +439,7 @@ function buildReport() {
   lines.push(`生成时间（本地展示）：${fmtTime(new Date().toISOString())}`);
   lines.push("");
   lines.push("> 状态：**未复核（unreviewed）**。本模板由本地工具按键值直接拼装，未经人工复核，");
-  lines.push("> 不构成结论、事件认定、预警、通知或准确率声明。事件 / 预警 / 模型接口当前均未接入。");
+  lines.push("> 不构成结论、事件认定、预警、通知或准确率声明。自动事件聚类、可靠预警与生产模型当前均未接入。");
   lines.push("");
 
   lines.push("## 覆盖与分母");
@@ -624,7 +624,7 @@ function applyData(data) {
 
 function setWriteAvailability(enabled) {
   for (const selector of ["#refresh", "#report-generate", "#report-copy", "#feed-form button[type=submit]",
-                          "#keyword-form button[type=submit]", "#import-form button[type=submit]"]) $(selector).disabled = !enabled;
+                          "#keyword-form button[type=submit]", "#import-form button[type=submit]", "#analysis-form button[type=submit]"]) $(selector).disabled = !enabled;
 }
 
 function invalidateData() {
@@ -650,6 +650,7 @@ function invalidateData() {
   $("#runtime-body").append(...kv("状态", "读取失败，旧运行时信息已隐藏。"));
   $("#report-out").value = "";
   clear($("#import-feed"));
+  $("#analysis-body").textContent = "读取失败，旧分析队列已隐藏。";
 }
 
 async function load({keepNotice = false} = {}) {
@@ -828,4 +829,50 @@ $("#runtime-load").addEventListener("click", async () => {
 });
 
 $("#reload-data").addEventListener("click", () => load());
+
+async function loadAnalysis() {
+  const body = $("#analysis-body");
+  clear(body);
+  try {
+    const data = await api("/api/analysis");
+    body.append(h("p", null, `生产分析：${data.production_status}；适配器 ${data.adapter}；每批请求预算 ${data.request_budget}；费用未知。`));
+    body.append(h("p", {class:"muted"}, data.warning));
+    for (const item of data.jobs) {
+      const card = h("article", {class:"card"}, h("h3", null, item.group_id), h("dl", {class:"kv"},
+        kv("批次 ID", item.id), kv("输入哈希", item.input_hash), kv("状态", item.status),
+        kv("错误", item.error || "无"), kv("已占用请求", `${item.budget.reserved} / ${item.budget.maximum}`),
+        kv("证据统计", JSON.stringify(item.packet.statistics))),
+        h("details", null, h("summary", null, "查看证据包与请求账本"), h("pre", {class:"json"}, JSON.stringify(item, null, 2))));
+      if (item.status === "human_review") {
+        const reason = h("input", {placeholder:"人工决定理由", "aria-label":"人工决定理由", maxlength:"2000"});
+        card.append(reason);
+        for (const [decision, label] of [["accept", "接收结论"], ["reject", "驳回结论"]]) {
+          card.append(h("button", {type:"button", onclick: async () => {
+            if (!reason.value.trim()) { show("请填写决定理由。", true); return; }
+            try { await api("/api/analysis/decision", {method:"POST", body:{job_id:item.id,decision,reason:reason.value}}); await loadAnalysis(); }
+            catch (err) { show(`人工决定失败（HTTP ${err.status}）：${err.message}`, true); }
+          }}, label));
+        }
+      }
+      body.append(card);
+    }
+    if (!data.jobs.length) body.append(h("p", null, "分析队列为空。"));
+    body.append(h("h3", null, "质量与基线候选（未复核）"));
+    for (const item of data.alerts) body.append(h("pre", {class:"json"}, JSON.stringify(item, null, 2)));
+  } catch (err) {
+    clear(body);
+    body.append(h("p", {class:"error-text"}, `读取失败（HTTP ${err.status || 0}）：${err.message}；旧队列已隐藏。`));
+  }
+}
+$("#analysis-load").addEventListener("click", loadAnalysis);
+$("#analysis-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const record_ids = form.elements.record_ids.value.split(/\s+/).filter(Boolean);
+  try {
+    const result = await api("/api/analysis", {method:"POST", body:{group_id:form.elements.group_id.value,record_ids}});
+    show(`证据包已保存，状态 ${result.status}；${result.error || "等待复核"}`);
+    await loadAnalysis();
+  } catch (err) { show(`创建失败（HTTP ${err.status || 0}）：${err.message}`, true); }
+});
 load();
