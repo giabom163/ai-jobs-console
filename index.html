@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>舆情观察台</title><link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header class="top"><div><p class="eyebrow">LOCAL INTELLIGENCE</p><h1>舆情观察台</h1><p class="sub">公开 RSS · 手动采集 · 本地保存</p></div><button id="refresh" class="primary">刷新来源</button></header>
+  <main>
+    <section class="stats"><article><span>监测来源</span><strong id="feed-count">0</strong></article><article><span>采集条目</span><strong id="item-count">0</strong></article><article><span>偏负面</span><strong id="negative-count">0</strong></article><article><span>最近刷新</span><strong id="last-refresh">尚未刷新</strong></article></section>
+    <section class="grid">
+      <aside class="panel controls"><div class="section-title"><div><p class="eyebrow">CONFIGURE</p><h2>监测设置</h2></div></div>
+        <form id="feed-form"><label>来源名称<input name="name" maxlength="100" placeholder="例如：公司新闻" required></label><label>公开 RSS / Atom 地址<input name="url" type="url" placeholder="https://example.com/feed.xml" required></label><button class="primary full">添加来源</button></form>
+        <form id="keyword-form"><label>关注关键词<span class="hint">逗号或换行分隔；留空代表不筛选</span><textarea name="keywords" rows="5" placeholder="品牌名，产品名，竞争对手"></textarea></label><button class="secondary full">保存关键词</button></form>
+        <div class="source-list"><h3>来源列表</h3><div id="feeds"></div></div>
+      </aside>
+      <section class="panel stream"><div class="stream-head"><div><p class="eyebrow">SIGNAL FEED</p><h2>监测动态</h2></div><select id="sentiment-filter" aria-label="情感筛选"><option value="all">全部情感</option><option>偏负面</option><option>偏正面</option><option>中性/待判</option></select></div><div id="notice" role="status"></div><div id="items" class="items"></div></section>
+    </section>
+  </main>
+  <footer>情感标签由本地词典粗略判断，只适合初筛；数据保存在本机 sentiment.db。</footer>
+  <script src="/app.js" defer></script>
+</body>
+</html>
