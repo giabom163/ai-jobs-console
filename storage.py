@@ -35,8 +35,11 @@ def publication(value):
         return None, "missing"
     if not isinstance(value, str):
         raise ValueError("published_at 必须为字符串或 null")
+    value = value.strip()
+    if not value:
+        return None, "missing"
     try:
-        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        dt = datetime.fromisoformat(value[:-1] + "+00:00" if value.endswith(("Z", "z")) else value)
     except ValueError:
         try:
             dt = parsedate_to_datetime(value)
@@ -179,8 +182,9 @@ def import_batch(db, root, run_id, rows, classify):
                     continue
                 # Exact text clusters only. Same URL with edited text remains a separate
                 # version and is linked by canonical_url rather than merging clusters.
-                existing = db.execute("SELECT canonical_id FROM records WHERE content_sha256=? ORDER BY fetched_at,id LIMIT 1",
-                                      (content_hash,)).fetchone()
+                existing = db.execute("""SELECT r.canonical_id FROM records r JOIN canonical_records c
+                    ON c.id=r.canonical_id WHERE r.content_sha256=? AND c.dedup_rule=?
+                    ORDER BY r.fetched_at,r.id LIMIT 1""", (content_hash, RULE)).fetchone()
                 if existing:
                     canonical_id, reason = existing[0], "exact_text"
                 else:
@@ -195,7 +199,7 @@ def import_batch(db, root, run_id, rows, classify):
                             quality, canonical_id, reason, run_id, classify(title + " " + summary)))
                 added += 1
             db.execute("""UPDATE collection_runs SET status='succeeded',finished_at=?,input_count=?,
-                added=?,duplicates=?,input_sha256=? WHERE id=?""",
+                added=?,duplicates=?,input_sha256=? WHERE id=? AND status='running'""",
                        (now(), len(rows), added, duplicates, input_hash, run_id))
         return dict(db.execute("SELECT * FROM collection_runs WHERE id=?", (run_id,)).fetchone())
     except Exception as exc:
@@ -222,6 +226,7 @@ def data(db):
     stats = dict(db.execute("""SELECT count(*) record_count,count(DISTINCT canonical_id) canonical_count,
       coalesce(sum(published_at IS NULL),0) unknown_time_count FROM records""").fetchone())
     stats["unknown_time_ratio"] = stats["unknown_time_count"] / stats["record_count"] if stats["record_count"] else None
+    stats["time_quality_counts"] = {r[0]: r[1] for r in db.execute("SELECT time_quality,count(*) FROM records GROUP BY time_quality")}
     legacy = db.execute("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='items'").fetchone()[0]
     legacy_count = db.execute("SELECT count(*) FROM items").fetchone()[0] if legacy else 0
     return {"schema_version": SCHEMA, "feeds": feeds, "items": items,

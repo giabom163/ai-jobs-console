@@ -23,6 +23,7 @@ DB = ROOT / "sentiment.db"
 HOST, PORT = "127.0.0.1", 8790
 LIMIT = 3
 WRITE_LOCK = threading.Lock()
+REFRESH_LOCK = threading.Lock()
 RUNTIME = {}
 POSITIVE = {"增长", "上涨", "利好", "成功", "创新", "支持", "改善", "满意", "合作", "突破", "good", "growth", "success", "positive", "support", "improve", "win"}
 NEGATIVE = {"下跌", "亏损", "投诉", "事故", "风险", "处罚", "下滑", "失败", "争议", "危机", "bad", "loss", "complaint", "risk", "fine", "decline", "failure", "crisis"}
@@ -162,7 +163,9 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         try:
             return self._get()
-        except (OSError, sqlite3.Error, ValueError) as exc:
+        except ValueError as exc:
+            return self.send(400, {"error": str(exc)})
+        except (OSError, sqlite3.Error) as exc:
             return self.send(500, {"error": str(exc)})
 
     def _get(self):
@@ -201,6 +204,17 @@ class Handler(BaseHTTPRequestHandler):
         return self.send(404, {"error": "Not found"})
 
     def do_POST(self):
+        try:
+            refreshing = urllib.parse.urlsplit(self.path).path == "/api/refresh"
+        except ValueError as exc:
+            return self.send(400, {"error": str(exc)})
+        if refreshing:
+            if not REFRESH_LOCK.acquire(blocking=False):
+                return self.send(409, {"error": "已有采集批次运行，请查看运行状态"})
+            try:
+                return self._post()
+            finally:
+                REFRESH_LOCK.release()
         with WRITE_LOCK:
             return self._post()
 
@@ -237,23 +251,25 @@ class Handler(BaseHTTPRequestHandler):
                     run_id = storage.start_run(db, feed_id, "import", LIMIT)
                     try:
                         result = storage.import_batch(db, ROOT, run_id, value.get("records"), classify)
-                    except (ValueError, OSError, sqlite3.Error) as exc:
+                    except ValueError as exc:
                         return self.send(422, {"error": str(exc), "run_id": run_id, "status": "failed"})
+                    except (OSError, sqlite3.Error) as exc:
+                        return self.send(500, {"error": str(exc), "run_id": run_id, "status": "failed"})
                 return self.send(201, result)
             if path == "/api/refresh":
                 with connect() as db:
                     feeds = [dict(x) for x in db.execute("SELECT * FROM feeds ORDER BY id LIMIT ?", (LIMIT,))]
                 result = []
                 for feed in feeds:
-                    with connect() as db:
+                    with WRITE_LOCK, connect() as db:
                         run_id = storage.start_run(db, feed["id"], "rss", LIMIT)
                     try:
                         rows = fetch_feed(feed, LIMIT)
-                        with connect() as db:
+                        with WRITE_LOCK, connect() as db:
                             outcome = storage.import_batch(db, ROOT, run_id, rows, classify)
                         result.append({"name": feed["name"], **outcome})
                     except (OSError, ValueError, ET.ParseError, sqlite3.Error) as exc:
-                        with connect() as db:
+                        with WRITE_LOCK, connect() as db:
                             storage.fail_run(db, run_id, exc)
                         result.append({"name": feed["name"], "run_id": run_id, "status": "failed", "error": str(exc)[:1000]})
                 return self.send(200, {"results": result})
