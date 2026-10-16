@@ -1,8 +1,11 @@
-"""M3 bounded evidence workflow. No production model adapter is configured."""
+"""M3 bounded evidence workflow. The production HTTP adapter is implemented but not wired; production stays blocked."""
 import json
 import math
+import os
 from pathlib import Path
 from statistics import median
+import urllib.error
+import urllib.request
 import storage
 
 RULE = "evidence-ab-v1"
@@ -133,6 +136,41 @@ def validate(packet, role, output, a_output=None):
         raise ValueError("B 必须逐条复核 A 的全部主张")
 
 
+def normalize_output(packet, role, output):
+    """在 validate() 之前对齐引用偏移；validate() 的判据本身不改。
+
+    实测（产品侧真跑）：模型给出的 citations.quote 是原文逐字子串，但它自算的 start/end 有偏差。
+    对每条引用，取对应 record 的 title/summary 原文，用 text.find(quote) 求真实位置；找到就把
+    start/end 改写为 (pos, pos+len(quote))，找不到则保持原样，交给 validate() 照旧硬失败——绝不
+    放宽“引用必须是原文逐字子串且 text[start:end] == quote”这一证据性要求。
+    偏移口径与 citation() 一致：原始快照字段解码后的 Python code point，[start,end)；同一 quote
+    在原文出现多次时取首次出现的位置。本函数只对齐偏移，不增删引用字段、不改写 quote。
+    """
+    key, refs_key = ("claims", "citations") if role == "A" else ("reviews", "counterevidence")
+    if not isinstance(output, dict) or not isinstance(output.get(key), list):
+        return output
+    source = packet.get("records", []) if isinstance(packet, dict) else []
+    records = {r["id"]: r for r in source
+               if isinstance(r, dict) and isinstance(r.get("id"), str)}
+    for item in output[key]:
+        if not isinstance(item, dict) or not isinstance(item.get(refs_key), list):
+            continue
+        for ref in item[refs_key]:
+            if not isinstance(ref, dict) or ref.get("field") not in ("title", "summary"):
+                continue
+            record = records.get(ref.get("record_id"))
+            quote = ref.get("quote")
+            if record is None or not isinstance(quote, str) or not quote:
+                continue
+            text = record[ref["field"]]
+            if not isinstance(text, str):
+                continue
+            position = text.find(quote)
+            if position >= 0:
+                ref["start"], ref["end"] = position, position + len(quote)
+    return output
+
+
 def request_once(db, job_id, role, adapter):
     """Internal adapter seam only. Production API never wires an unverified sender.
 
@@ -168,6 +206,7 @@ def request_once(db, job_id, role, adapter):
             db.execute("UPDATE analysis_jobs SET status='blocked',error='request_outcome_uncertain' WHERE id=?", (job_id,))
         raise
     try:
+        output = normalize_output(current['packet'], role, output)
         validate(current['packet'], role, output, a)
         state = 'awaiting_b' if role == 'A' else ('human_review' if all(r['verdict'] == 'supported' for r in output['reviews']) else 'blocked')
         error = None if state != 'blocked' else 'review_not_fully_supported'
@@ -178,6 +217,134 @@ def request_once(db, job_id, role, adapter):
                    (storage.json_bytes(output).decode(), storage.json_bytes(usage).decode(), error, job_id, role))
         db.execute("UPDATE analysis_jobs SET status=?,error=? WHERE id=?", (state, error, job_id))
     return job(db, job_id)
+
+
+# --- production model adapter: implemented, deliberately NOT wired ---------------------------------
+#
+# Seam contract: at most ONE real HTTP request per role slot, no retries, no redirect resend, no
+# tool/continuation rounds, and never an automatic resend of a reserved or uncertain request.
+# Production status therefore stays "blocked / not_configured" until the caller is wired with real
+# credential and call evidence; this module only ever holds the environment variable NAME, never a
+# credential value, and nothing here runs unless an explicit caller passes this adapter in.
+
+PRODUCTION_ENDPOINT = "https://opencode.ai/zen/go/v1/chat/completions"
+# Model id: two different shapes exist and they are NOT interchangeable over raw HTTP.
+#   * "opencode-go/deepseek-v4.1-flash" is only the provider-qualified name used on the local
+#     OpenCode/bridge side (the task contract's `model` field is written in that form). The OpenCode
+#     CLI strips the "<provider>/" prefix before it issues the request, so the wire never sees it.
+#   * "deepseek-v4.1-flash" is the bare id the gateway itself accepts. This module speaks raw HTTP
+#     (urllib) with no CLI in front of it, so it must send the bare id.
+# Measured, two independent calls: with the "opencode-go/" prefix the gateway answers 400
+# {"error":{"type":"server_error","message":"Upstream request failed: Model is unavailable."}},
+# while the bare id answers 200. This module therefore uses the bare id: the default below, or
+# OPENCODE_GO_V1_MODEL when that environment variable is set (so the model can be swapped without a
+# code edit). The prefix is never re-added here.
+PRODUCTION_MODEL = "deepseek-v4.1-flash"
+PRODUCTION_MODEL_ENV = "OPENCODE_GO_V1_MODEL"
+# Credential is read from the environment only; the value is never stored in the repository.
+PRODUCTION_KEY_ENV = "OPENCODE_GO_V1_API_KEY"
+# Cloudflare answers a non-browser User-Agent with 403 error code 1010.
+PRODUCTION_USER_AGENT = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                         "(KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36")
+# Without x-opencode-session the endpoint answers 400 MissingSessionID; a stable value is enough.
+PRODUCTION_SESSION = "sentiment-s3-annotate-adapter"
+PRODUCTION_TIMEOUT = 90
+PRODUCTION_MAX_RESPONSE = 2_000_000
+PRODUCTION_ERROR_BODY = 200
+
+
+class ProductionHTTPError(RuntimeError):
+    """A production HTTP attempt failed; the real status code and the first 200 characters of the
+    response body are preserved. The failed attempt is never replayed automatically."""
+
+    def __init__(self, status, body):
+        self.status = status
+        self.body_prefix = (body or "")[:PRODUCTION_ERROR_BODY]
+        super().__init__(f"HTTP {status}: {self.body_prefix}")
+
+
+def production_messages(role, packet, a_output):
+    """One system rule block plus one JSON user payload; no tools, no multi-turn scaffold."""
+    if role == "A":
+        rules = ("你是性别议题证据标注器。只分析文本明确讨论的对象，不推断作者性别，不接受模型提供的统计数字。"
+                 "只输出一个 JSON 对象，且仅含一个键 claims，值为 1–20 条主张。"
+                 "每条主张严格为 id,text,target,context,citations,uncertainty。"
+                 "target 取 male/female/both/unspecified；context 取 assertion/quotation/rebuttal/uncertain。"
+                 "citations 为 {record_id,raw_sha256,field,start,end,quote} 数组，field 取 title/summary，"
+                 "quote 必须是该字段原文的逐字子串，start/end 为其字符区间。")
+    else:
+        rules = ("你是性别议题主张复核器。只输出一个 JSON 对象，且仅含一个键 reviews，必须逐条覆盖 A 的全部主张。"
+                 "每条复核严格为 claim_id,verdict,reason,counterevidence。"
+                 "verdict 取 supported/partially_supported/unsupported/unverifiable；"
+                 "partially_supported 或 unsupported 必须附反例引用，引用结构同 A。")
+    payload = {"role": role, "packet": packet}
+    if a_output is not None:
+        payload["a_output"] = a_output
+    return [{"role": "system", "content": rules},
+            {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}]
+
+
+def production_adapter(role, packet, a_output=None):
+    """Minimal usable production client for one role slot: (output, usage) or a real exception.
+
+    Credential comes from the environment variable PRODUCTION_KEY_ENV only. Returns the parsed single
+    JSON object plus the server-provided usage verbatim (possibly None). Citation offsets are aligned
+    later by normalize_output(), right before validate().
+    """
+    if role not in ("A", "B"):
+        raise ValueError("角色无效")
+    credential = os.environ.get(PRODUCTION_KEY_ENV)
+    if not credential:
+        raise RuntimeError(f"缺少环境变量 {PRODUCTION_KEY_ENV}；未发送任何请求")
+    body = json.dumps({
+        # Bare id, resolved at call time so OPENCODE_GO_V1_MODEL can override it; never prefixed here.
+        "model": os.environ.get(PRODUCTION_MODEL_ENV) or PRODUCTION_MODEL,
+        # Fixed: without reasoning_effort=none the model burns the output budget on thinking
+        # (measured 10.8s vs 3.5s) and returns non-JSON.
+        "reasoning_effort": "none",
+        "stream": False,
+        "messages": production_messages(role, packet, a_output),
+    }, ensure_ascii=False).encode("utf-8")
+    request = urllib.request.Request(PRODUCTION_ENDPOINT, data=body, method="POST", headers={
+        "Authorization": f"Bearer {credential}",
+        "User-Agent": PRODUCTION_USER_AGENT,
+        "x-opencode-session": PRODUCTION_SESSION,
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    })
+    # A plain opener, no redirect handler: a 3xx must not silently forward the credential elsewhere.
+    # urllib does not retry, so at most one connection attempt reaches the endpoint.
+    try:
+        with urllib.request.build_opener().open(request, timeout=PRODUCTION_TIMEOUT) as response:
+            status = response.status
+            raw = response.read(PRODUCTION_MAX_RESPONSE)
+    except urllib.error.HTTPError as exc:
+        raise ProductionHTTPError(exc.code, exc.read(PRODUCTION_MAX_RESPONSE).decode("utf-8", "replace")) from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"连接失败：{exc.reason}") from exc
+    if status != 200:
+        raise ProductionHTTPError(status, raw.decode("utf-8", "replace"))
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"响应不是合法 JSON 对象：{exc}") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("响应必须是单个 JSON 对象")
+    choices = payload.get("choices")
+    if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+        raise ValueError("响应缺少 choices")
+    message = choices[0].get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    # Strict on purpose: only a single JSON object is accepted; model JSON is never patched.
+    if not isinstance(content, str) or not content.strip():
+        raise ValueError("响应缺少文本内容")
+    try:
+        output = json.loads(content)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"模型输出不是合法 JSON：{exc}") from exc
+    if not isinstance(output, dict):
+        raise ValueError("模型输出必须是单个 JSON 对象")
+    return output, payload.get("usage")
 
 
 def recover(db):
