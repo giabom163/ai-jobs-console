@@ -669,7 +669,14 @@ function p1BodyNode(err) {
   if (err.payload && typeof err.payload === "object") {
     return h("pre", { class: "json" }, JSON.stringify(err.payload, null, 2));
   }
-  return h("p", { class: "error-text" }, err.message || "（无响应体）");
+  // 空 rawText 必须区分：网络失败（根本没收到响应）与已连通但响应体为空，两者不可混同，也不补造 body/状态码。
+  if (err.kind === "offline" || err.status === 0) {
+    return h("p", { class: "error-text" }, "（网络失败：未收到任何响应体）");
+  }
+  if (err.status) {
+    return h("p", { class: "error-text" }, `（HTTP ${err.status}：已连通，响应体为空）`);
+  }
+  return h("p", { class: "error-text" }, "（无响应体原文）");
 }
 
 function p1OtherCountsNode(other) {
@@ -1087,7 +1094,8 @@ async function enrichP1Contents(token) {
 /* ---------- 业务详情侧抽屉（不含 snapshot / 哈希 / 路径 / 字段名） ---------- */
 
 function setBackgroundInert(inert) {
-  for (const selector of ["#main", ".top", "#main-nav", "footer"]) {
+  // .skip（跳过导航到主内容）也是可聚焦背景控件，必须一起隔离/恢复，否则抽屉打开时仍可 Tab 到背景。
+  for (const selector of ["#main", ".top", "#main-nav", "footer", ".skip"]) {
     const el = $(selector);
     if (!el) continue;
     if (inert) el.setAttribute("inert", "");
@@ -1171,9 +1179,11 @@ async function openP1Drawer(evidenceId, trigger) {
     clear(body);
     body.append(
       h("h3", { class: "detail-sub" }, "原帖详情读取失败"),
-      h("p", { class: "error-text" }, `${p1StatusText(err)}：${(err && err.message) || ""}`),
+      h("p", { class: "error-text" }, `${p1StatusText(err)}：原帖详情未能读取。`),
       h("p", { class: "muted" }, "旧详情已清空，未把旧数据当作成功结果。完整错误响应体可在「数据管理 → 人工证据」查看。")
     );
+    // 业务抽屉只给固定短提示 + HTTP 状态；完整 err.message 与原始响应体只写数据管理状态容器。
+    setAdminStatus("error", `原帖详情读取失败（${p1StatusText(err)}）：${(err && err.message) || ""}`, p1BodyNode(err));
   }
 }
 
@@ -1195,7 +1205,9 @@ async function loadP1() {
   } catch (err) {
     if (token !== state.overviewToken) return;
     p1Reset();
-    setBizStatus("error", `数据读取失败（${p1StatusText(err)}）：${(err && err.message) || ""}；旧材料已清空，未显示缓存。`);
+    setBizStatus("error", `数据读取失败（${p1StatusText(err)}）；旧材料已清空，未显示缓存。`);
+    // p1Reset 之后再写管理状态，避免清空动作覆盖新的错误证据；完整 message 与原始响应体只落管理区。
+    setAdminStatus("error", `概览读取失败（${p1StatusText(err)}）：${(err && err.message) || ""}`, p1BodyNode(err));
   }
 }
 
@@ -1243,8 +1255,9 @@ async function submitP1Import() {
   } catch (err) {
     // 导入失败（含 422）：清空旧材料与旧详情，绝不把旧数据当成功。
     p1Reset();
-    setBizStatus("error", `导入失败（${p1StatusText(err)}）：${(err && err.message) || ""}；旧材料与详情已清空，未显示缓存。`);
-    show(`导入失败（${p1StatusText(err)}）：${(err && err.message) || ""}`, true);
+    setBizStatus("error", `导入失败（${p1StatusText(err)}）；旧材料与详情已清空，未显示缓存。`);
+    // 业务 globalnotice 只给固定短提示；不拼 err.message（可能含 API 路径/hash）。
+    show(`导入失败（${p1StatusText(err)}）；旧材料与详情已清空，未显示缓存。`, true);
     // 工程错误证据（真实 HTTP 状态 + 原始响应体）只写数据管理「人工证据」状态容器。
     setAdminStatus("error", `导入失败（${p1StatusText(err)}）：${(err && err.message) || ""}`, p1BodyNode(err));
   } finally {

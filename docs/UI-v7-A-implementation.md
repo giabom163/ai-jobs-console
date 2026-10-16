@@ -118,3 +118,50 @@ $code = $LASTEXITCODE
 - 产品行为、HTTP、GUI 与真实库验收状态为 **未执行（BLOCKED 于人工实机）**；1280/390 界面验收当前为 **BLOCKED**。
 - 历史结论保留：初始执行 FAIL/exit 1、390px 实机 FAIL、旧 P1-A 执行范围 FAIL、桥完整验收 BLOCKED 均未被本包覆盖或解除；P2/P3 为 NOT_STARTED。
 - 后台快照、哈希校验、旧数据留存不被本包破坏；业务页隐藏的是展示，不是删除数据。
+
+## 11. 追加窄修复：GET 失败留证与 skip 背景隔离（基线 `b0dc62cadda63d2980333d5a90118752e7042056`）
+
+本节记录在同一 A 工作包内的**同类小范围追加修复**。第 0–10 节为上一轮（基线 `f1eab5f`）的历史结论，**原样保留、不追改**；上一轮的 `app.js` sha256 `a2f4167e…` 属该轮实测值，已被本轮新值取代，见下。
+
+### 11.1 触发依据（复审 FAIL，结论未解除）
+
+- 独立只读复审（Luna）**判定 FAIL**：两处 GET 失败路径未把**真实 HTTP 状态与原始响应体**送入数据管理状态容器，属证据留证缺失。
+  - `openP1Drawer()` 详情 `GET` 失败（原 1165–1176）：仅业务提示，无原始 body 留证。
+  - `loadP1()` 概览 `GET` 失败（原 1180–1199）：同上。
+- 同一 FAIL 另含：`setBackgroundInert()` 未纳入页面 `.skip`「跳到主内容」链接，抽屉打开时该链接仍可被聚焦，背景隔离不完整。
+- 该复审 FAIL 属真实结论，**本包不宣布其已解除**：缺陷已按下列最小改动处理，但复审/验收是否通过由 Luna 与主线程判定。
+
+### 11.2 改动（仅 `app.js`，最小、无业务/布局/框架重做）
+
+| 位置 | 修复 |
+| --- | --- |
+| `setBackgroundInert()` | 隔离选择器加入 `.skip`，与 `#main`/`.top`/`#main-nav`/`footer` 一同设置/清除 `inert`；未改 Tab 圈定、ESC/关闭/返回焦点等无关 focus 逻辑。 |
+| `p1BodyNode(err)` | 空 `rawText` 分支区分**网络失败**（`kind==="offline"` 或 `status===0` → 「网络失败：未收到任何响应体」）与**已连通但空 body**（有 `status` → 「HTTP N：已连通，响应体为空」）；不补造 body/状态码。 |
+| `openP1Drawer()` catch | 业务抽屉改为**固定短提示 + HTTP 状态**（经 `p1StatusText`），不再拼 `err.message`；新增 `setAdminStatus("error", …, p1BodyNode(err))`，真实 message 与原始响应体只落 `#p1-admin-status`。 |
+| `loadP1()` catch | 三业务状态改为固定短提示；在 `p1Reset()` **之后**写 `setAdminStatus("error", …)`，避免清空动作覆盖新错误证据。 |
+| `submitP1Import()` catch | `setBizStatus` 与 `show()`（业务 globalnotice）均改为固定短提示，不再拼 `err.message`；完整 `err.message` 与原始响应体保持只进 `#p1-admin-status`。 |
+
+- 复用既有 `setAdminStatus`、`p1BodyNode`、`p1StatusText`，未新增接口/依赖/字段。
+- 上一轮已实机核过的通过项（业务 DOM 无技术字段、390 抽屉宽度、ESC 返回、modal 四背景 `inert`、真实 422 原始 body 管理区显示并清旧详情）**未改动**。
+- 旧 `backgroundInert` 属性读数 `false` 系工具仅读映射 `.inert` 未能读出（真实 `hasAttribute` 四项为 `true`，已核），**不作为产品 FAIL**。
+
+### 11.3 实测命令与结果（本轮仅一次，未重跑）
+
+```powershell
+$out = & "C:\Users\Lenovo\.workbuddy\binaries\node\versions\22.22.2-3\node.exe" --check app.js 2>&1
+$code = $LASTEXITCODE
+"exit=$code"; "stdout+stderr:"; $out
+```
+
+- exit code：`0`
+- stdout：`exit=0`、`stdout+stderr:`（其后无内容）
+- stderr：空（已并入同一次输出，无内容）
+
+`app.js` 本轮结束 sha256：`ca5cda1a8108b555561e1b86c91824ced82dec9716e69b205ef8fd838911c485`（实测）。
+`git diff --stat`：`app.js | 25 ++++++++++------`（1 file changed, 19 insertions, 6 deletions）。
+未改动 `index.html`、`style.css`、服务/存储/DB/规则/元数据/依赖/桥；未提交、未切分支。
+
+### 11.4 未执行的验证（如实列出）
+
+- **未启动服务/浏览器、未发 HTTP、未做 GUI/DB 检查、未跑测试脚本**：`openP1Drawer`/`loadP1` 失败时管理区真实显示、空 body 文案、`.skip` 隔离在真实抽屉打开/关闭中的表现**均未在本包验证**。
+- 真实 1280/390 视口、真实 422 与失败 GET 的端到端留证，仍由主线程按真实路径复验；本包不代替人工验收、不宣称产品最终 PASS。
