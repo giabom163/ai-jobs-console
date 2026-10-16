@@ -12,6 +12,29 @@ import uuid
 
 RULE = "exact-text-v1"
 SCHEMA = "m1-v1"
+P1_SCHEMA = "p1-v1"
+P1_KINDS = ("title_only", "post_body", "source_summary")
+P1_PRECISIONS = ("exact", "approximate", "unknown")
+P1_KIND_SOURCE = {"title_only": "title", "post_body": "post_body", "source_summary": "source_summary"}
+# Whole-database cap on distinct P1 candidate identities. Re-importing an already known
+# identity never expands it; a new identity beyond the cap rejects the whole batch.
+P1_CANDIDATE_LIMIT = 3
+P1_DEFAULT_GROUP = "人工候选"
+P1_RECORD_FIELDS = {"platform", "platform_id", "url", "title", "source_name", "evidence_kind",
+                    "content", "observed_at", "published_at", "source_response_sha256",
+                    "comment_count", "other_counts", "group_label"}
+P1_REQUIRED_FIELDS = {"platform", "url", "title", "source_name", "evidence_kind", "content",
+                      "observed_at", "source_response_sha256", "comment_count"}
+# Names that mean "comment/reply count"; they belong in comment_count, never in other_counts.
+P1_RESERVED_COUNTS = {"comment", "comments", "comment_count", "reply", "replies", "reply_count",
+                      "评论", "评论数", "评论总数", "回复", "回复数"}
+# Column order of p1_evidence, kept next to the DDL so the INSERT cannot drift.
+P1_EVIDENCE_COLUMNS = ("id", "identity_key", "platform", "platform_id", "url", "canonical_url", "title",
+                       "source_name", "evidence_kind", "content", "content_sha256", "content_raw_sha256",
+                       "content_source", "fragment_start", "fragment_end", "observed_at", "observed_raw",
+                       "published_at", "published_raw", "time_quality", "source_response_sha256",
+                       "snapshot_sha256", "snapshot_path", "comment_value", "comment_precision",
+                       "comment_source_field", "other_counts", "group_label", "imported_at")
 
 
 def now():
@@ -103,6 +126,21 @@ def connect(path):
       CREATE INDEX IF NOT EXISTS records_content ON records(content_sha256);
       CREATE INDEX IF NOT EXISTS records_published ON records(published_at);
       CREATE TABLE IF NOT EXISTS schema_meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS p1_evidence(
+        id TEXT PRIMARY KEY, identity_key TEXT NOT NULL, platform TEXT NOT NULL, platform_id TEXT,
+        url TEXT NOT NULL, canonical_url TEXT NOT NULL, title TEXT NOT NULL, source_name TEXT NOT NULL,
+        evidence_kind TEXT NOT NULL CHECK(evidence_kind IN ('title_only','post_body','source_summary')),
+        content TEXT NOT NULL, content_sha256 TEXT NOT NULL, content_raw_sha256 TEXT NOT NULL,
+        content_source TEXT NOT NULL, fragment_start INTEGER NOT NULL, fragment_end INTEGER NOT NULL,
+        observed_at TEXT NOT NULL, observed_raw TEXT NOT NULL,
+        published_at TEXT, published_raw TEXT,
+        time_quality TEXT NOT NULL CHECK(time_quality IN ('valid','missing','invalid','timezone_missing')),
+        source_response_sha256 TEXT NOT NULL, snapshot_sha256 TEXT NOT NULL, snapshot_path TEXT NOT NULL,
+        comment_value INTEGER, comment_precision TEXT NOT NULL CHECK(comment_precision IN ('exact','approximate','unknown')),
+        comment_source_field TEXT NOT NULL, other_counts TEXT NOT NULL, group_label TEXT NOT NULL,
+        imported_at TEXT NOT NULL, UNIQUE(identity_key, snapshot_sha256));
+      CREATE INDEX IF NOT EXISTS p1_identity ON p1_evidence(identity_key);
+      CREATE INDEX IF NOT EXISTS p1_observed ON p1_evidence(observed_at);
     """)
     return db
 
@@ -235,3 +273,242 @@ def data(db):
             "legacy_items_pending": legacy_count,
             "coverage": "sample_only", "analysis_status": "unreviewed_dictionary",
             "runs": [dict(r) for r in db.execute("SELECT * FROM collection_runs ORDER BY started_at DESC,id DESC LIMIT 100")]}
+
+
+# --- P1-A: bounded manual gender-topic evidence store (no network, no model) --------------------
+
+class P1LimitExceeded(ValueError):
+    """Whole-database P1 candidate identity cap would be exceeded; the batch is rejected."""
+
+
+def p1_identity(platform, platform_id, canonical):
+    # Identity is platform + platform_id when present, otherwise the canonical URL.
+    # Never clustered by equal/similar title or body.
+    if platform_id:
+        return platform + "\x1fid\x1f" + platform_id
+    return platform + "\x1furl\x1f" + canonical
+
+
+def p1_hex(value, field):
+    if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value):
+        raise ValueError(f"{field} 必须为 64 位小写十六进制 SHA-256")
+    return value
+
+
+def p1_count(value, field):
+    if not isinstance(value, dict) or set(value) != {"value", "precision", "source_field"}:
+        raise ValueError(f"{field} 必须且仅含 value/precision/source_field")
+    raw, precision, source_field = value["value"], value["precision"], value["source_field"]
+    if precision not in P1_PRECISIONS:
+        raise ValueError(f"{field}.precision 必须为 exact/approximate/unknown")
+    if raw is None:
+        if precision != "unknown":
+            raise ValueError(f"{field} 未知计数必须 precision=unknown 且 value=null")
+        amount = None
+    else:
+        # type(x) is int rejects bool; negatives and floats are rejected; unknown must stay null.
+        if type(raw) is not int or raw < 0:
+            raise ValueError(f"{field}.value 必须为非负整数或 null")
+        if precision == "unknown":
+            raise ValueError(f"{field} precision=unknown 时 value 必须为 null，不得转换成 0")
+        amount = raw
+    if not isinstance(source_field, str) or not source_field.strip() or len(source_field) > 200:
+        raise ValueError(f"{field}.source_field 必须为非空文本（最多 200 字符）")
+    return {"value": amount, "precision": precision, "source_field": source_field.strip()}
+
+
+def p1_other_counts(value):
+    if value is None:
+        return {}
+    if not isinstance(value, dict) or len(value) > 20:
+        raise ValueError("other_counts 必须为不超过 20 个计数的对象")
+    result = {}
+    for name, entry in value.items():
+        if not isinstance(name, str) or not name.strip() or len(name) > 100:
+            raise ValueError("other_counts 名称必须为非空文本（最多 100 字符）")
+        key = name.strip()
+        if key.lower() in P1_RESERVED_COUNTS:
+            raise ValueError(f"other_counts 不得包含评论/回复计数，应放入 comment_count：{key}")
+        result[key] = p1_count(entry, f"other_counts.{key}")
+    return result
+
+
+def p1_prepare(record):
+    if not isinstance(record, dict):
+        raise ValueError("每条记录必须为对象")
+    unknown = set(record) - P1_RECORD_FIELDS
+    if unknown:
+        raise ValueError(f"记录含未声明字段（含评论/回复正文一律拒绝）：{'、'.join(sorted(unknown))}")
+    missing = P1_REQUIRED_FIELDS - set(record)
+    if missing:
+        raise ValueError(f"记录缺少字段：{'、'.join(sorted(missing))}")
+    platform = record["platform"]
+    if not isinstance(platform, str) or not platform.strip() or len(platform) > 100:
+        raise ValueError("platform 必须为非空文本（最多 100 字符）")
+    platform = platform.strip()
+    platform_id = record.get("platform_id")
+    if platform_id is not None:
+        if not isinstance(platform_id, str) or len(platform_id) > 2000:
+            raise ValueError("platform_id 必须为不超过 2000 字符的字符串或 null")
+        platform_id = platform_id.strip() or None
+    if not isinstance(record["url"], str):
+        raise ValueError("url 必须为字符串")
+    canonical = canonical_url(record["url"])
+    title = record["title"]
+    if not isinstance(title, str) or not normalized_text(title) or len(title) > 10000:
+        raise ValueError("title 必须为非空文本（最多 10000 字符）")
+    title = normalized_text(title)
+    source_name = record["source_name"]
+    if not isinstance(source_name, str) or not normalized_text(source_name) or len(source_name) > 200:
+        raise ValueError("source_name 必须为非空文本（最多 200 字符）")
+    source_name = normalized_text(source_name)
+    kind = record["evidence_kind"]
+    if kind not in P1_KINDS:
+        raise ValueError("evidence_kind 必须为 title_only/post_body/source_summary")
+    content_raw = record["content"]
+    if not isinstance(content_raw, str) or len(content_raw) > 100000:
+        raise ValueError("content 必须为不超过 100000 字符的字符串")
+    content = normalized_text(content_raw)
+    if kind == "title_only" and content:
+        raise ValueError("title_only 的 content 必须为空字符串")
+    if kind != "title_only" and not content:
+        raise ValueError("post_body/source_summary 必须提供非空 content")
+    observed_raw = record["observed_at"]
+    if not isinstance(observed_raw, str):
+        raise ValueError("observed_at 必须为带时区的有效时间字符串")
+    observed_at, observed_quality = publication(observed_raw)
+    if observed_quality != "valid":
+        raise ValueError("observed_at 必须为带时区的有效时间")
+    published_at, published_quality = publication(record.get("published_at"))
+    source_response_sha256 = p1_hex(record["source_response_sha256"], "source_response_sha256")
+    comment = p1_count(record["comment_count"], "comment_count")
+    other = p1_other_counts(record.get("other_counts"))
+    group_label = record.get("group_label")
+    if group_label is None or group_label == "":
+        group_label = P1_DEFAULT_GROUP
+    elif not isinstance(group_label, str) or len(group_label) > 200:
+        raise ValueError("group_label 必须为不超过 200 字符的字符串或 null")
+    else:
+        group_label = normalized_text(group_label) or P1_DEFAULT_GROUP
+    return {
+        "record": record, "identity": p1_identity(platform, platform_id, canonical),
+        "platform": platform, "platform_id": platform_id, "url": record["url"], "canonical_url": canonical,
+        "title": title, "source_name": source_name, "evidence_kind": kind, "content": content,
+        "content_sha256": digest(json_bytes(content)),
+        "content_raw_sha256": digest(json_bytes(content_raw)),
+        "content_source": P1_KIND_SOURCE[kind], "fragment_start": 0, "fragment_end": len(content),
+        "observed_at": observed_at, "observed_raw": observed_raw,
+        "published_at": published_at, "published_raw": record.get("published_at"),
+        "time_quality": published_quality, "source_response_sha256": source_response_sha256,
+        "comment": comment, "other": other, "group_label": group_label,
+    }
+
+
+def p1_import(db, root, records, limit):
+    # Batch is capped by min(server --limit, 3); the whole database keeps <= 3 identities.
+    cap = min(limit, P1_CANDIDATE_LIMIT) if type(limit) is int else P1_CANDIDATE_LIMIT
+    if not isinstance(records, list) or len(records) > cap:
+        raise ValueError(f"records 必须为不超过 {cap} 条的数组")
+    prepared = [p1_prepare(record) for record in records]  # validate everything before any write
+    identities = {p["identity"] for p in prepared}
+    existing = {row[0] for row in db.execute("SELECT DISTINCT identity_key FROM p1_evidence")}
+    if len(existing | identities) > P1_CANDIDATE_LIMIT:
+        raise P1LimitExceeded(
+            f"全库 P1 候选身份总数不得超过 {P1_CANDIDATE_LIMIT}；重复导入同一身份不会扩容")
+    added, duplicates, evidence_ids = 0, 0, []
+    with db:
+        for p in prepared:
+            snapshot_sha256, snapshot_path = save_snapshot(root, p["record"])
+            evidence_id = "p1ev-" + digest(json_bytes([p["identity"], snapshot_sha256]))
+            # Same identity + same evidence snapshot is a replay: no new row, history preserved.
+            if db.execute("SELECT 1 FROM p1_evidence WHERE identity_key=? AND snapshot_sha256=?",
+                          (p["identity"], snapshot_sha256)).fetchone():
+                duplicates += 1
+                continue
+            fields = {
+                "id": evidence_id, "identity_key": p["identity"], "platform": p["platform"],
+                "platform_id": p["platform_id"], "url": p["url"], "canonical_url": p["canonical_url"],
+                "title": p["title"], "source_name": p["source_name"], "evidence_kind": p["evidence_kind"],
+                "content": p["content"], "content_sha256": p["content_sha256"],
+                "content_raw_sha256": p["content_raw_sha256"], "content_source": p["content_source"],
+                "fragment_start": p["fragment_start"], "fragment_end": p["fragment_end"],
+                "observed_at": p["observed_at"], "observed_raw": p["observed_raw"],
+                "published_at": p["published_at"], "published_raw": p["published_raw"],
+                "time_quality": p["time_quality"], "source_response_sha256": p["source_response_sha256"],
+                "snapshot_sha256": snapshot_sha256, "snapshot_path": snapshot_path,
+                "comment_value": p["comment"]["value"], "comment_precision": p["comment"]["precision"],
+                "comment_source_field": p["comment"]["source_field"],
+                "other_counts": json_bytes(p["other"]).decode(), "group_label": p["group_label"],
+                "imported_at": now(),
+            }
+            names = P1_EVIDENCE_COLUMNS
+            db.execute("INSERT INTO p1_evidence(%s) VALUES(%s)" % (",".join(names), ",".join("?" * len(names))),
+                       tuple(fields[name] for name in names))
+            added += 1
+            evidence_ids.append(evidence_id)
+    return {"schema_version": P1_SCHEMA, "status": "succeeded", "added": added, "duplicates": duplicates,
+            "input_count": len(records), "identity_total": len(existing | identities),
+            "candidate_limit": P1_CANDIDATE_LIMIT, "evidence_ids": evidence_ids,
+            "network_requests": 0, "feeds_touched": 0}
+
+
+def p1_entry(row):
+    return {"evidence_id": row["id"], "identity_key": row["identity_key"], "platform": row["platform"],
+            "platform_id": row["platform_id"], "url": row["url"], "canonical_url": row["canonical_url"],
+            "title": row["title"], "source_name": row["source_name"], "evidence_kind": row["evidence_kind"],
+            "content_sha256": row["content_sha256"], "observed_at": row["observed_at"],
+            "imported_at": row["imported_at"], "group_label": row["group_label"],
+            "comment_count": {"value": row["comment_value"], "precision": row["comment_precision"],
+                              "source_field": row["comment_source_field"]},
+            "other_counts": json.loads(row["other_counts"]), "snapshot_sha256": row["snapshot_sha256"],
+            "source_response_sha256": row["source_response_sha256"]}
+
+
+def p1_overview(db, top_k):
+    if top_k is None:
+        top_k = P1_CANDIDATE_LIMIT
+    elif isinstance(top_k, str) and top_k.strip().isdigit():
+        top_k = int(top_k.strip())
+    if type(top_k) is not int or not 1 <= top_k <= P1_CANDIDATE_LIMIT:
+        raise ValueError(f"top_k 必须为 1–{P1_CANDIDATE_LIMIT} 的整数")
+    rows = [dict(r) for r in db.execute(
+        "SELECT * FROM p1_evidence ORDER BY observed_at DESC, imported_at DESC, id DESC")]
+    latest = {}
+    for row in rows:
+        latest.setdefault(row["identity_key"], row)  # first occurrence is the newest actual observation
+    groups = {}
+    for row in latest.values():
+        groups.setdefault(row["group_label"], []).append(row)
+    output = []
+    for label in sorted(groups):
+        members = groups[label]
+        exact = sorted([m for m in members if m["comment_precision"] == "exact" and m["comment_value"] is not None],
+                       key=lambda m: (-m["comment_value"], m["identity_key"]))
+        others = sorted([m for m in members if m["comment_precision"] != "exact"], key=lambda m: m["identity_key"])
+        output.append({
+            "group_label": label, "identity_count": len(members), "exact_count": len(exact),
+            "top": [{**p1_entry(m), "rank": i + 1} for i, m in enumerate(exact[:top_k])],
+            "unranked": [{**p1_entry(m), "rank_reason": ("comment_count_approximate" if m["comment_precision"] == "approximate"
+                                                          else "comment_count_unknown")} for m in others],
+        })
+    return {"schema_version": P1_SCHEMA, "top_k": top_k, "candidate_limit": P1_CANDIDATE_LIMIT,
+            "identity_total": len(latest), "group_count": len(output), "groups": output,
+            "exact_only": True, "empty_state": not latest,
+            "note": "仅对精确评论计数降序排名；近似与未知计数不参与排名并单列；view/like/danmaku 等不计入评论数；"
+                    "这是单点当前值，不是增速、曲线或 watchlist"}
+
+
+def p1_detail(db, root, evidence_id):
+    row = db.execute("SELECT * FROM p1_evidence WHERE id=?", (evidence_id,)).fetchone()
+    if row is None:
+        return None
+    row = dict(row)
+    path = (Path(root) / row["snapshot_path"]).resolve()
+    snapshots_root = (Path(root) / "snapshots").resolve()
+    if not path.is_relative_to(snapshots_root):
+        raise ValueError("证据快照路径越界")
+    raw = path.read_bytes()
+    if digest(raw) != row["snapshot_sha256"]:
+        raise OSError("证据快照哈希不一致")
+    return {"evidence": row, "snapshot": json.loads(raw), "snapshot_sha256_verified": True,
+            "scope": "manual_evidence_only", "source_response_verified": False}

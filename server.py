@@ -206,6 +206,21 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(200, {"record": dict(record), "raw_snapshot": json.loads(raw)})
             except (OSError, ValueError) as exc:
                 return self.send(409, {"error": str(exc), "record_id": record_id})
+        if path == "/api/p1/overview":
+            query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+            values = query.get("top_k", ["3"])
+            if len(values) != 1:
+                raise ValueError("top_k 只接受一个值")
+            with connect() as db:
+                return self.send(200, storage.p1_overview(db, values[0]))
+        if path.startswith("/api/p1/evidence/"):
+            evidence_id = path[len("/api/p1/evidence/"):]
+            with connect() as db:
+                try:
+                    detail = storage.p1_detail(db, ROOT, evidence_id)
+                except (OSError, ValueError) as exc:
+                    return self.send(409, {"error": str(exc), "evidence_id": evidence_id})
+            return self.send(200, detail) if detail else self.send(404, {"error": "证据不存在"})
         return self.send(404, {"error": "Not found"})
 
     def do_POST(self):
@@ -273,6 +288,19 @@ class Handler(BaseHTTPRequestHandler):
                         return self.send(422, {"error": str(exc), "run_id": run_id, "status": "failed"})
                     except (OSError, sqlite3.Error) as exc:
                         return self.send(500, {"error": str(exc), "run_id": run_id, "status": "failed"})
+                return self.send(201, result)
+            if path == "/api/p1/import":
+                if set(value) != {"records"}:
+                    raise ValueError("P1 导入请求只能且必须包含 records")
+                with connect() as db:
+                    try:
+                        result = storage.p1_import(db, ROOT, value.get("records"), LIMIT)
+                    except storage.P1LimitExceeded as exc:
+                        return self.send(409, {"error": str(exc), "status": "rejected"})
+                    except ValueError as exc:
+                        return self.send(422, {"error": str(exc), "status": "rejected"})
+                    except (OSError, sqlite3.Error) as exc:
+                        return self.send(500, {"error": str(exc), "status": "failed"})
                 return self.send(201, result)
             if path == "/api/refresh":
                 with connect() as db:
