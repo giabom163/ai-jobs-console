@@ -35,8 +35,13 @@ const state = {
   filters: { source: "all", kind: "all", keyword: "" },
   selectedTopic: null,
   drawerTrigger: null,
-  topK: "3"
+  topK: "3",
+  overviewToken: 0,               // 概览请求令牌：过期响应不得写状态
+  drawerToken: 0                  // 抽屉请求令牌：过期响应不得写状态
 };
+
+// 概览始终按候选上限（3）载入全部候选，展示 K 由前端在选择范围内重算，避免后端 top_k 截断。
+const P1_LOAD_TOP_K = 3;
 
 /* ---------- 安全 DOM 构建 ---------- */
 
@@ -83,11 +88,12 @@ function linkNode(value, label) {
 /* ---------- 接口封装：区分离线 / 后端错误，原样保留状态码与消息 ---------- */
 
 class ApiError extends Error {
-  constructor(message, status, kind) {
+  constructor(message, status, kind, rawText) {
     super(message);
     this.name = "ApiError";
     this.status = status;
     this.kind = kind;
+    this.rawText = typeof rawText === "string" ? rawText : "";  // 原始响应体文本（可能非 JSON）
   }
 }
 
@@ -101,7 +107,7 @@ async function api(path, { method = "GET", body } = {}) {
       cache: "no-store"
     });
   } catch (err) {
-    throw new ApiError("无法连接本地服务（离线或服务未启动）", 0, "offline");
+    throw new ApiError("无法连接本地服务（离线或服务未启动）", 0, "offline", "");
   }
   const raw = await response.text();
   let data = null;
@@ -110,7 +116,7 @@ async function api(path, { method = "GET", body } = {}) {
   }
   if (!response.ok) {
     const message = data && typeof data.error === "string" && data.error ? data.error : `HTTP ${response.status}`;
-    const error = new ApiError(message, response.status, "http");
+    const error = new ApiError(message, response.status, "http", raw);
     error.payload = data;
     throw error;
   }
@@ -632,9 +638,22 @@ const P1_KIND_LABELS = {
   source_summary: "来源摘要"
 };
 const P1_PRECISION_LABELS = { exact: "精确", approximate: "约数", unknown: "未知" };
+// 其他计数的业务词映射：只保留中文口径，未知字段在业务中省略，不回显原始字段名。
+const P1_OTHER_LABELS = {
+  view: "播放",
+  play: "播放",
+  like: "点赞",
+  danmaku: "弹幕",
+  coin: "投币",
+  favorite: "收藏",
+  share: "分享"
+};
+// 评论数来源统一映射为业务词，不输出平台原始字段名 source_field。
+const P1_COMMENT_SOURCE_LABEL = "平台公开评论总数";
 
 function p1KindLabel(kind) { return P1_KIND_LABELS[kind] || kind || "未知类型"; }
 function p1PrecisionLabel(precision) { return P1_PRECISION_LABELS[precision] || precision || "未知"; }
+function p1CommentSourceLabel(sourceField) { return sourceField ? P1_COMMENT_SOURCE_LABEL : "（未标注）"; }
 
 function p1StatusText(err) {
   if (err instanceof ApiError && err.kind === "offline") return "连接失败（无法连接本地服务）";
@@ -642,24 +661,29 @@ function p1StatusText(err) {
 }
 
 function p1BodyNode(err) {
-  // 原样显示真实响应体（JSON 解析成功则结构化，否则回落为纯文本消息）。
-  if (err && err.payload && typeof err.payload === "object") {
+  // 管理区查看用：优先显示原始响应文本（JSON 原文或非 JSON 原文），都保留真实 HTTP 状态单独显示。
+  if (!err) return h("p", { class: "error-text" }, "（无响应体）");
+  if (typeof err.rawText === "string" && err.rawText) {
+    return h("pre", { class: "json" }, err.rawText);
+  }
+  if (err.payload && typeof err.payload === "object") {
     return h("pre", { class: "json" }, JSON.stringify(err.payload, null, 2));
   }
-  return h("p", { class: "error-text" }, (err && err.message) || "（无响应体）");
+  return h("p", { class: "error-text" }, err.message || "（无响应体）");
 }
 
 function p1OtherCountsNode(other) {
   if (!other || !Object.keys(other).length) return h("span", { class: "muted" }, "（无）");
   const rows = [];
   for (const name of Object.keys(other)) {
+    const label = P1_OTHER_LABELS[name];
+    if (!label) continue;           // 未知字段：业务中省略，不原样回显
     const count = other[name] || {};
     const counted = count.value !== null && count.value !== undefined;
     rows.push(h("div", { class: "p1-other" },
-      `${name} = ${counted ? count.value : "null（未知）"}`,
-      h("span", { class: "muted" }, `（${p1PrecisionLabel(count.precision)}；平台计数字段 ${count.source_field || "—"}；不计入评论数）`)));
+      `${label}${counted ? " " + count.value : " 未知"}（${p1PrecisionLabel(count.precision)}；不计入评论数）`));
   }
-  return h("div", { class: "p1-others" }, rows);
+  return rows.length ? h("div", { class: "p1-others" }, rows) : h("span", { class: "muted" }, "（无）");
 }
 
 function setBizStatus(kind, text) {
@@ -689,6 +713,22 @@ function p1ContentText(evidenceId) {
   return cached && cached.status === "ok" ? (cached.content || "") : "";
 }
 
+// 精确评论数（视图内重算，不依赖后端 top_k 截断后的 rank）
+function p1IsExact(entry) {
+  const count = entry && entry.comment_count;
+  return !!count && count.precision === "exact" && count.value !== null && count.value !== undefined;
+}
+
+function p1ExactSorted(entries) {
+  return entries.filter(p1IsExact).slice()
+    .sort((a, b) => (b.comment_count.value - a.comment_count.value)
+      || String(a.evidence_id).localeCompare(String(b.evidence_id)));
+}
+
+function p1Unranked(entries) {
+  return entries.filter((entry) => !p1IsExact(entry));
+}
+
 function p1FilteredEntries() {
   const filters = state.filters;
   return state.p1Entries.filter((entry) => {
@@ -710,8 +750,7 @@ function p1FilterSummary(filtered) {
     `证据类型=${filters.kind === "all" ? "全部" : p1KindLabel(filters.kind)}`,
     `关键词=${filters.keyword ? filters.keyword : "（无）"}`
   ];
-  return `统一筛选：${parts.join(" · ")}；全量材料 ${state.p1Entries.length} 条，筛选后 ${filtered.length} 条。` +
-    `日期范围筛选后端未支持，未提供该控件。`;
+  return `统一筛选：${parts.join(" · ")}；本次已载入原帖 ${state.p1Entries.length} 条，筛选后 ${filtered.length} 条。`;
 }
 
 function p1ContentNote() {
@@ -778,10 +817,7 @@ function groupFilteredEntries(filtered) {
 }
 
 function p1HeatNode(label, entries) {
-  const exact = entries
-    .filter((entry) => entry.comment_count && entry.comment_count.precision === "exact"
-      && entry.comment_count.value !== null && entry.comment_count.value !== undefined)
-    .sort((a, b) => b.comment_count.value - a.comment_count.value);
+  const exact = p1ExactSorted(entries);
   const lead = exact[0] || entries[0];
   if (!lead) return h("p", { class: "muted" }, `「${label}」在当前筛选下没有可展示条目。`);
   const count = lead.comment_count || {};
@@ -795,21 +831,22 @@ function p1HeatNode(label, entries) {
       kv("所属议题", label),
       kv("来源", lead.source_name || "—"),
       kv("观测时间", fmtTime(lead.observed_at)),
-      kv("评论数来源", count.source_field || "—"))
+      kv("评论数来源", p1CommentSourceLabel(count.source_field)))
   );
 }
 
-function p1BusinessCard(entry) {
+function p1BusinessCard(entry, rank) {
   const count = entry.comment_count || {};
   const counted = count.value !== null && count.value !== undefined;
   const heat = counted
     ? `评论数 ${count.value}（${p1PrecisionLabel(count.precision)}）· 该原帖历史累计，单点观测，不代表近期新增。`
     : `评论数未知（${p1PrecisionLabel(count.precision)}）· 不计入 0，也不参与排名。`;
+  const showRank = typeof rank === "number";
   return h("article", { class: "card p1-entry" },
     h("div", { class: "meta" },
-      entry.bucket === "top" && entry.rank
-        ? h("span", { class: "badge pos" }, `#${entry.rank}`)
-        : (entry.bucket === "unranked" ? h("span", { class: "badge neu" }, "未排名") : null),
+      showRank
+        ? h("span", { class: "badge pos" }, `#${rank}`)
+        : (counted ? null : h("span", { class: "badge neu" }, "未排名")),
       h("span", { class: "chip" }, p1KindLabel(entry.evidence_kind)),
       h("span", { class: "chip" }, `来源 ${entry.source_name || "?"}`)
     ),
@@ -829,19 +866,23 @@ function p1BusinessCard(entry) {
 
 function p1TopicSummary(label, entries) {
   const meta = ((state.p1.groups || []).find((group) => group.group_label === label)) || {};
+  const exactCount = p1ExactSorted(entries).length;
   return h("div", null,
     h("h3", null, label),
     h("div", { class: "meta" },
-      h("span", { class: "chip" }, `候选身份 ${meta.identity_count ?? entries.length}`),
-      h("span", { class: "chip" }, `精确计数 ${meta.exact_count ?? 0}`)),
+      h("span", { class: "chip" }, `本组候选（全体）${meta.identity_count ?? entries.length}`),
+      h("span", { class: "chip" }, `当前筛选 ${entries.length}`),
+      h("span", { class: "chip" }, `精确计数 ${exactCount}`)),
     h("p", { class: "hint" }, "人工指定分组，相似标题不直接合并事件；排名仅按精确评论数降序，约数/未知计数单列。"),
     p1HeatNode(label, entries),
-    h("p", { class: "boundary" }, "关联：暂无可证的议题关联——当前缺少带证据引用的关系查询接口，证据不足不生成关系图，也不推断群体立场。")
+    h("p", { class: "boundary" }, "关联：暂无可证的议题关联——当前缺少带证据引用的关系查询，证据不足不生成关系图，也不推断群体立场。")
   );
 }
 
 function p1Reset() {
   // 读取失败 / 离线 / 导入失败时清空旧 P1 展示与旧详情，绝不把旧缓存当作在线数据。
+  state.overviewToken++;          // 使在途概览/onrich 响应失效
+  state.drawerToken++;            // 使在途抽屉响应失效
   state.p1 = null;
   state.p1Entries = [];
   state.p1Content = {};
@@ -877,7 +918,7 @@ function renderBusinessEmpty() {
     const el = $("#" + id);
     if (el) clear(el);
   }
-  const emptyText = "暂无 P1 人工候选材料：请到「数据管理 → P1 人工证据」由人工粘贴已取证记录后提交（本页不预填、不自动导入、不抓取）。";
+  const emptyText = "暂无可展示的原帖材料：请到「数据管理 → 人工证据」由人工粘贴已取证记录后提交（本页不预填、不自动导入、不抓取）。";
   for (const id of ["overview-topics", "topic-list", "search-results", "topic-topk"]) {
     const el = $("#" + id);
     if (el) el.append(h("p", { class: "empty" }, emptyText));
@@ -924,10 +965,12 @@ function renderOverview(overview, filtered) {
 
   const shortcuts = $("#overview-shortcuts");
   clear(shortcuts);
-  const ranked = filtered.filter((entry) => entry.bucket === "top").slice(0, 3);
-  const pool = ranked.length ? ranked : filtered.slice(0, 3);
-  if (!pool.length) shortcuts.append(h("p", { class: "empty" }, "当前筛选下没有原帖证据捷径。"));
-  for (const entry of pool) shortcuts.append(p1BusinessCard(entry));
+  const exactAll = p1ExactSorted(filtered);
+  const ranked = exactAll.slice(0, 3);
+  const pool = ranked.length ? ranked.map((entry, index) => ({ entry, rank: index + 1 }))
+    : filtered.slice(0, 3).map((entry) => ({ entry, rank: undefined }));
+  if (!pool.length) shortcuts.append(h("p", { class: "empty" }, "当前筛选下没有原帖捷径。"));
+  for (const item of pool) shortcuts.append(p1BusinessCard(item.entry, item.rank));
 
   $("#overview-filter-note").textContent = p1FilterSummary(filtered);
 }
@@ -943,7 +986,7 @@ function renderTopics(filtered) {
     clear(summary);
     summary.append(h("p", { class: "muted" }, "无可展示议题概况。"));
     clear(topkHost);
-    topkHost.append(h("p", { class: "empty" }, "无可展示 TopK。"));
+    topkHost.append(h("p", { class: "empty" }, "暂无可展示原帖。"));
     $("#topics-filter-note").textContent = p1FilterSummary(filtered);
     return;
   }
@@ -953,13 +996,14 @@ function renderTopics(filtered) {
   for (const group of state.p1.groups || []) backend[group.group_label] = group;
   for (const [label, entries] of groups) {
     const meta = backend[label] || {};
+    const exactCount = p1ExactSorted(entries).length;
     list.append(h("button", {
       class: `topic-item ${label === selected ? "active" : ""}`, type: "button",
       "aria-pressed": label === selected ? "true" : "false",
       onclick: () => { state.selectedTopic = label; renderBusinessViews(); }
     },
       h("span", { class: "topic-item-name" }, label),
-      h("span", { class: "topic-item-meta" }, `候选身份 ${meta.identity_count ?? entries.length} · 精确计数 ${meta.exact_count ?? 0}`),
+      h("span", { class: "topic-item-meta" }, `本组候选 ${meta.identity_count ?? entries.length} · 当前筛选 ${entries.length} · 精确计数 ${exactCount}`),
       h("span", { class: "topic-item-meta" }, `最近观测 ${p1NewestObservedText(entries)}`)));
   }
 
@@ -968,15 +1012,14 @@ function renderTopics(filtered) {
 
   clear(topkHost);
   const members = groups.get(selected) || [];
-  const topEntries = members
-    .filter((entry) => entry.bucket === "top")
-    .sort((a, b) => (a.rank || 0) - (b.rank || 0))
-    .slice(0, Number(state.topK) || 3);
-  const unranked = members.filter((entry) => entry.bucket === "unranked");
+  const exactAll = p1ExactSorted(members);
+  const k = Number(state.topK) || 3;
+  const topEntries = exactAll.slice(0, k);
+  const unranked = p1Unranked(members);
   if (!topEntries.length) {
-    topkHost.append(h("p", { class: "empty" }, "该议题没有可比精确评论数：证据不足，无 TopK 排名（不伪精确、不把未知当 0）。"));
+    topkHost.append(h("p", { class: "empty" }, "该议题没有可比精确评论数：证据不足，无可比排名（不伪精确、不把未知当 0）。"));
   }
-  for (const entry of topEntries) topkHost.append(p1BusinessCard(entry));
+  topEntries.forEach((entry, index) => topkHost.append(p1BusinessCard(entry, index + 1)));
   if (unranked.length) {
     topkHost.append(h("h4", { class: "detail-sub" }, "未参与排名（评论数为约数或未知）"));
     for (const entry of unranked) topkHost.append(p1BusinessCard(entry));
@@ -989,8 +1032,8 @@ function renderSearch(filtered) {
   clear(host);
   if (!filtered.length) {
     host.append(h("p", { class: "empty" }, state.p1Entries.length
-      ? "当前筛选无匹配原帖（范围仅为本次已载入的 P1 材料）。"
-      : "暂无可检索的 P1 材料（全库候选身份 0）。"));
+      ? "当前筛选无匹配原帖（范围仅为本次已载入的原帖）。"
+      : "暂无可检索的原帖材料（本次已载入候选 0 条）。"));
   } else {
     for (const entry of filtered) host.append(p1BusinessCard(entry));
   }
@@ -1023,16 +1066,19 @@ function renderBusinessViews() {
   renderSearch(filtered);
 }
 
-async function enrichP1Contents() {
+async function enrichP1Contents(token) {
   // 关键词过滤需要正文/来源摘要；overview 不含 content，这里按已载入材料（全库 ≤3）真实 GET 详情补齐。
   const ids = [...new Set(state.p1Entries.map((entry) => entry.evidence_id).filter(Boolean))];
   await Promise.all(ids.map(async (id) => {
+    if (token !== state.overviewToken) return;   // 过期请求：不写状态
     if (state.p1Content[id] && state.p1Content[id].status === "ok") return;
     try {
       const data = await api(`/api/p1/evidence/${encodeURIComponent(id)}`);
+      if (token !== state.overviewToken) return;
       const ev = data.evidence || {};
       state.p1Content[id] = { status: "ok", content: ev.content || "" };
     } catch (err) {
+      if (token !== state.overviewToken) return;
       state.p1Content[id] = { status: "error", content: "", message: (err && err.message) || "" };
     }
   }));
@@ -1040,14 +1086,25 @@ async function enrichP1Contents() {
 
 /* ---------- 业务详情侧抽屉（不含 snapshot / 哈希 / 路径 / 字段名） ---------- */
 
+function setBackgroundInert(inert) {
+  for (const selector of ["#main", ".top", "#main-nav", "footer"]) {
+    const el = $(selector);
+    if (!el) continue;
+    if (inert) el.setAttribute("inert", "");
+    else el.removeAttribute("inert");
+  }
+}
+
 function showDrawer(open) {
   const drawer = $("#drawer");
   if (!drawer) return;
   drawer.hidden = !open;
   drawer.setAttribute("aria-hidden", open ? "false" : "true");
+  setBackgroundInert(open);          // 隔离背景：打开时背景不可聚焦/不可交互
 }
 
 function closeDrawer(clearBody = false) {
+  state.drawerToken++;               // 关闭使在途抽屉请求失效
   if (clearBody) {
     const body = $("#drawer-body");
     if (body) clear(body);
@@ -1085,7 +1142,7 @@ function renderP1Drawer(data) {
       kv("评论数（累计口径）", counted
         ? `${count.value}（${p1PrecisionLabel(count.precision)}）；该原帖历史累计评论数，单点观测，不代表近 7 天新增或增速。`
         : `未知（${p1PrecisionLabel(count.precision)}）：未采得可核验评论数，不计入 0。`),
-      kv("评论数来源", count.source_field || "—"),
+      kv("评论数来源", p1CommentSourceLabel(count.source_field)),
       kv("其他计数（不计入评论数）", p1OtherCountsNode(other))
     ),
     ev.evidence_kind === "title_only"
@@ -1095,67 +1152,62 @@ function renderP1Drawer(data) {
 }
 
 async function openP1Drawer(evidenceId, trigger) {
+  const token = ++state.drawerToken;
   const body = $("#drawer-body");
   const title = $("#drawer-title");
   state.drawerTrigger = trigger || document.activeElement;
   if (title) title.textContent = "原帖详情";
   clear(body);
-  body.append(h("p", { class: "muted" }, "正在读取本地 GET /api/p1/evidence/… "));
+  body.append(h("p", { class: "muted" }, "正在读取原帖详情…"));
   showDrawer(true);
   const closeButton = $("#drawer-close");
   if (closeButton) closeButton.focus();
   try {
     const data = await api(`/api/p1/evidence/${encodeURIComponent(evidenceId)}`);
+    if (token !== state.drawerToken) return;   // 过期响应：不覆写新状态
     renderP1Drawer(data);
   } catch (err) {
+    if (token !== state.drawerToken) return;
     clear(body);
     body.append(
       h("h3", { class: "detail-sub" }, "原帖详情读取失败"),
       h("p", { class: "error-text" }, `${p1StatusText(err)}：${(err && err.message) || ""}`),
-      h("p", { class: "muted" }, "旧详情已清空，未把旧数据当作成功结果。完整错误响应体请在「数据管理 → P1 人工证据」中读取。")
+      h("p", { class: "muted" }, "旧详情已清空，未把旧数据当作成功结果。完整错误响应体可在「数据管理 → 人工证据」查看。")
     );
   }
 }
 
 async function loadP1() {
-  const topK = state.topK;
-  setBizStatus("loading", `正在读取本地 P1 概览（GET /api/p1/overview?top_k=${topK}）…`);
+  const token = ++state.overviewToken;
+  setBizStatus("loading", "正在读取本地数据…");
   try {
-    const data = await api(`/api/p1/overview?top_k=${encodeURIComponent(topK)}`);
+    // 始终按候选上限载入全部候选（top_k=3），展示用 K 在前端过滤后重算，避免后端截断候选。
+    const data = await api(`/api/p1/overview?top_k=${P1_LOAD_TOP_K}`);
+    if (token !== state.overviewToken) return;
     applyP1(data);
     buildFilterBars();
     renderBusinessViews();
-    await enrichP1Contents();
+    await enrichP1Contents(token);
+    if (token !== state.overviewToken) return;
     renderBusinessViews();
-    setBizStatus("ok", `已读取本地 P1 概览：采得原帖（人工候选身份）${data.identity_total ?? 0}，` +
-      `人工候选组 ${data.group_count ?? 0}（TopK=${data.top_k ?? "—"}）。这是单点当前值，不是增速、曲线或观察清单。`);
+    setBizStatus("ok", `已读取本地数据：已载入原帖 ${data.identity_total ?? 0} 条，人工分组 ${data.group_count ?? 0} 组。` +
+      `这是单点当前值，不是增速、曲线或观察清单。`);
   } catch (err) {
+    if (token !== state.overviewToken) return;
     p1Reset();
-    setBizStatus("error", `P1 概览读取失败（${p1StatusText(err)}）：${(err && err.message) || ""}；旧材料已清空，未显示缓存。`);
+    setBizStatus("error", `数据读取失败（${p1StatusText(err)}）：${(err && err.message) || ""}；旧材料已清空，未显示缓存。`);
   }
 }
 
-async function loadP1Diag() {
-  const input = $("#p1-diag-id");
-  const body = $("#p1-diag-body");
-  const id = (input && input.value ? input.value : "").trim();
-  clear(body);
-  if (!id) {
-    body.append(h("p", { class: "error-text" }, "请先填写证据 ID。"));
-    return;
-  }
-  body.append(h("p", { class: "muted" }, `正在读取 GET /api/p1/evidence/${id} …`));
-  try {
-    const data = await api(`/api/p1/evidence/${encodeURIComponent(id)}`);
-    clear(body);
-    body.append(h("pre", { class: "json" }, JSON.stringify(data, null, 2)));
-  } catch (err) {
-    clear(body);
-    body.append(
-      h("p", { class: "error-text" }, `${p1StatusText(err)}：${(err && err.message) || ""}`),
-      p1BodyNode(err)
-    );
-  }
+function setAdminStatus(kind, text, bodyNode) {
+  const host = $("#p1-admin-status");
+  if (!host) return;
+  clear(host);
+  host.classList.remove("error", "ok");
+  if (kind === "error") host.classList.add("error");
+  else if (kind === "ok") host.classList.add("ok");
+  host.append(h("p", { class: kind === "error" ? "error-text" : "muted" }, text));
+  if (bodyNode) host.append(bodyNode);
 }
 
 async function submitP1Import() {
@@ -1178,26 +1230,23 @@ async function submitP1Import() {
     return;
   }
   if (records.length > 3) {
-    show(`P1 候选一次最多 3 条，且全库候选身份总数 ≤3；当前 ${records.length} 条，服务端将返回 422/409。`, true);
+    show(`候选记录一次最多 3 条，且全库候选总数 ≤3；当前 ${records.length} 条，服务端将返回 422/409。`, true);
     return;
   }
   button.disabled = true;
   try {
     const result = await api("/api/p1/import", { method: "POST", body: { records } });
-    show(`P1 导入完成：新增 ${result.added}，重复 ${result.duplicates}，候选身份总数 ${result.identity_total} / ${result.candidate_limit}。`);
+    show(`导入完成：新增 ${result.added}，重复 ${result.duplicates}，候选总数 ${result.identity_total} / ${result.candidate_limit}。`);
     textarea.value = "";
+    setAdminStatus("ok", `导入完成：新增 ${result.added}，重复 ${result.duplicates}，候选总数 ${result.identity_total} / ${result.candidate_limit}。`, null);
     await loadP1();
   } catch (err) {
-    // 导入失败（含 422）：清空旧 P1 材料与旧详情，绝不把旧数据当成功。
+    // 导入失败（含 422）：清空旧材料与旧详情，绝不把旧数据当成功。
     p1Reset();
-    setBizStatus("error", `P1 导入失败（${p1StatusText(err)}）：${(err && err.message) || ""}；旧 P1 材料与详情已清空，未显示缓存。`);
-    show(`P1 导入失败（${p1StatusText(err)}）：${(err && err.message) || ""}`, true);
-    // 工程错误响应体只在管理入口（P1 人工证据）可读。
-    const diag = $("#p1-diag-body");
-    if (diag) {
-      clear(diag);
-      diag.append(h("p", { class: "error-text" }, `导入失败（${p1StatusText(err)}）：${(err && err.message) || ""}`), p1BodyNode(err));
-    }
+    setBizStatus("error", `导入失败（${p1StatusText(err)}）：${(err && err.message) || ""}；旧材料与详情已清空，未显示缓存。`);
+    show(`导入失败（${p1StatusText(err)}）：${(err && err.message) || ""}`, true);
+    // 工程错误证据（真实 HTTP 状态 + 原始响应体）只写数据管理「人工证据」状态容器。
+    setAdminStatus("error", `导入失败（${p1StatusText(err)}）：${(err && err.message) || ""}`, p1BodyNode(err));
   } finally {
     button.disabled = !state.online;
   }
@@ -1252,18 +1301,18 @@ function invalidateData() {
   clear($("#import-feed"));
   $("#analysis-body").textContent = "读取失败，旧分析队列已隐藏。";
   p1Reset();
-  setBizStatus("error", "服务离线或读取失败，旧 P1 材料与详情已清空，未显示缓存。");
+  setBizStatus("error", "服务离线或读取失败，旧材料与详情已清空，未显示缓存。");
 }
 
 async function load({keepNotice = false} = {}) {
-  setConnection("loading", "正在读取 /api/data …");
+  setConnection("loading", "正在读取本地数据…");
   try {
     const data = await api("/api/data");
     applyData(data);
     state.online = true;
     setWriteAvailability(true);
     state.loadedAt = new Date();
-    setConnection("online", `在线 · 已读取真实 /api/data（${fmtTime(state.loadedAt.toISOString())}）`);
+    setConnection("online", `在线 · 已读取本地数据（${fmtTime(state.loadedAt.toISOString())}）`);
     if (!keepNotice) show("已从本地服务读取最新数据。");
   } catch (err) {
     invalidateData();
@@ -1271,7 +1320,7 @@ async function load({keepNotice = false} = {}) {
       setConnection("offline", "离线：无法连接本地服务，未显示缓存数据。");
     } else {
       const status = err.status ? `HTTP ${err.status}` : "错误";
-      setConnection("error", `后端错误（${status}）：${err.message}`);
+      setConnection("error", `读取失败（${status}）：${err.message}`);
     }
     show(err.message, true);
   }
@@ -1455,17 +1504,43 @@ for (const id of ["#overview-reload", "#topics-reload", "#search-reload"]) {
 
 $("#topics-topk").addEventListener("change", () => {
   state.topK = $("#topics-topk").value || "3";
-  loadP1();
+  // 展示用 K 只影响视图内重算与显示，不重新请求、不影响已载入候选全集。
+  renderBusinessViews();
 });
 $("#p1-import-submit").addEventListener("click", submitP1Import);
-$("#p1-diag-load").addEventListener("click", loadP1Diag);
 $("#topics-goto-report").addEventListener("click", () => { selectView("admin"); selectAdminView("report"); });
 
-// 详情侧抽屉：关闭按钮 / 背景点击 / ESC，关闭后焦点回到触发按钮。
+// 详情侧抽屉：关闭按钮 / 背景点击 / ESC，关闭后焦点回到触发按钮；打开时圈定 Tab 焦点。
 $("#drawer-close").addEventListener("click", () => closeDrawer(true));
 $("#drawer-backdrop").addEventListener("click", () => closeDrawer(true));
+
+const FOCUSABLE_SELECTOR = "a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex='-1'])";
+
 document.addEventListener("keydown", (event) => {
-  if (event.key === "Escape" && !$("#drawer").hidden) closeDrawer(true);
+  const drawer = $("#drawer");
+  if (!drawer || drawer.hidden) return;
+  if (event.key === "Escape") {
+    event.preventDefault();
+    closeDrawer(true);
+    return;
+  }
+  if (event.key !== "Tab") return;
+  const panel = $(".drawer-panel", drawer);
+  if (!panel) return;
+  const items = $$(FOCUSABLE_SELECTOR, panel).filter((el) => el.offsetParent !== null || el === document.activeElement);
+  if (!items.length) return;
+  const first = items[0];
+  const last = items[items.length - 1];
+  if (!panel.contains(document.activeElement)) {
+    event.preventDefault();
+    first.focus();
+  } else if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
+  }
 });
 
 async function loadAnalysis() {
