@@ -660,6 +660,9 @@ function p1Reset() {
   }
   const groups = $("#p1-groups");
   if (groups) clear(groups);
+  // 旧详情（含计数/hash/snapshot）不得随概览一起残留：统一清为“无当前详情”占位。
+  // invalidateData() 之后会以离线文案再次覆盖本占位，此处不做额外分支。
+  p1DetailPlaceholder("当前无 P1 证据详情：概览读取或导入失败后旧详情已清空，请重新点击“查看证据详情”读取本地 GET /api/p1/evidence/<id>。");
 }
 
 function p1EntryCard(entry, bucket) {

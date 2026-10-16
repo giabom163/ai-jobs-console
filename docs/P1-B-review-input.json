@@ -107,5 +107,117 @@
     "P1-A历史执行FAIL不被P1-B语法PASS覆盖",
     "两个审计来源hash属于不同文件：043b...为Luna审计文档；0c36...为P1-A-review-input.json。二者不应被认为要相等。",
     "本轮尚无HTTP/GUI/真实DB验收；真实样本由主线程随后从空textarea手动导入。"
-  ]
+  ],
+  "revision2": {
+    "result": {
+      "acceptance": "BLOCKED",
+      "after_snapshot_sha256": "06ebfa0f838e6bf1e3c0c36deb7157c7f5f67583203701820945659132b0420a",
+      "attempt_id": "attempt-fcc47e11976f4a26a8ba0c77aa543bca",
+      "base_commit": "1ff2c026942a51ce30954ac17016233c2f312915",
+      "changes": [
+        {
+          "after_sha256": "5c3b1336a38bb1f0fc3bc9a343f6d5277a18fa825117224249dd4659b4b310ce",
+          "before_sha256": "49f5803b6eb9b0d76e29bec3bb93c8a4440484ce07a37ee912fe9d34e1b895af",
+          "path": "app.js"
+        },
+        {
+          "after_sha256": "27bea3b3011ded334a7151747dc24bc5856d4b8ee078d46711ea6b86a5008cd8",
+          "before_sha256": "d8888159707f41f86fdc82ec52ff6fb0eccb8e672f0af17ebf98053cf31f2341",
+          "path": "docs/P1-B-implementation.md"
+        }
+      ],
+      "contract_sha256": "c2302a5b671ba90e6413010b3944c222271fbeed125403b2655ba44497c52321",
+      "exit_code": 0,
+      "finished_at": "2026-10-16T01:49:50.523015+00:00",
+      "git_marker_sha256": "e23d1e1a99a13128a477853da2ac2088902a987b6fd617008ac26c18c851b811",
+      "missing_artifacts": [],
+      "native_errors": [],
+      "native_stop_confirmed": true,
+      "native_warnings": [],
+      "revision": 2,
+      "session_id": "ses_ebd9c2a21ffeKsCSugfaO92PkF",
+      "stop_reason": null,
+      "task_id": "gender-p1b-flash-20261016",
+      "upstream_requests": null,
+      "usage": {
+        "cache": {
+          "read": 598528,
+          "write": 0
+        },
+        "input": 33560,
+        "output": 5908,
+        "reasoning": 3486
+      },
+      "usage_note": "保留原生 JSON 日志；未核实跨执行器 usage 语义，不估算次数或费用",
+      "violations": []
+    },
+    "observed_commands": [
+      {
+        "command": {
+          "command": "& \"C:\\Users\\Lenovo\\.workbuddy\\binaries\\python\\versions\\3.13.12\\python.exe\" -c \"import hashlib,pathlib; [print(n, hashlib.sha256(pathlib.Path(n).read_bytes()).hexdigest()) for n in ['app.js','docs/P1-B-implementation.md']]\""
+        },
+        "output": "app.js 49f5803b6eb9b0d76e29bec3bb93c8a4440484ce07a37ee912fe9d34e1b895af\r\ndocs/P1-B-implementation.md d8888159707f41f86fdc82ec52ff6fb0eccb8e672f0af17ebf98053cf31f2341\r\n",
+        "metadata": {
+          "status": "completed",
+          "truncated": false,
+          "exit": 0
+        }
+      },
+      {
+        "command": {
+          "command": "git status --porcelain; git log --oneline -1"
+        },
+        "output": "1ff2c02 Add local P1 evidence view and strict top-k parameter handling\n",
+        "metadata": {
+          "status": "completed",
+          "truncated": false,
+          "exit": 0
+        }
+      },
+      {
+        "command": {
+          "command": "git diff --stat; git diff -- app.js"
+        },
+        "output": " app.js | 3 +++\n 1 file changed, 3 insertions(+)\ndiff --git a/app.js b/app.js\nindex 0af4bfc..6e0a859 100644\n--- a/app.js\n+++ b/app.js\n@@ -660,6 +660,9 @@ function p1Reset() {\n   }\n   const groups = $(\"#p1-groups\");\n   if (groups) clear(groups);\n+  // 旧详情（含计数/hash/snapshot）不得随概览一起残留：统一清为“无当前详情”占位。\n+  // invalidateData() 之后会以离线文案再次覆盖本占位，此处不做额外分支。\n+  p1DetailPlaceholder(\"当前无 P1 证据详情：概览读取或导入失败后旧详情已清空，请重新点击“查看证据详情”读取本地 GET /api/p1/evidence/<id>。\");\n }\n \n function p1EntryCard(entry, bucket) {\n",
+        "metadata": {
+          "status": "completed",
+          "truncated": false,
+          "exit": 0
+        }
+      },
+      {
+        "command": {
+          "command": "& \"C:\\Users\\Lenovo\\.workbuddy\\binaries\\node\\versions\\22.22.2-3\\node.exe\" --check app.js; Write-Output \"node_exit=$LASTEXITCODE\""
+        },
+        "output": "node_exit=0\r\n",
+        "metadata": {
+          "status": "completed",
+          "truncated": false,
+          "exit": 0
+        }
+      },
+      {
+        "command": {
+          "command": "& \"C:\\Users\\Lenovo\\.workbuddy\\binaries\\python\\versions\\3.13.12\\python.exe\" -c \"import hashlib,pathlib; print(hashlib.sha256(pathlib.Path('app.js').read_bytes()).hexdigest())\""
+        },
+        "output": "5c3b1336a38bb1f0fc3bc9a343f6d5277a18fa825117224249dd4659b4b310ce\r\n",
+        "metadata": {
+          "status": "completed",
+          "truncated": false,
+          "exit": 0
+        }
+      },
+      {
+        "command": {
+          "command": "git status --porcelain; git diff --stat"
+        },
+        "output": " M app.js\n M docs/P1-B-implementation.md\n app.js                      |  3 +++\n docs/P1-B-implementation.md | 60 ++++++++++++++++++++++++++++++++++++++++++---\n 2 files changed, 59 insertions(+), 4 deletions(-)\n",
+        "metadata": {
+          "status": "completed",
+          "truncated": false,
+          "exit": 0
+        }
+      }
+    ]
+  }
 }

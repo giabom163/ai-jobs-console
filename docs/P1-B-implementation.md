@@ -1,7 +1,7 @@
 # P1-B 实现说明：真实证据页面与最小参数修复
 
-版本 `p1-b-v1`，2026-10-16。范围仅限 P1-B（前端真实证据页面 + `server.py` 最小查询参数修复 + 文档归因修正）。
-基线 commit `b6c128a6e497535a0eff44aa46ee66f92ccbf63d`。
+版本 `p1-b-v2`（`p1-b-v1` 的 B1 修订），2026-10-16。范围仅限 P1-B（前端真实证据页面 + `server.py` 最小查询参数修复 + 文档归因修正 + 本文件 v2 的失败态清详情修订）。
+基线 commit `1ff2c026942a51ce30954ac17016233c2f312915`（`p1-b-v1` 原始基线为 `b6c128a6e497535a0eff44aa46ee66f92ccbf63d`）。
 
 状态口径：进度见任务记录；本文件只描述实现与检查证据，**不代表人工验收或产品最终 PASS**。
 **未启动真实服务、未做 GUI/HTTP 验收、未接入真实 DB 样本**；以下“可核验”均指静态/语法层面。
@@ -11,7 +11,7 @@
 | 文件 | 改动 | 结束时 sha256 |
 | --- | --- | --- |
 | `index.html` | 新增 P1 视图（默认视图）与“议题与表达线索”tab；原 4 视图保留 | `60e9e1514ce435c533c62d44bf7771add106ecc1f733c287a85ae2a4b4a8993b` |
-| `app.js` | 新增 P1 概览/详情/导入渲染与事件，复用既有 `h`/`api`/`linkNode`/`kv`/`clear` | `49f5803b6eb9b0d76e29bec3bb93c8a4440484ce07a37ee912fe9d34e1b895af` |
+| `app.js` | 新增 P1 概览/详情/导入渲染与事件，复用既有 `h`/`api`/`linkNode`/`kv`/`clear`；v2：`p1Reset()` 增加清详情占位（见第 12 节） | `5c3b1336a38bb1f0fc3bc9a343f6d5277a18fa825117224249dd4659b4b310ce` |
 | `style.css` | 新增 P1 面板/卡片/热度条/导入折叠样式与 520px 适配 | `b82f015cfcac62536c287d08406905b41e07b9f53ef936c5c54db12bd74e5168` |
 | `server.py` | 仅 `/api/p1/overview` 查询解析加 `keep_blank_values=True` | `9d10382ed02544762b0bb081e7d5fc9203490157d42bc9f05ba879a2ed5d9373` |
 | `docs/P1-A-implementation.md` | 修正两轮检查归因（见第 8 节） | `1381bfe8f429af76b7fce10aee1529deaaa58e8d2c9df1252556f5ce71e079a0` |
@@ -71,6 +71,8 @@
 
 契约仅授权一次 `node --check app.js` 与一次 Python 内存 `compile(server.py)`；执行后不再重跑，也未运行 `manual_p1_check` 或 M1/M3 检查。
 
+> v2（B1 修订）另获授权**一次** `node --check app.js`，记录见第 12 节；本包两次 `node --check` 分属 v1、v2 两轮，各自仅执行一次、均未重跑。v2 **未**再运行 Python 内存 compile（`server.py` 在 v2 未改动）。
+
 1) `node --check app.js`
 
 ```powershell
@@ -101,7 +103,7 @@
 - 保留原始两轮时间（`p1-20261016T011426.810999Z` / `p1-20261016T011551.486950Z`）、exit `1`/`0`、`17/18` 与 `18/18`。
 - 明确第二次**未经申请自动重跑**违反契约，**执行范围 FAIL**；首轮 FAIL 与补充 PASS **并存**，补充 PASS 不覆盖首轮 FAIL；不把“有缺陷证据”当作获准重跑理由。
 - 失败原因标注为**执行者自述、未经独立确认（未知）**；未改原始两轮结果、代码或检查脚本，未运行第三轮。
-- 记录派单契约提供的原审查完整 hash `043b984a651a8badf4518dcfb85cd3dda729b77fc4f7c23edfde20af27ddfc60` 作为审计来源，并注明其与本地 `docs/P1-A-review-input.json` 实测 sha256 `0c36af9ce496d734748bdffab2ed0831180db39a8142880c00ce2a06fe061735` 不同，仅按“派单来源”记录。
+- 记录派单契约提供的原审查完整 hash `043b984a651a8badf4518dcfb85cd3dda729b77fc4f7c23edfde20af27ddfc60` 作为审计来源，并另记本地 `docs/P1-A-review-input.json` 实测 sha256 `0c36af9ce496d734748bdffab2ed0831180db39a8142880c00ce2a06fe061735`。两者是**不同文件**的哈希（前者为派单来源审计文档、后者为本仓库审查输入 JSON），**本就不应相等**，不存在可比性，仅按“派单来源 / 本地输入”分别记录，不作跨文件一致性判断。
 
 P1-A 的检查执行偏离（自动重跑）**不能用本包语法 PASS 覆盖**。
 
@@ -110,6 +112,7 @@ P1-A 的检查执行偏离（自动重跑）**不能用本包语法 PASS 覆盖*
 - **未做 P2**：无增速、无曲线、无 watchlist；概览只有单点当前值。
 - **未做 P3**：无事件关联图、无语义分析（无 ECharts/关系图/曲线/watchlist）。
 - **未启动真实服务、未做 GUI/HTTP/真实 DB 验收**：三条 P1 路由与页面的真实 HTTP 行为、真实 `sentiment.db`、真实取证样本均未验证；`node --check` 与内存 compile 仅为语法证据。
+- **v2 的 GUI 待做（本包未执行，勿当已执行）**：主线程稍后按真实入口执行 —— 先 `GET` 导入一条已取证记录并点击“查看证据详情”使详情/计数/hash/snapshot 正常显示；再在空 textarea 手动提交一条**违反 schema** 的本地记录制造真实 422；核对失败后**旧详情被清空**、显示真实 status/body，且不影响其他功能与初始空 textarea。
 - 未新增抓取器/调度/来源/依赖，未联网、未调用模型、未读凭据、未提交、未切分支。
 
 ## 10. 主线程如何从空 textarea 手动导入一条已取证记录
@@ -147,4 +150,53 @@ P1-A 的检查执行偏离（自动重跑）**不能用本包语法 PASS 覆盖*
 - `source_response_sha256` 是输入声明值，本服务**没有核验源响应字节**；`snapshot` 保存的是输入记录的 JSON，不是 HTTP 原始响应。
 - `snapshot_sha256` 才是本服务实测的本地快照哈希（写入与详情回读两次校验）。
 - 所有计数未知一律 `null`，不得当 0；`view/like/danmaku` 等不得冒充评论数；单点值不是增速、曲线或 watchlist。
-- 本文件的“PASS/exit 0”仅指第 7 节两次有限语法检查；产品行为、HTTP 与 GUI 验收状态为 **BLOCKED（未执行）**，交由主线程真实路径验收。
+- 本文件的“PASS/exit 0”仅指第 7 节（v1：`node --check` 与 Python 内存 compile 各一次）与第 12.3 节（v2：`node --check` 一次）合计三次有限语法检查；产品行为、HTTP 与 GUI 验收状态为 **BLOCKED（未执行）**，交由主线程真实路径验收。
+
+## 12. v2：Luna 独立审计 B1（失败态残留旧详情）修订记录
+
+审计来源：Luna 独立审计文档 hash `d6f935206f26a293eede8dbc46c29ce1f7717fac094824b55fb7d72ba3ae4ae5`（该 hash 对应审计文档本身；本地 `docs/P1-B-review-input.json` 是另一份文件，二者**本不应相等**，不作跨文件比较，且本包未在本轮额外计算该本地文件的 sha256 以免超出授权检查范围）。
+
+### 12.1 缺陷（B1）
+
+- `app.js:652-663` 的 `p1Reset()` 只重置概览（`state.p1`、`#p1-stats`、三个计数、`#p1-groups`），**不清 `#p1-detail-body`**。
+- 因此 `loadP1()` 概览 GET 失败（原 `793-807`）与导入 `POST` 失败（原 `859-866`）调用 `p1Reset()` 后，**先前成功读取的详情/计数/hash/snapshot 仍显示**在“原帖证据详情”面板中，与“旧 P1 展示已清空、未显示缓存”的提示矛盾。
+- 触发路径：先点击“查看证据详情”使详情成功渲染，再让 P1 概览 GET 或导入 POST **单独失败**（同时 `/api/data` 仍成功，故不会走 `invalidateData()`），即可观察到旧详情残留。
+
+### 12.2 最小修复（仅 `app.js`，3 行新增）
+
+- 在 `p1Reset()` 末尾（`#p1-groups` 清空之后）**统一清详情**，复用既有占位函数 `p1DetailPlaceholder()`，不清除其它无关功能：
+
+```diff
+   const groups = $("#p1-groups");
+   if (groups) clear(groups);
++  // 旧详情（含计数/hash/snapshot）不得随概览一起残留：统一清为“无当前详情”占位。
++  // invalidateData() 之后会以离线文案再次覆盖本占位，此处不做额外分支。
++  p1DetailPlaceholder("当前无 P1 证据详情：概览读取或导入失败后旧详情已清空，请重新点击“查看证据详情”读取本地 GET /api/p1/evidence/<id>。");
+ }
+```
+
+- 行差异：`git diff --stat` = `app.js | 3 +++`（1 file changed, 3 insertions(+)）；无删除、无越界、未改 `invalidateData()` 既有离线段（其 `p1DetailPlaceholder("服务离线或读取失败…")` 在其后调用，会覆盖本占位，故属有意保留、不算多余改动）。
+- 因 `p1Reset()` 已被 `loadP1()` 失败、`submitP1Import()` 失败与 `invalidateData()` 三处共同调用，本改动使三处**统一**清详情；保留真实 `p1StatusText`/`p1BodyNode` 状态码与响应体展示，不伪造成功。
+- 未改：`storage.py`/`server.py`/`index.html`/`style.css`/元数据/规则；未重构；`/api/data` 成功路径与初始空 textarea 不变；P2/P3 未做。
+
+### 12.3 有限语法检查（v2，仅一次 `node --check app.js`）
+
+```powershell
+& "C:\Users\Lenovo\.workbuddy\binaries\node\versions\22.22.2-3\node.exe" --check app.js; Write-Output "node_exit=$LASTEXITCODE"
+```
+
+- exit code：`0`
+- stdout：`node_exit=0`
+- stderr：空
+
+结论：v2 仅此一次语法检查通过；**未**再跑 Python compile、**未**跑任何测试/服务/HTTP/GUI。此为语法证据，**不等于** GUI 或真实路径验收。
+
+### 12.4 v2 结束时哈希
+
+- `app.js` sha256：`5c3b1336a38bb1f0fc3bc9a343f6d5277a18fa825117224249dd4659b4b310ce`（v1 为 `49f5803b6eb9b0d76e29bec3bb93c8a4440484ce07a37ee912fe9d34e1b895af`）。
+- `docs/P1-B-implementation.md`：即本 v2 交付文档；其 sha256 以交付记录为准，本包不预填未核值（避免写入未复核数字）。
+
+### 12.5 未执行 / 阻塞
+
+- 未启动真实服务、未做 GUI/HTTP/真实 DB 验收；真实 422 触发与“旧详情被清空”的页面观察由主线程真实入口执行（见第 9、10 节）。本包**不宣称** B1 已获 GUI PASS。
+- P1-A 历史执行偏离 FAIL（自动重跑）继续有效，**不被本 v2 语法 PASS 覆盖**（见第 8 节）。
