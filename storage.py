@@ -1,5 +1,5 @@
 """M1 evidence storage. Standard library, bounded manual batches, no model calls."""
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 import hashlib
 from html import unescape
@@ -141,6 +141,11 @@ def connect(path):
         imported_at TEXT NOT NULL, UNIQUE(identity_key, snapshot_sha256));
       CREATE INDEX IF NOT EXISTS p1_identity ON p1_evidence(identity_key);
       CREATE INDEX IF NOT EXISTS p1_observed ON p1_evidence(observed_at);
+      CREATE TABLE IF NOT EXISTS p1_watch_periods(
+        watch_id TEXT PRIMARY KEY, identity_key TEXT NOT NULL, evidence_id TEXT NOT NULL,
+        entered_at TEXT NOT NULL, expires_at TEXT NOT NULL, entry_reason TEXT NOT NULL,
+        exited_at TEXT, exit_reason TEXT);
+      CREATE INDEX IF NOT EXISTS p1_watch_identity ON p1_watch_periods(identity_key);
     """)
     return db
 
@@ -495,7 +500,7 @@ def p1_overview(db, top_k):
             "identity_total": len(latest), "group_count": len(output), "groups": output,
             "exact_only": True, "empty_state": not latest,
             "note": "仅对精确评论计数降序排名；近似与未知计数不参与排名并单列；view/like/danmaku 等不计入评论数；"
-                    "这是单点当前值，不是增速、曲线或 watchlist"}
+                    "此处为各身份最新观测的单点当前值；带时区的同帖历史与观察周期见 p1_history / p1_watchlist"}
 
 
 def p1_detail(db, root, evidence_id):
@@ -512,3 +517,235 @@ def p1_detail(db, root, evidence_id):
         raise OSError("证据快照哈希不一致")
     return {"evidence": row, "snapshot": json.loads(raw), "snapshot_sha256_verified": True,
             "scope": "manual_evidence_only", "source_response_verified": False}
+
+
+# --- P1-B: bounded watch periods + real per-post observation history (no network, no model) ------
+#
+# p1_evidence stays append-only: p1_import never overwrites an observation. Watch periods are a
+# separate append-only ledger of explicit human joins; exiting or expiring never deletes evidence or
+# history and never renews automatically. All timestamps are real server UTC or the imported,
+# already timezone-checked observed_at; nothing is fabricated.
+
+WATCH_SCHEMA = "p1-watch-v1"
+WATCH_LIMIT = 3
+WATCH_HOURS = 24
+HISTORY_DEFAULT_LIMIT = 500
+HISTORY_MAX_LIMIT = 500
+REASON_MAX = 200
+
+
+class P1NotFound(ValueError):
+    """Referenced evidence_id / watch_id does not exist (server maps to 404)."""
+
+
+class P1Conflict(ValueError):
+    """Live watch conflict: already active, not active, or active cap full (server maps to 409)."""
+
+
+class P1Invalid(ValueError):
+    """Field type or business constraint invalid (server maps to 422)."""
+
+
+def utc_moment(value):
+    dt = datetime.fromisoformat(value)
+    if dt.tzinfo is None or dt.utcoffset() is None:
+        raise ValueError("时间必须带时区")
+    return dt.astimezone(timezone.utc)
+
+
+def p1_bound(value, field):
+    """Optional from/to: must be a timezone-aware ISO-8601 string; returns normalized UTC or None."""
+    if value is None or value == "":
+        return None
+    if not isinstance(value, str):
+        raise P1Invalid(f"{field} 必须为带时区的 ISO-8601 时间字符串")
+    normalized, quality = publication(value)
+    if quality != "valid":
+        raise P1Invalid(f"{field} 必须为带时区的有效时间（from 含、to 不含）")
+    return normalized
+
+
+def watch_reason(value, field="reason"):
+    if not isinstance(value, str):
+        raise P1Invalid(f"{field} 必须为人工填写的短文本（1–{REASON_MAX} 字符）")
+    text = re.sub(r"\s+", " ", value).strip()
+    if not 1 <= len(text) <= REASON_MAX:
+        raise P1Invalid(f"{field} 必须为 1–{REASON_MAX} 字符的人工填写原因")
+    return text
+
+
+def watch_status(row, moment=None):
+    """Derived at read time from the real server UTC now. Expiry is not a background job."""
+    moment = moment or datetime.now(timezone.utc)
+    if row["exited_at"]:
+        return "exited"
+    if utc_moment(row["expires_at"]) <= moment:
+        return "expired"
+    return "active"
+
+
+def watch_period(db, watch_id):
+    return db.execute("SELECT * FROM p1_watch_periods WHERE watch_id=?", (watch_id,)).fetchone()
+
+
+def watch_item(db, row, moment):
+    # evidence_id is the identity's newest real evidence row; it does not follow TopK ranking.
+    latest = db.execute(
+        "SELECT * FROM p1_evidence WHERE identity_key=? ORDER BY observed_at DESC, imported_at DESC, id DESC LIMIT 1",
+        (row["identity_key"],)).fetchone()
+    first = db.execute(
+        "SELECT observed_at FROM p1_evidence WHERE identity_key=? ORDER BY observed_at ASC, imported_at ASC, id ASC LIMIT 1",
+        (row["identity_key"],)).fetchone()
+    return {
+        "watch_id": row["watch_id"],
+        "evidence_id": latest["id"] if latest else row["evidence_id"],
+        "title": latest["title"] if latest else "",
+        "url": latest["url"] if latest else "",
+        "source_name": latest["source_name"] if latest else "",
+        "status": watch_status(row, moment),
+        "entered_at": row["entered_at"], "expires_at": row["expires_at"],
+        "entry_reason": row["entry_reason"], "exited_at": row["exited_at"], "exit_reason": row["exit_reason"],
+        "first_observed_at": first["observed_at"] if first else None,
+        "latest_observed_at": latest["observed_at"] if latest else None,
+    }
+
+
+def p1_watchlist(db, moment=None):
+    """All watch periods (active + expired + exited). Never deletes or rewrites history."""
+    moment = moment or datetime.now(timezone.utc)
+    rows = list(db.execute("SELECT * FROM p1_watch_periods ORDER BY entered_at DESC, watch_id DESC"))
+    items = [watch_item(db, row, moment) for row in rows]
+    active = [item for item in items if item["status"] == "active"]
+    active.sort(key=lambda item: item["latest_observed_at"] or "", reverse=True)
+    return {"schema_version": WATCH_SCHEMA, "active_limit": WATCH_LIMIT,
+            "active": active[:WATCH_LIMIT], "history": items,
+            "empty_state": not items}
+
+
+def p1_watch_add(db, evidence_id, reason, moment=None):
+    """Explicit human join. 24h period from real server UTC now; atomic cap 3; never renews."""
+    if not isinstance(evidence_id, str) or not evidence_id.strip():
+        raise P1Invalid("evidence_id 必须为非空文本")
+    reason = watch_reason(reason, "reason")
+    moment = moment or datetime.now(timezone.utc)
+    row = db.execute("SELECT * FROM p1_evidence WHERE id=?", (evidence_id.strip(),)).fetchone()
+    if row is None:
+        raise P1NotFound("evidence 不存在")
+    with db:
+        periods = list(db.execute("SELECT * FROM p1_watch_periods WHERE identity_key=?", (row["identity_key"],)))
+        if any(watch_status(period, moment) == "active" for period in periods):
+            raise P1Conflict("该原帖已有活跃观察周期；已拒绝重复加入且未延长 24h")
+        active_count = sum(1 for period in db.execute("SELECT * FROM p1_watch_periods")
+                           if watch_status(period, moment) == "active")
+        if active_count >= WATCH_LIMIT:
+            raise P1Conflict(f"活跃观察周期已达上限 {WATCH_LIMIT}；已原子拒绝，未静默扩容")
+        watch_id = "p1w-" + uuid.uuid4().hex
+        db.execute("""INSERT INTO p1_watch_periods(watch_id,identity_key,evidence_id,entered_at,expires_at,
+            entry_reason,exited_at,exit_reason) VALUES(?,?,?,?,?,?,NULL,NULL)""",
+                   (watch_id, row["identity_key"], row["id"], moment.isoformat(),
+                    (moment + timedelta(hours=WATCH_HOURS)).isoformat(), reason))
+    return watch_item(db, watch_period(db, watch_id), moment)
+
+
+def p1_watch_exit(db, watch_id, reason, moment=None):
+    """Explicit human exit. Appends a state change only; never deletes periods, evidence or history."""
+    if not isinstance(watch_id, str) or not watch_id.strip():
+        raise P1Invalid("watch_id 必须为非空文本")
+    reason = watch_reason(reason, "reason")
+    moment = moment or datetime.now(timezone.utc)
+    row = watch_period(db, watch_id.strip())
+    if row is None:
+        raise P1NotFound("观察周期不存在")
+    status = watch_status(row, moment)
+    if status != "active":
+        raise P1Conflict("该观察周期已" + ("退出" if status == "exited" else "到期") + "，不能再退出")
+    with db:
+        db.execute("UPDATE p1_watch_periods SET exited_at=?,exit_reason=? WHERE watch_id=? AND exited_at IS NULL",
+                   (moment.isoformat(), reason, watch_id.strip()))
+    return watch_item(db, watch_period(db, watch_id.strip()), moment)
+
+
+def p1_history(db, evidence_id, from_raw=None, to_raw=None, limit=HISTORY_DEFAULT_LIMIT, offset=0):
+    """Real append-only observation history for one identity, ordered by observed_at.
+
+    Comparison is decided on the complete ordered history first (so a window's first point may
+    reference a real out-of-window previous point), then the display window is applied. Same UTC
+    instant + same count + same source_field merges into one bucket referencing all its evidence;
+    a same-instant conflict is never resolved and blocks later points from borrowing older values.
+    """
+    if not isinstance(evidence_id, str) or not evidence_id.strip():
+        raise P1Invalid("evidence_id 必须为非空文本")
+    if type(limit) is not int or not 1 <= limit <= HISTORY_MAX_LIMIT:
+        raise P1Invalid(f"limit 必须为 1–{HISTORY_MAX_LIMIT} 的整数")
+    if type(offset) is not int or offset < 0:
+        raise P1Invalid("offset 必须为非负整数")
+    window_from = p1_bound(from_raw, "from")
+    window_to = p1_bound(to_raw, "to")
+    if window_from and window_to and utc_moment(window_from) >= utc_moment(window_to):
+        raise P1Invalid("to 必须晚于 from（from 含、to 不含）")
+    anchor = db.execute("SELECT identity_key FROM p1_evidence WHERE id=?", (evidence_id.strip(),)).fetchone()
+    if anchor is None:
+        raise P1NotFound("evidence 不存在")
+    rows = [dict(row) for row in db.execute(
+        "SELECT * FROM p1_evidence WHERE identity_key=? ORDER BY observed_at ASC, imported_at ASC, id ASC",
+        (anchor["identity_key"],))]
+    buckets, index = [], {}
+    for row in rows:
+        bucket = index.get(row["observed_at"])
+        if bucket is None:
+            bucket = {"observed_at": row["observed_at"], "observed_raw": row["observed_raw"],
+                      "evidence_ids": [], "counts": set(), "value": None, "precision": "unknown",
+                      "source_field": ""}
+            index[row["observed_at"]] = bucket
+            buckets.append(bucket)
+        bucket["evidence_ids"].append(row["id"])
+        bucket["counts"].add((row["comment_value"], row["comment_precision"], row["comment_source_field"]))
+    points, previous = [], None
+    for bucket in buckets:
+        conflict = len(bucket["counts"]) > 1
+        if not conflict:
+            bucket["value"], bucket["precision"], bucket["source_field"] = next(iter(bucket["counts"]))
+        point = {"evidence_ids": bucket["evidence_ids"], "observed_at": bucket["observed_at"],
+                 "observed_raw": bucket["observed_raw"],
+                 "comment_count": {"value": bucket["value"], "precision": bucket["precision"],
+                                   "source_field": bucket["source_field"]},
+                 "previous_observed_at": None, "interval_seconds": None, "delta": None,
+                 "rate_per_hour": None, "comparison": None}
+        if conflict:
+            point["comparison"] = "same_time_conflict"
+            previous = None                      # later points must not borrow across a bad bucket
+        elif bucket["precision"] == "unknown" or bucket["value"] is None:
+            point["comparison"] = "unknown"      # never补 0，不作为比较前值
+        elif bucket["precision"] == "approximate":
+            point["comparison"] = "approximate"  # 不补 0，不参与数值比较
+        elif previous is None:
+            point["comparison"] = "single_point"
+            previous = bucket
+        elif previous["source_field"] != bucket["source_field"]:
+            point["comparison"] = "source_changed"   # 口径变化不比较
+            previous = bucket
+        else:
+            seconds = (utc_moment(bucket["observed_at"]) - utc_moment(previous["observed_at"])).total_seconds()
+            point["previous_observed_at"] = previous["observed_at"]
+            point["interval_seconds"] = seconds
+            if seconds <= 0:
+                point["comparison"] = "invalid_interval"   # 时间异常：不算速率
+            else:
+                delta = bucket["value"] - previous["value"]
+                point["delta"] = delta
+                point["rate_per_hour"] = delta * 3600.0 / seconds
+                point["comparison"] = "retraction" if delta < 0 else "comparable"
+                previous = bucket
+        points.append(point)
+    windowed = []
+    for point in points:
+        if window_from and utc_moment(point["observed_at"]) < utc_moment(window_from):
+            continue
+        if window_to and utc_moment(point["observed_at"]) >= utc_moment(window_to):
+            continue
+        windowed.append(point)
+    page = windowed[offset:offset + limit]
+    return {"evidence_id": evidence_id.strip(),
+            "filter": {"from": window_from, "to": window_to, "time_basis": "observed_at"},
+            "points": page, "limit": limit, "offset": offset,
+            "has_more": offset + len(page) < len(windowed)}

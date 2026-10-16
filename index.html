@@ -24,6 +24,7 @@
     <button class="tab" role="tab" id="tab-overview" aria-controls="view-overview" aria-selected="true" data-view="overview" tabindex="0">总览</button>
     <button class="tab" role="tab" id="tab-topics" aria-controls="view-topics" aria-selected="false" data-view="topics" tabindex="-1">议题与表达线索</button>
     <button class="tab" role="tab" id="tab-search" aria-controls="view-search" aria-selected="false" data-view="search" tabindex="-1">原帖检索</button>
+    <button class="tab" role="tab" id="tab-watch" aria-controls="view-watch" aria-selected="false" data-view="watch" tabindex="-1">观察清单</button>
     <button class="tab weak" role="tab" id="tab-admin" aria-controls="view-admin" aria-selected="false" data-view="admin" tabindex="-1">数据管理</button>
   </nav>
 
@@ -134,6 +135,80 @@
         <div class="biz-filters" id="search-filters" aria-label="统一筛选（来源 / 证据类型 / 关键词）"></div>
         <p class="filter-note" id="search-filter-note"></p>
         <div id="search-results" class="p1-cards"></div>
+      </section>
+    </section>
+
+    <!-- 业务四：观察清单（人工加入 / 退出 + 同帖真实历史） -->
+    <section id="view-watch" class="view" role="tabpanel" aria-labelledby="tab-watch" tabindex="0" hidden>
+      <section class="panel">
+        <div class="section-title">
+          <div><p class="eyebrow">WATCHLIST</p><h2>观察清单</h2></div>
+          <div class="card-actions">
+            <button id="watch-reload" class="secondary" type="button">重新读取本地数据</button>
+          </div>
+        </div>
+        <p class="hint">
+          观察清单由人工逐帖加入：加入不抓取、不刷新来源、不自动续期；退出或 24 小时到期只结束观察资格，
+          不删除任何证据与历史。活跃观察最多 3 帖，与 TopK 展示排名无关；掉出 TopK 的原帖仍可按人工导入继续追加真实观测。
+          时间与计数只来自已导入的真实观测，未补造历史。
+        </p>
+        <div id="watch-status" class="biz-status" role="status" aria-live="polite">尚未读取本地数据。</div>
+        <div class="biz-filters" id="watch-filters" aria-label="统一筛选（来源 / 证据类型 / 关键词 / 观测日期窗口）"></div>
+        <p class="filter-note" id="watch-filter-note"></p>
+
+        <h3 class="col-title">活跃观察（最多 3）</h3>
+        <div id="watch-active" class="p1-cards"></div>
+
+        <h3 class="col-title">观察历史（含已退出 / 已到期周期，均可查看）</h3>
+        <div class="table-wrap">
+          <table class="table">
+            <thead>
+              <tr>
+                <th scope="col">原帖</th><th scope="col">来源</th><th scope="col">状态</th><th scope="col">加入时刻</th>
+                <th scope="col">到期时刻</th><th scope="col">加入原因</th><th scope="col">退出时刻 / 原因</th>
+                <th scope="col">首次观测</th><th scope="col">最近观测</th><th scope="col">查看</th>
+              </tr>
+            </thead>
+            <tbody id="watch-history-body">
+              <tr><td colspan="10" class="muted">尚未读取数据。</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div id="watch-detail-actions" class="card-actions"></div>
+        <div id="watch-admin-status" class="admin-status" role="status" aria-live="polite"></div>
+      </section>
+
+      <section class="panel" id="watch-detail">
+        <div class="section-title">
+          <div><p class="eyebrow">PER-POST HISTORY</p><h2 id="watch-detail-title">同帖历史</h2></div>
+        </div>
+        <p class="hint" id="watch-detail-status">
+          从上方选择一个观察周期，查看该原帖的真实观测历史。计数与速率分两张图，缺测不补 0、不做插值；单点只画点并等待第二个观测点。
+        </p>
+        <div class="chart-grid">
+          <figure class="chart-fig">
+            <figcaption id="chart-count-status">累计评论计数（真实观测点）</figcaption>
+            <div id="chart-count" class="chart" role="img" aria-label="累计评论计数图表"></div>
+          </figure>
+          <figure class="chart-fig">
+            <figcaption id="chart-rate-status">每小时变化率（按真实秒数归一）</figcaption>
+            <div id="chart-rate" class="chart" role="img" aria-label="每小时变化率图表"></div>
+          </figure>
+        </div>
+        <h3 class="col-title">可读历史表（同源真实观测）</h3>
+        <div class="table-wrap">
+          <table class="table">
+            <thead>
+              <tr>
+                <th scope="col">观测时刻</th><th scope="col">评论计数</th><th scope="col">精度</th><th scope="col">实际间隔</th>
+                <th scope="col">变化量</th><th scope="col">每小时变化率</th><th scope="col">可比性</th>
+              </tr>
+            </thead>
+            <tbody id="watch-history-points">
+              <tr><td colspan="7" class="muted">尚未选择观察周期。</td></tr>
+            </tbody>
+          </table>
+        </div>
       </section>
     </section>
 
@@ -391,7 +466,7 @@
             <li>模型调用与用量：<b>未接入</b>（情感标签为本地词典粗筛，不产生模型用量）。</li>
             <li>批次取消 / 中止：<b>未接入</b>（无取消接口，只能等待批次结束）。</li>
             <li>导出 / 删除 / 权限：<b>未接入</b>。</li>
-            <li>日期范围筛选 / 热度历史 / 观察清单（watchlist）：<b>未接入</b>（P2 未开始，无对应接口）。</li>
+            <li>日期范围筛选 / 热度历史 / 观察清单（watchlist）：<b>已接入</b>（观测时间窗口筛选、同帖真实历史与人工观察清单，见业务页「观察清单」）。</li>
           </ul>
         </section>
       </div>
@@ -414,6 +489,7 @@
     </aside>
   </div>
 
+  <script src="/vendor/echarts/echarts.min.js" defer></script>
   <script src="/app.js" defer></script>
 </body>
 </html>

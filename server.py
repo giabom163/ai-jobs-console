@@ -23,6 +23,16 @@ ROOT = Path(__file__).resolve().parent
 DB = ROOT / "sentiment.db"
 HOST, PORT = "127.0.0.1", 8790
 LIMIT = 3
+# Exact local static whitelist for the vendored chart library. Only these fixed files are served:
+# the path is compared as an equality key, never concatenated with user input, so no traversal.
+VENDOR_STATIC = {
+    "/vendor/echarts/echarts.min.js": "text/javascript; charset=utf-8",
+    "/vendor/echarts/LICENSE": "text/plain; charset=utf-8",
+    "/vendor/echarts/NOTICE": "text/plain; charset=utf-8",
+    "/vendor/echarts/provenance.json": "application/json; charset=utf-8",
+    "/vendor/echarts/licenses/LICENSE-d3": "text/plain; charset=utf-8",
+}
+HISTORY_QUERY_KEYS = {"evidence_id", "from", "to", "limit", "offset"}
 WRITE_LOCK = threading.Lock()
 REFRESH_LOCK = threading.Lock()
 RUNTIME = {}
@@ -223,6 +233,41 @@ class Handler(BaseHTTPRequestHandler):
                 except (OSError, ValueError) as exc:
                     return self.send(409, {"error": str(exc), "evidence_id": evidence_id})
             return self.send(200, detail) if detail else self.send(404, {"error": "证据不存在"})
+        if path == "/api/p1/watchlist":
+            with connect() as db:
+                return self.send(200, storage.p1_watchlist(db))
+        if path == "/api/p1/history":
+            query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query, keep_blank_values=True)
+            for key in query:
+                if key not in HISTORY_QUERY_KEYS:
+                    raise ValueError(f"history 不接受查询参数 {key}")
+                if len(query[key]) != 1:
+                    raise ValueError(f"history 查询参数 {key} 只接受一个值")
+            if not query.get("evidence_id", [""])[0].strip():
+                raise ValueError("history 必须提供非空 evidence_id")
+            for key in ("from", "to"):
+                if key in query and query[key][0] == "":
+                    raise ValueError(f"{key} 不得为空值（缺省即不按该边界筛选）")
+            limit_raw = query.get("limit", ["500"])[0]
+            offset_raw = query.get("offset", ["0"])[0]
+            if not limit_raw.isdigit():
+                raise ValueError("limit 必须为整数")
+            if not offset_raw.isdigit():
+                raise ValueError("offset 必须为整数")
+            with connect() as db:
+                try:
+                    result = storage.p1_history(db, query["evidence_id"][0], query.get("from", [None])[0],
+                                                query.get("to", [None])[0], int(limit_raw), int(offset_raw))
+                except storage.P1NotFound as exc:
+                    return self.send(404, {"error": str(exc), "status": "rejected"})
+                except storage.P1Invalid as exc:
+                    return self.send(422, {"error": str(exc), "status": "rejected"})
+            return self.send(200, result)
+        if path in VENDOR_STATIC:
+            target = (ROOT / path.lstrip("/")).resolve()
+            if not target.is_relative_to(ROOT.resolve()) or not target.is_file():
+                return self.send(404, {"error": "Not found"})
+            return self.send(200, target.read_bytes(), VENDOR_STATIC[path])
         return self.send(404, {"error": "Not found"})
 
     def do_POST(self):
@@ -304,6 +349,36 @@ class Handler(BaseHTTPRequestHandler):
                     except (OSError, sqlite3.Error) as exc:
                         return self.send(500, {"error": str(exc), "status": "failed"})
                 return self.send(201, result)
+            if path == "/api/p1/watchlist":
+                if set(value) != {"evidence_id", "reason"}:
+                    raise ValueError("观察请求只能且必须包含 evidence_id 和 reason")
+                with connect() as db:
+                    try:
+                        watch = storage.p1_watch_add(db, value.get("evidence_id"), value.get("reason"))
+                    except storage.P1NotFound as exc:
+                        return self.send(404, {"error": str(exc), "status": "rejected"})
+                    except storage.P1Conflict as exc:
+                        return self.send(409, {"error": str(exc), "status": "rejected"})
+                    except storage.P1Invalid as exc:
+                        return self.send(422, {"error": str(exc), "status": "rejected"})
+                    except (OSError, sqlite3.Error) as exc:
+                        return self.send(500, {"error": str(exc), "status": "failed"})
+                return self.send(201, {"watch": watch})
+            if path == "/api/p1/watchlist/exit":
+                if set(value) != {"watch_id", "reason"}:
+                    raise ValueError("退出观察请求只能且必须包含 watch_id 和 reason")
+                with connect() as db:
+                    try:
+                        watch = storage.p1_watch_exit(db, value.get("watch_id"), value.get("reason"))
+                    except storage.P1NotFound as exc:
+                        return self.send(404, {"error": str(exc), "status": "rejected"})
+                    except storage.P1Conflict as exc:
+                        return self.send(409, {"error": str(exc), "status": "rejected"})
+                    except storage.P1Invalid as exc:
+                        return self.send(422, {"error": str(exc), "status": "rejected"})
+                    except (OSError, sqlite3.Error) as exc:
+                        return self.send(500, {"error": str(exc), "status": "failed"})
+                return self.send(200, {"watch": watch})
             if path == "/api/refresh":
                 with connect() as db:
                     feeds = [dict(x) for x in db.execute("SELECT * FROM feeds ORDER BY id LIMIT ?", (LIMIT,))]

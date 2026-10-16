@@ -37,7 +37,18 @@ const state = {
   drawerTrigger: null,
   topK: "3",
   overviewToken: 0,               // 概览请求令牌：过期响应不得写状态
-  drawerToken: 0                  // 抽屉请求令牌：过期响应不得写状态
+  drawerToken: 0,                 // 抽屉请求令牌：过期响应不得写状态
+  watch: null,                    // GET /api/p1/watchlist 真实返回
+  watchToken: 0,                  // 观察清单请求令牌
+  historyToken: 0,                // 同帖历史请求令牌
+  history: null,                  // 当前选中周期的真实历史点
+  selectedWatchId: null,
+  windowCandidates: null,         // 观测窗口内：evidence_id -> 窗口内最新真实观测快照
+  windowFrom: null,               // 已应用窗口起点（显式 +08:00 字符串）或 null
+  windowTo: null,                 // 已应用窗口终点（不含观测时刻）或 null
+  windowInput: { from: "", to: "" },
+  groupMeta: {},
+  charts: { count: null, rate: null }
 };
 
 // 概览始终按候选上限（3）载入全部候选，展示 K 由前端在选择范围内重算，避免后端 top_k 截断。
@@ -152,6 +163,35 @@ function fmtTime(value) {
 function fmtRatio(value) {
   if (value === null || value === undefined) return "—（空表）";
   return (value * 100).toFixed(1) + "%";
+}
+
+// 观测窗口控件值（datetime-local，按 Asia/Shanghai UTC+08:00 解释）→ 显式带时区字符串。
+// 返回 undefined 表示格式非法，null 表示留空（不按该边界筛选）。
+function toWindowIso(value) {
+  if (!value) return null;
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?$/.exec(value);
+  if (!match) return undefined;
+  const seconds = match[6] || "00";
+  return `${match[1]}-${match[2]}-${match[3]}T${match[4]}:${match[5]}:${seconds}${CN_OFFSET}`;
+}
+
+function fmtNumber(value) {
+  if (typeof value !== "number" || !Number.isFinite(value)) return "未知";
+  return Number.isInteger(value) ? String(value) : value.toFixed(3);
+}
+
+function formatInterval(seconds) {
+  if (typeof seconds !== "number" || !Number.isFinite(seconds)) return "—";
+  if (seconds <= 0) return `${seconds} 秒（时间异常）`;
+  const minutes = seconds / 60;
+  if (minutes < 60) return `${Math.round(minutes * 10) / 10} 分钟`;
+  const hours = Math.floor(minutes / 60);
+  const rest = Math.round(minutes - hours * 60);
+  return rest ? `${hours} 小时 ${rest} 分` : `${hours} 小时`;
+}
+
+function chartLib() {
+  return typeof window !== "undefined" && window.echarts ? window.echarts : null;
 }
 
 function qualityLabel(quality) {
@@ -638,6 +678,21 @@ const P1_KIND_LABELS = {
   source_summary: "来源摘要"
 };
 const P1_PRECISION_LABELS = { exact: "精确", approximate: "约数", unknown: "未知" };
+// 观察周期状态与历史可比性：只做数据质量解释，不含情绪、因果、群体或事件判断。
+const WATCH_STATUS_LABELS = { active: "观察中", expired: "已到期（观察资格结束）", exited: "已人工退出" };
+const COMPARISON_LABELS = {
+  single_point: "单点（等待第二个观测点）",
+  comparable: "可比（精确计数、口径一致）",
+  retraction: "回撤（计数减少，显示负变化）",
+  same_time_conflict: "同刻冲突（同刻不同计数，不选赢家、不比较）",
+  unknown: "计数未知（不补 0，不参与比较）",
+  approximate: "约数（不补 0，不参与数值比较）",
+  source_changed: "口径变化（来源字段变化，不比较）",
+  invalid_interval: "时间异常（间隔非正，不计算速率）"
+};
+// 观测窗口控件按界面明示的 Asia/Shanghai UTC+08:00 解释，并转成显式带时区字符串再请求。
+const CN_OFFSET = "+08:00";
+const FILTER_HOSTS = ["overview-filters", "topics-filters", "search-filters", "watch-filters"];
 // 其他计数的业务词映射：只保留中文口径，未知字段在业务中省略，不回显原始字段名。
 const P1_OTHER_LABELS = {
   view: "播放",
@@ -694,8 +749,8 @@ function p1OtherCountsNode(other) {
 }
 
 function setBizStatus(kind, text) {
-  // 业务页三处状态一致：导航切换不会掩盖真实读取状态。
-  for (const id of ["overview-status", "topics-status", "search-status"]) {
+  // 业务页状态一致：导航切换不会掩盖真实读取状态（含观察清单）。
+  for (const id of ["overview-status", "topics-status", "search-status", "watch-status"]) {
     const el = $("#" + id);
     if (!el) continue;
     el.classList.remove("error", "ok");
@@ -736,9 +791,22 @@ function p1Unranked(entries) {
   return entries.filter((entry) => !p1IsExact(entry));
 }
 
+function p1WindowActive() {
+  return !!(state.windowFrom || state.windowTo);
+}
+
+// 日期窗口内每个身份的“窗口内最新真实观测”快照集合；窗口生效但尚未载入时返回空，
+// 绝不用窗口外最新值冒充窗口内结果。
+function p1ActiveEntries() {
+  if (p1WindowActive()) {
+    return state.windowCandidates ? Array.from(state.windowCandidates.values()) : [];
+  }
+  return state.p1Entries;
+}
+
 function p1FilteredEntries() {
   const filters = state.filters;
-  return state.p1Entries.filter((entry) => {
+  return p1ActiveEntries().filter((entry) => {
     if (filters.source !== "all" && (entry.source_name || "") !== filters.source) return false;
     if (filters.kind !== "all" && (entry.evidence_kind || "") !== filters.kind) return false;
     if (filters.keyword) {
@@ -752,16 +820,21 @@ function p1FilteredEntries() {
 
 function p1FilterSummary(filtered) {
   const filters = state.filters;
+  const active = p1ActiveEntries();
+  const windowText = p1WindowActive()
+    ? `观测窗口 ${fmtTime(state.windowFrom)} 起（含）— ${state.windowTo ? fmtTime(state.windowTo) + " 止（不含）" : "至最新观测"}`
+    : "观测窗口=全部观测时间（未按日期筛选）";
   const parts = [
     `来源=${filters.source === "all" ? "全部" : filters.source}`,
     `证据类型=${filters.kind === "all" ? "全部" : p1KindLabel(filters.kind)}`,
-    `关键词=${filters.keyword ? filters.keyword : "（无）"}`
+    `关键词=${filters.keyword ? filters.keyword : "（无）"}`,
+    windowText
   ];
-  return `统一筛选：${parts.join(" · ")}；本次已载入原帖 ${state.p1Entries.length} 条，筛选后 ${filtered.length} 条。`;
+  return `统一筛选：${parts.join(" · ")}；本次符合观测窗口的原帖候选（同一分母）${active.length} 条，其他筛选后 ${filtered.length} 条。`;
 }
 
 function p1ContentNote() {
-  const ids = state.p1Entries.map((entry) => entry.evidence_id);
+  const ids = p1ActiveEntries().map((entry) => entry.evidence_id);
   const missing = ids.filter((id) => !(state.p1Content[id] && state.p1Content[id].status === "ok")).length;
   return missing
     ? `（${missing} 条材料的正文/来源摘要未载入，关键词只匹配标题与来源。）`
@@ -771,7 +844,7 @@ function p1ContentNote() {
 function buildFilterBars() {
   const sources = [...new Set(state.p1Entries.map((entry) => entry.source_name).filter(Boolean))].sort();
   const kinds = [...new Set(state.p1Entries.map((entry) => entry.evidence_kind).filter(Boolean))];
-  for (const id of ["overview-filters", "topics-filters", "search-filters"]) {
+  for (const id of FILTER_HOSTS) {
     const host = $("#" + id);
     if (!host) continue;
     clear(host);
@@ -783,9 +856,21 @@ function buildFilterBars() {
       kinds.map((kind) => h("option", { value: kind, text: p1KindLabel(kind) })));
     const keyword = h("input", { type: "search", class: "flt-keyword", "aria-label": "关键词筛选",
       placeholder: "标题 / 内容 / 来源关键词", autocomplete: "off" });
+    // 观测窗口（后端 API 已支持才放控件）：时间按 Asia/Shanghai UTC+08:00 解释，起点含、终点不含。
+    const from = h("input", { type: "datetime-local", class: "flt-from", step: "60",
+      "aria-label": "观测窗口起点（Asia/Shanghai UTC+08:00，含）" });
+    const to = h("input", { type: "datetime-local", class: "flt-to", step: "60",
+      "aria-label": "观测窗口终点（Asia/Shanghai UTC+08:00，不含）" });
+    const applyWindow = () => setWindowInputs(from.value, to.value);
+    from.addEventListener("change", applyWindow);
+    to.addEventListener("change", applyWindow);
+    const clearWindow = h("button", { class: "link flt-clear", type: "button",
+      onclick: () => setWindowInputs("", "") }, "清除观测窗口");
     sourceSelect.value = state.filters.source;
     kindSelect.value = state.filters.kind;
     keyword.value = state.filters.keyword;
+    from.value = state.windowInput.from;
+    to.value = state.windowInput.to;
     sourceSelect.addEventListener("change", () => { state.filters.source = sourceSelect.value; renderBusinessViews(); });
     kindSelect.addEventListener("change", () => { state.filters.kind = kindSelect.value; renderBusinessViews(); });
     keyword.addEventListener("input", () => {
@@ -795,21 +880,30 @@ function buildFilterBars() {
     host.append(
       h("label", { class: "flt" }, h("span", { class: "flt-label" }, "来源"), sourceSelect),
       h("label", { class: "flt" }, h("span", { class: "flt-label" }, "证据类型"), kindSelect),
-      h("label", { class: "flt flt-wide" }, h("span", { class: "flt-label" }, "关键词"), keyword)
+      h("label", { class: "flt flt-wide" }, h("span", { class: "flt-label" }, "关键词"), keyword),
+      h("label", { class: "flt" }, h("span", { class: "flt-label" }, "观测窗口起点（含）"), from),
+      h("label", { class: "flt" }, h("span", { class: "flt-label" }, "观测窗口终点（不含）"), to),
+      h("div", { class: "flt flt-wide flt-note" },
+        h("span", { class: "hint" }, "窗口按观测时间（Asia/Shanghai UTC+08:00）筛选，起点含、终点不含，终点须晚于起点；总览 / 议题 / 检索 / 观察清单共用同一窗口与分母。"),
+        clearWindow)
     );
   }
 }
 
 function syncFilterBars() {
-  for (const id of ["overview-filters", "topics-filters", "search-filters"]) {
+  for (const id of FILTER_HOSTS) {
     const host = $("#" + id);
     if (!host) continue;
     const sourceSelect = $(".flt-source", host);
     const kindSelect = $(".flt-kind", host);
     const keyword = $(".flt-keyword", host);
+    const from = $(".flt-from", host);
+    const to = $(".flt-to", host);
     if (sourceSelect) sourceSelect.value = state.filters.source;
     if (kindSelect) kindSelect.value = state.filters.kind;
     if (keyword) keyword.value = state.filters.keyword;
+    if (from) from.value = state.windowInput.from;
+    if (to) to.value = state.windowInput.to;
   }
 }
 
@@ -832,7 +926,7 @@ function p1HeatNode(label, entries) {
   return h("div", { class: "heat-inner" },
     h("p", { class: "heat-value" }, counted ? String(count.value) : "未知"),
     h("p", { class: "heat-cap" }, counted
-      ? `评论数（${p1PrecisionLabel(count.precision)}）· 该原帖历史累计评论数，单点观测，不代表近 7 天新增或增速。`
+      ? `评论数（${p1PrecisionLabel(count.precision)}）· 该原帖历史累计评论数的最新真实观测；逐帖计数与速率曲线见「观察清单」。`
       : `评论数未知（${p1PrecisionLabel(count.precision)}）· 不计入 0，也不参与排名。`),
     h("dl", { class: "kv" },
       kv("所属议题", label),
@@ -846,7 +940,7 @@ function p1BusinessCard(entry, rank) {
   const count = entry.comment_count || {};
   const counted = count.value !== null && count.value !== undefined;
   const heat = counted
-    ? `评论数 ${count.value}（${p1PrecisionLabel(count.precision)}）· 该原帖历史累计，单点观测，不代表近期新增。`
+    ? `评论数 ${count.value}（${p1PrecisionLabel(count.precision)}）· 该原帖历史累计的最新真实观测；逐帖曲线见「观察清单」。`
     : `评论数未知（${p1PrecisionLabel(count.precision)}）· 不计入 0，也不参与排名。`;
   const showRank = typeof rank === "number";
   return h("article", { class: "card p1-entry" },
@@ -867,12 +961,14 @@ function p1BusinessCard(entry, rank) {
       isSafeUrl(entry.url)
         ? h("a", { class: "link", href: entry.url, target: "_blank", rel: "noopener noreferrer" }, "查看原帖")
         : null
-    )
+    ),
+    // 明确的人工加入观察入口（小表单可键盘操作，不使用 prompt）。
+    watchEntryControl(entry)
   );
 }
 
 function p1TopicSummary(label, entries) {
-  const meta = ((state.p1.groups || []).find((group) => group.group_label === label)) || {};
+  const meta = (state.groupMeta || {})[label] || {};
   const exactCount = p1ExactSorted(entries).length;
   return h("div", null,
     h("h3", null, label),
@@ -894,6 +990,11 @@ function p1Reset() {
   state.p1Entries = [];
   state.p1Content = {};
   state.selectedTopic = null;
+  state.windowCandidates = null;
+  state.history = null;
+  state.selectedWatchId = null;
+  state.groupMeta = {};
+  clearWatchCharts();
   const stats = $("#overview-stats");
   if (stats) stats.hidden = true;
   for (const id of ["ov-identity", "ov-groups", "ov-observed"]) {
@@ -943,7 +1044,7 @@ function renderOverview(overview, filtered) {
   if (stats) stats.hidden = false;
   $("#ov-identity").textContent = String(overview.identity_total ?? 0);
   $("#ov-groups").textContent = String(overview.group_count ?? 0);
-  $("#ov-observed").textContent = p1NewestObservedText(state.p1Entries);
+  $("#ov-observed").textContent = p1NewestObservedText(p1ActiveEntries());
 
   const groups = groupFilteredEntries(filtered);
   const list = $("#overview-topics");
@@ -999,8 +1100,7 @@ function renderTopics(filtered) {
   }
   const selected = groups.has(state.selectedTopic) ? state.selectedTopic : groups.keys().next().value;
   state.selectedTopic = selected;
-  const backend = {};
-  for (const group of state.p1.groups || []) backend[group.group_label] = group;
+  const backend = state.groupMeta || {};
   for (const [label, entries] of groups) {
     const meta = backend[label] || {};
     const exactCount = p1ExactSorted(entries).length;
@@ -1038,9 +1138,9 @@ function renderSearch(filtered) {
   const host = $("#search-results");
   clear(host);
   if (!filtered.length) {
-    host.append(h("p", { class: "empty" }, state.p1Entries.length
-      ? "当前筛选无匹配原帖（范围仅为本次已载入的原帖）。"
-      : "暂无可检索的原帖材料（本次已载入候选 0 条）。"));
+    host.append(h("p", { class: "empty" }, p1ActiveEntries().length
+      ? "当前筛选无匹配原帖（范围仅为本次符合观测窗口的原帖候选）。"
+      : "暂无可检索的原帖材料（本次符合观测窗口的候选 0 条）。"));
   } else {
     for (const entry of filtered) host.append(p1BusinessCard(entry));
   }
@@ -1061,13 +1161,29 @@ function applyP1(data) {
   }
 }
 
+function computeGroupMeta() {
+  const meta = {};
+  for (const entry of p1ActiveEntries()) {
+    const label = entry.group_label || "（未命名分组）";
+    if (!meta[label]) meta[label] = { identity_count: 0 };
+    meta[label].identity_count += 1;
+  }
+  state.groupMeta = meta;
+}
+
 function renderBusinessViews() {
   const overview = state.p1;
-  const filtered = p1FilteredEntries();
   if (!overview || overview.empty_state || !(overview.groups || []).length) {
+    state.groupMeta = {};
     renderBusinessEmpty();
     return;
   }
+  if (p1WindowActive() && state.windowCandidates === null) {
+    renderWindowPending();
+    return;
+  }
+  computeGroupMeta();
+  const filtered = p1FilteredEntries();
   renderOverview(overview, filtered);
   renderTopics(filtered);
   renderSearch(filtered);
@@ -1091,7 +1207,401 @@ async function enrichP1Contents(token) {
   }));
 }
 
-/* ---------- 业务详情侧抽屉（不含 snapshot / 哈希 / 路径 / 字段名） ---------- */
+/* ---------- 观测窗口 / 同帖历史 / 观察清单（真实 API，不抓取、不补 0） ---------- */
+
+// 稳定分页遍历：has_more 为真时继续请求；达到分页上限则明确标为截断，绝不伪称完整历史。
+async function fetchHistoryPoints(evidenceId, token) {
+  const from = state.windowFrom;
+  const to = state.windowTo;
+  let offset = 0;
+  const all = [];
+  let truncated = false;
+  for (let page = 0; page < 20; page += 1) {
+    const query = new URLSearchParams({ evidence_id: evidenceId, limit: "500", offset: String(offset) });
+    if (from) query.set("from", from);
+    if (to) query.set("to", to);
+    const data = await api(`/api/p1/history?${query.toString()}`);
+    const points = data.points || [];
+    all.push(...points);
+    if (!data.has_more) return { points: all, truncated };
+    if (!points.length) { truncated = true; return { points: all, truncated }; }
+    offset += points.length;
+  }
+  return { points: all, truncated: true };
+}
+
+async function loadWindowCandidates(token) {
+  if (!p1WindowActive()) return null;
+  const candidates = new Map();
+  for (const entry of state.p1Entries) {
+    const history = await fetchHistoryPoints(entry.evidence_id, token);
+    if (history === null || token !== state.overviewToken) return null;
+    if (!history.points.length) continue;   // 窗口内无该帖观测：不进入分母
+    const last = history.points[history.points.length - 1];
+    candidates.set(entry.evidence_id, { ...entry, observed_at: last.observed_at,
+      comment_count: last.comment_count, window_truncated: history.truncated });
+  }
+  return candidates;
+}
+
+function setWindowInputs(fromValue, toValue) {
+  state.windowInput = { from: fromValue || "", to: toValue || "" };
+  const isoFrom = toWindowIso(state.windowInput.from);
+  const isoTo = toWindowIso(state.windowInput.to);
+  if (isoFrom === undefined || isoTo === undefined) {
+    show("观测窗口时间格式非法，未应用；请使用日期时间控件（Asia/Shanghai UTC+08:00）。", true);
+    return;
+  }
+  if (isoFrom && isoTo && new Date(isoTo) <= new Date(isoFrom)) {
+    show("观测窗口终点必须晚于起点（起点含、终点不含），未应用。", true);
+    return;
+  }
+  state.windowFrom = isoFrom;
+  state.windowTo = isoTo;
+  syncFilterBars();
+  loadP1();                                  // 与总览 / 议题 / 检索共用同一窗口与分母
+  loadWatchlist();
+  if (state.selectedWatchId) loadWatchHistory(state.selectedWatchId);
+}
+
+function renderWindowPending() {
+  state.groupMeta = {};
+  for (const id of ["overview-topics", "topic-list", "search-results", "topic-topk"]) {
+    const el = $("#" + id);
+    if (!el) continue;
+    clear(el);
+    el.append(h("p", { class: "muted" }, "正在按观测窗口读取各原帖窗口内最新真实观测…（窗口外最新值不并入）"));
+  }
+  for (const id of ["overview-heat", "topic-summary"]) {
+    const el = $("#" + id);
+    if (el) { clear(el); }
+  }
+  for (const id of ["overview-filter-note", "topics-filter-note", "search-filter-note"]) {
+    const el = $("#" + id);
+    if (el) el.textContent = p1FilterSummary([]);
+  }
+}
+
+/* ---------- 观察清单：人工加入 / 退出 + 同帖双图与可读历史表 ---------- */
+
+function watchRecordFor(evidenceId) {
+  const items = (state.watch && state.watch.history) || [];
+  return items.find((item) => item.evidence_id === evidenceId) || null;
+}
+
+function setWatchAdminStatus(kind, text, bodyNode) {
+  const host = $("#watch-admin-status");
+  if (!host) return;
+  clear(host);
+  host.classList.remove("error", "ok");
+  if (kind === "error") host.classList.add("error");
+  else if (kind === "ok") host.classList.add("ok");
+  host.append(h("p", { class: kind === "error" ? "error-text" : "muted" }, text));
+  if (bodyNode) host.append(bodyNode);
+}
+
+async function submitWatchAdd(evidenceId, reason, form) {
+  const text = (reason || "").trim();
+  if (!text || text.length > 200) {
+    show("请填写 1–200 字符的人工加入原因（小表单，不使用浏览器弹窗）。", true);
+    return;
+  }
+  try {
+    const result = await api("/api/p1/watchlist", { method: "POST", body: { evidence_id: evidenceId, reason: text } });
+    show(`已加入观察（${WATCH_STATUS_LABELS[result.watch.status] || result.watch.status}）：24 小时后观察资格自然结束，不自动续期，不触发采集。`);
+    if (form) form.hidden = true;
+    await loadWatchlist();
+    renderBusinessViews();
+  } catch (err) {
+    show(`加入观察失败（${p1StatusText(err)}）：原帖、证据与历史均未改变。`, true);
+    setWatchAdminStatus("error", `加入观察失败（${p1StatusText(err)}）：${(err && err.message) || ""}`, p1BodyNode(err));
+  }
+}
+
+async function submitWatchExit(watchId, reason, form) {
+  const text = (reason || "").trim();
+  if (!text || text.length > 200) {
+    show("请填写 1–200 字符的人工退出原因（小表单，不使用浏览器弹窗）。", true);
+    return;
+  }
+  try {
+    const result = await api("/api/p1/watchlist/exit", { method: "POST", body: { watch_id: watchId, reason: text } });
+    show(`已退出观察（${WATCH_STATUS_LABELS[result.watch.status] || result.watch.status}）：历史与证据保留，未删除。`);
+    if (form) form.hidden = true;
+    await loadWatchlist();
+    renderBusinessViews();
+  } catch (err) {
+    show(`退出观察失败（${p1StatusText(err)}）：观察周期与历史均未改变。`, true);
+    setWatchAdminStatus("error", `退出观察失败（${p1StatusText(err)}）：${(err && err.message) || ""}`, p1BodyNode(err));
+  }
+}
+
+function watchReasonForm(submitLabel, onSubmit) {
+  const input = h("input", { type: "text", maxlength: "200", class: "watch-reason",
+    placeholder: "人工填写原因（1–200 字符）", "aria-label": "观察原因" });
+  const form = h("form", { class: "watch-form" },
+    h("label", { class: "watch-label" }, submitLabel.replace("确认", "") + "原因", input),
+    h("div", { class: "card-actions" },
+      h("button", { class: "secondary", type: "submit" }, submitLabel),
+      h("button", { class: "link", type: "button", onclick: () => { form.hidden = true; } }, "取消")));
+  form.hidden = true;
+  form.addEventListener("submit", (event) => { event.preventDefault(); onSubmit(input.value, form); });
+  return { form, input };
+}
+
+function watchEntryControl(entry) {
+  const record = watchRecordFor(entry.evidence_id);
+  if (record && record.status === "active") {
+    return h("span", { class: "chip watch-chip" }, "已加入观察（观察中）");
+  }
+  const { form, input } = watchReasonForm("确认加入观察", (value, node) => submitWatchAdd(entry.evidence_id, value, node));
+  const toggle = h("button", { class: "secondary", type: "button", onclick: () => {
+    form.hidden = !form.hidden;
+    if (!form.hidden) input.focus();
+  } }, "加入观察");
+  return h("div", { class: "watch-entry" }, toggle, form);
+}
+
+function watchStatusText(item) {
+  if (item.status === "active") {
+    const expires = new Date(item.expires_at).getTime();
+    const left = expires - Date.now();
+    if (Number.isFinite(left) && left > 0) {
+      return `观察中 · 距到期 ${Math.floor(left / 3600000)} 小时 ${Math.round((left % 3600000) / 60000)} 分`;
+    }
+    return "观察中";
+  }
+  return WATCH_STATUS_LABELS[item.status] || item.status || "未知";
+}
+
+function watchActiveCard(item) {
+  const { form, input } = watchReasonForm("确认退出观察", (value, node) => submitWatchExit(item.watch_id, value, node));
+  const toggle = h("button", { class: "secondary", type: "button", onclick: () => {
+    form.hidden = !form.hidden;
+    if (!form.hidden) input.focus();
+  } }, "退出观察");
+  return h("article", { class: "card p1-entry watch-card" },
+    h("div", { class: "meta" },
+      h("span", { class: "badge pos" }, "观察中"),
+      h("span", { class: "chip" }, `来源 ${item.source_name || "?"}`)),
+    h("h3", null, linkNode(item.url, item.title || "（无标题）")),
+    h("dl", { class: "kv" },
+      kv("加入原因", item.entry_reason || "—"),
+      kv("加入时刻（服务器 UTC）", fmtTime(item.entered_at)),
+      kv("24h 到期", `${fmtTime(item.expires_at)}（${watchStatusText(item)}）`),
+      kv("首次真实观测", fmtTime(item.first_observed_at)),
+      kv("最近真实观测", fmtTime(item.latest_observed_at))),
+    h("div", { class: "card-actions" },
+      h("button", { class: "secondary", type: "button", onclick: () => loadWatchHistory(item.watch_id) }, "查看同帖历史与曲线"),
+      toggle),
+    form);
+}
+
+function watchHistoryRow(item) {
+  return h("tr", null,
+    h("td", null, linkNode(item.url, item.title || "（无标题）")),
+    h("td", null, item.source_name || "—"),
+    h("td", null, WATCH_STATUS_LABELS[item.status] || item.status || "—"),
+    h("td", null, fmtTime(item.entered_at)),
+    h("td", null, fmtTime(item.expires_at)),
+    h("td", null, item.entry_reason || "—"),
+    h("td", null, item.exited_at ? `${fmtTime(item.exited_at)} · ${item.exit_reason || "—"}` : "—"),
+    h("td", null, fmtTime(item.first_observed_at)),
+    h("td", null, fmtTime(item.latest_observed_at)),
+    h("td", null, h("button", { class: "link", type: "button", onclick: () => loadWatchHistory(item.watch_id) }, "查看")));
+}
+
+function renderWatchlist() {
+  const data = state.watch;
+  const activeHost = $("#watch-active");
+  const historyBody = $("#watch-history-body");
+  if (activeHost) clear(activeHost);
+  if (historyBody) clear(historyBody);
+  if (!data) return;
+  const active = data.active || [];
+  const history = data.history || [];
+  if (activeHost) {
+    if (!active.length) {
+      activeHost.append(h("p", { class: "empty" },
+        "当前没有活跃观察周期。请到「议题与表达线索 / 原帖检索」在原帖卡片上使用「加入观察」小表单人工加入（不抓取、不自动续期）。"));
+    }
+    for (const item of active) activeHost.append(watchActiveCard(item));
+  }
+  if (historyBody) {
+    if (!history.length) {
+      historyBody.append(h("tr", null, h("td", { colspan: "10", class: "muted" }, "还没有任何观察周期。")));
+    }
+    for (const item of history) historyBody.append(watchHistoryRow(item));
+  }
+  setBizStatus("ok", `观察清单：活跃 ${active.length} / ${data.active_limit ?? 3}，历史周期 ${history.length}（含已退出 / 已到期）。观察资格不随关键词或日期筛选变化。`);
+}
+
+function clearWatchCharts() {
+  for (const key of ["count", "rate"]) {
+    const chart = state.charts[key];
+    if (chart && typeof chart.dispose === "function") { try { chart.dispose(); } catch (err) { /* 忽略 dispose 失败 */ } }
+    state.charts[key] = null;
+  }
+  for (const id of ["chart-count", "chart-rate"]) {
+    const el = $("#" + id);
+    if (el) clear(el);
+  }
+}
+
+function renderWatchPoints(points, truncated) {
+  const body = $("#watch-history-points");
+  if (!body) return;
+  clear(body);
+  if (!points || !points.length) {
+    body.append(h("tr", null, h("td", { colspan: "7", class: "muted" },
+      "该观测窗口内没有真实观测点；不拿窗口外的最新值冒充窗口内结果。")));
+    return;
+  }
+  for (const point of points) {
+    const count = point.comment_count || {};
+    const known = count.precision === "exact" && count.value !== null && count.value !== undefined;
+    const comparable = ["comparable", "retraction"].includes(point.comparison);
+    let label = COMPARISON_LABELS[point.comparison] || point.comparison || "—";
+    if (point.previous_observed_at && !comparable) {
+      label += "；参考前值在窗口外，不据此改判";
+    }
+    body.append(h("tr", null,
+      h("td", null, fmtTime(point.observed_at)),
+      h("td", { class: "num" }, known ? String(count.value) : "未知"),
+      h("td", null, p1PrecisionLabel(count.precision)),
+      h("td", { class: "num" }, formatInterval(point.interval_seconds)),
+      h("td", { class: "num" }, point.delta === null || point.delta === undefined ? "—" : String(point.delta)),
+      h("td", { class: "num" }, point.rate_per_hour === null || point.rate_per_hour === undefined
+        ? "—" : `${fmtNumber(point.rate_per_hour)} 条/小时`),
+      h("td", null, label)));
+  }
+  if (truncated) {
+    body.append(h("tr", null, h("td", { colspan: "7", class: "error-text" },
+      "历史分页达到取数上限，本表仅为已取到的部分，不声称完整历史。")));
+  }
+}
+
+function renderChart(key, label, points, valueOf, captionId) {
+  const el = $("#" + key);
+  const caption = $("#" + captionId);
+  const series = points.map((point) => ({ time: point.observed_at, value: valueOf(point) }));
+  const known = series.filter((item) => item.value !== null && item.value !== undefined);
+  if (!points.length) {
+    if (caption) caption.textContent = `${label}：窗口内无观测点（不绘图、不补 0）`;
+    if (el) clear(el);
+    return;
+  }
+  if (caption) {
+    caption.textContent = known.length === 1
+      ? `${label}：仅 1 个真实观测点，等待第二个观测点（不补 0、不插值、不声称增速）`
+      : `${label}：${known.length} 个可比真实观测点（缺测/未知保留断点，不补 0、不插值）`;
+  }
+  const lib = chartLib();
+  if (!lib) {
+    if (el) {
+      clear(el);
+      el.append(h("p", { class: "muted" }, "本地图表库不可用；未使用 CDN 或占位曲线，下方可读历史表为同源真实值。"));
+    }
+    return;
+  }
+  if (!el) return;
+  clear(el);
+  const chart = lib.init(el);
+  state.charts[key] = chart;
+  chart.setOption({
+    animation: false,
+    grid: { left: 58, right: 18, top: 16, bottom: 44 },
+    tooltip: {
+      trigger: "axis",
+      formatter: (params) => {
+        const list = Array.isArray(params) ? params : [params];
+        const lines = [];
+        for (const item of list) {
+          const point = series[item.dataIndex] || {};
+          lines.push(`观测时刻 ${fmtTime(point.time)}`);
+          lines.push(`${label}：${point.value === null || point.value === undefined ? "未知（不补 0）" : fmtNumber(point.value)}`);
+        }
+        return lines.join("<br/>");
+      }
+    },
+    xAxis: { type: "category", data: series.map((item) => fmtTime(item.time)), axisLabel: { hideOverlap: true } },
+    yAxis: { type: "value", scale: true },
+    series: [{
+      name: label, type: "line", smooth: false, connectNulls: false, symbol: "circle", symbolSize: 7,
+      data: series.map((item) => (item.value === null || item.value === undefined ? null : item.value))
+    }]
+  });
+  if (typeof chart.resize === "function") chart.resize();
+}
+
+function renderWatchHistory(record, history) {
+  const points = (history && history.points) || [];
+  const truncated = !!(history && history.truncated);
+  const status = $("#watch-detail-status");
+  if (status) {
+    const windowText = p1WindowActive()
+      ? `观测窗口 ${fmtTime(state.windowFrom)} 起（含）— ${state.windowTo ? fmtTime(state.windowTo) + " 止（不含）" : "至最新观测"}`
+      : "观测窗口=全部观测时间";
+    status.textContent = `已选周期：${WATCH_STATUS_LABELS[record.status] || record.status}；加入原因「${record.entry_reason || "—"}」；${windowText}。`
+      + (truncated ? "历史分页已达上限，未声称完整。" : "");
+  }
+  clearWatchCharts();
+  renderChart("chart-count", "累计评论计数", points,
+    (point) => (point.comment_count && point.comment_count.precision === "exact" && point.comment_count.value !== null
+      ? point.comment_count.value : null), "chart-count-status");
+  renderChart("chart-rate", "每小时变化率", points,
+    (point) => (point.rate_per_hour === null || point.rate_per_hour === undefined ? null : point.rate_per_hour),
+    "chart-rate-status");
+  renderWatchPoints(points, truncated);
+}
+
+async function loadWatchHistory(watchId) {
+  const record = ((state.watch && state.watch.history) || []).find((item) => item.watch_id === watchId);
+  if (!record) { show("观察周期不存在，无法读取历史。", true); return; }
+  const token = ++state.historyToken;
+  state.selectedWatchId = watchId;
+  const title = $("#watch-detail-title");
+  if (title) title.textContent = `同帖历史：${record.title || "（无标题）"}`;
+  const status = $("#watch-detail-status");
+  if (status) status.textContent = "正在读取该原帖的真实观测历史…";
+  clearWatchCharts();
+  clear($("#watch-history-points"));
+  $("#watch-history-points").append(h("tr", null, h("td", { colspan: "7", class: "muted" }, "正在读取真实观测历史…")));
+  try {
+    const history = await fetchHistoryPoints(record.evidence_id, token);
+    if (history === null || token !== state.historyToken) return;
+    state.history = history;
+    renderWatchHistory(record, history);
+  } catch (err) {
+    if (token !== state.historyToken) return;
+    state.history = null;
+    clearWatchCharts();
+    renderWatchPoints([], false);
+    if (status) status.textContent = "历史读取失败：旧图与旧表已清空，未显示缓存，也未改判筛选。";
+    setBizStatus("error", `历史读取失败（${p1StatusText(err)}）；旧图与旧表已清空。`);
+    setWatchAdminStatus("error", `历史读取失败（${p1StatusText(err)}）：${(err && err.message) || ""}`, p1BodyNode(err));
+  }
+}
+
+async function loadWatchlist() {
+  const token = ++state.watchToken;
+  try {
+    const data = await api("/api/p1/watchlist");
+    if (token !== state.watchToken) return;
+    state.watch = data;
+    renderWatchlist();
+  } catch (err) {
+    if (token !== state.watchToken) return;
+    state.watch = null;
+    clearWatchCharts();
+    clear($("#watch-active"));
+    clear($("#watch-history-body"));
+    $("#watch-history-body").append(h("tr", null, h("td", { colspan: "10", class: "muted" }, "观察清单读取失败，旧展示已清空。")));
+    setBizStatus("error", `观察清单读取失败（${p1StatusText(err)}）；旧观察展示已清空。`);
+    setWatchAdminStatus("error", `观察清单读取失败（${p1StatusText(err)}）：${(err && err.message) || ""}`, p1BodyNode(err));
+  }
+}
+
 
 function setBackgroundInert(inert) {
   // .skip（跳过导航到主内容）也是可聚焦背景控件，必须一起隔离/恢复，否则抽屉打开时仍可 Tab 到背景。
@@ -1148,7 +1658,7 @@ function renderP1Drawer(data) {
       kv("观测时间", fmtTime(ev.observed_at)),
       kv("发布时间", ev.published_at ? `${fmtTime(ev.published_at)}（${qualityLabel(ev.time_quality)}）` : "（未提供）"),
       kv("评论数（累计口径）", counted
-        ? `${count.value}（${p1PrecisionLabel(count.precision)}）；该原帖历史累计评论数，单点观测，不代表近 7 天新增或增速。`
+        ? `${count.value}（${p1PrecisionLabel(count.precision)}）；该原帖历史累计评论数的最新真实观测，逐帖曲线见「观察清单」。`
         : `未知（${p1PrecisionLabel(count.precision)}）：未采得可核验评论数，不计入 0。`),
       kv("评论数来源", p1CommentSourceLabel(count.source_field)),
       kv("其他计数（不计入评论数）", p1OtherCountsNode(other))
@@ -1196,12 +1706,20 @@ async function loadP1() {
     if (token !== state.overviewToken) return;
     applyP1(data);
     buildFilterBars();
+    state.windowCandidates = null;
     renderBusinessViews();
     await enrichP1Contents(token);
     if (token !== state.overviewToken) return;
+    if (p1WindowActive()) {
+      const candidates = await loadWindowCandidates(token);
+      if (candidates === null || token !== state.overviewToken) return;
+      state.windowCandidates = candidates;
+    }
     renderBusinessViews();
-    setBizStatus("ok", `已读取本地数据：已载入原帖 ${data.identity_total ?? 0} 条，人工分组 ${data.group_count ?? 0} 组。` +
-      `这是单点当前值，不是增速、曲线或观察清单。`);
+    setBizStatus("ok", `已读取本地数据：全库候选 ${data.identity_total ?? 0} 条，人工分组 ${data.group_count ?? 0} 组；`
+      + (p1WindowActive()
+        ? `观测窗口内 ${p1ActiveEntries().length} 条进入同一分母（窗口外最新值不并入）。`
+        : "未按观测日期筛选；逐帖计数与速率曲线见「观察清单」。"));
   } catch (err) {
     if (token !== state.overviewToken) return;
     p1Reset();
@@ -1314,6 +1832,26 @@ function invalidateData() {
   clear($("#import-feed"));
   $("#analysis-body").textContent = "读取失败，旧分析队列已隐藏。";
   p1Reset();
+  state.watch = null;
+  state.watchToken++;
+  state.historyToken++;
+  const watchActive = $("#watch-active");
+  if (watchActive) {
+    clear(watchActive);
+    watchActive.append(h("p", { class: "empty" }, "服务离线或读取失败，观察清单旧展示已清空，未显示缓存。"));
+  }
+  const watchBody = $("#watch-history-body");
+  if (watchBody) {
+    clear(watchBody);
+    watchBody.append(h("tr", null, h("td", { colspan: "10", class: "muted" }, "服务离线或读取失败，旧观察历史已清空。")));
+  }
+  const watchPoints = $("#watch-history-points");
+  if (watchPoints) {
+    clear(watchPoints);
+    watchPoints.append(h("tr", null, h("td", { colspan: "7", class: "muted" }, "服务离线或读取失败，旧历史点已清空。")));
+  }
+  const watchDetail = $("#watch-detail-status");
+  if (watchDetail) watchDetail.textContent = "服务离线或读取失败，旧图与旧表已清空，未显示缓存。";
   setBizStatus("error", "服务离线或读取失败，旧材料与详情已清空，未显示缓存。");
 }
 
@@ -1508,10 +2046,22 @@ $("#runtime-load").addEventListener("click", async () => {
   }
 });
 
-$("#reload-data").addEventListener("click", () => { load(); loadP1(); });
+$("#reload-data").addEventListener("click", () => { load(); loadP1(); loadWatchlist(); });
 for (const id of ["#overview-reload", "#topics-reload", "#search-reload"]) {
   $(id).addEventListener("click", () => { load(); loadP1(); });
 }
+$("#watch-reload").addEventListener("click", () => {
+  load();
+  loadP1();
+  loadWatchlist();
+  if (state.selectedWatchId) loadWatchHistory(state.selectedWatchId);
+});
+window.addEventListener("resize", () => {
+  for (const key of ["count", "rate"]) {
+    const chart = state.charts[key];
+    if (chart && typeof chart.resize === "function") chart.resize();
+  }
+});
 
 /* ---------- 业务导航与 P1 事件绑定 ---------- */
 
@@ -1603,3 +2153,4 @@ $("#analysis-form").addEventListener("submit", async (event) => {
 });
 load();
 loadP1();
+loadWatchlist();
