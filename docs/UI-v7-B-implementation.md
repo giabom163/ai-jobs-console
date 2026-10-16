@@ -4,32 +4,46 @@
 
 - 任务：`gender-ui-v7-b-flash-20261016`；本文件在同一 attempt worktree 内累积记录各窄轮（均为「与方案/审查/实机不符的最小修复」）及本轮文档事实最小更正。
 - 历史前两轮：受限修订轮真实基线 `479e30a691754b6aec726608189af1d2d770cdbf`；B 窄修轮（图表实例 key / resize / 历史区间）真实基线 `c53eef629bd02b0febbf88c18d51195e6c4bba0b`，其只改 `storage.py`、`app.js`、本文件（见 §2.2、§2.8–§2.10）。
-- **执行轮：B 实机打回窄修（300 秒），真实基线 `b4b5a533061a765ee1634d2cf9da241908d69f46`**，只改 `app.js`、`style.css`、`index.html`、本文件四文件（本轮修复条目见 §2.11）；不改 `storage.py`/`server.py`/`analysis.py`、vendor、AGENTS、其他文档、配置、元数据、真实 DB；不联网、不调用模型、不启动产品 8790/GUI 助手、不提交、不切分支、不清理。
-- **本轮：B 实现说明事实最小更正（文档轮），真实基线 `dbfcc98d77080e6e0f0f83f8dad70bf7c43021ee`（当前 HEAD）**：仅按 `docs/UI-v7-B-review.md` 第 3 节更正本文件的修改范围表、修复章节索引与验收事实，不测试、不联网、不提交、不改产品代码，且不清除任何历史失败记录（见 §3）。
+- **历史轮：B 实机打回窄修（300 秒），真实基线 `b4b5a533061a765ee1634d2cf9da241908d69f46`**，只改 `app.js`、`style.css`、`index.html`、本文件四文件（该轮修复条目见 §2.11，差异见 §1.1）；不改 `storage.py`/`server.py`/`analysis.py`、vendor、AGENTS、其他文档、配置、元数据、真实 DB；不联网、不调用模型、不启动产品 8790/GUI 助手、不提交、不切分支、不清理。
+- **历史轮：B 实现说明事实最小更正（文档轮），真实基线 `dbfcc98d77080e6e0f0f83f8dad70bf7c43021ee`（当时 HEAD；其后以 `a44a3e5892d16b988522ca9b28d0f54ae9f69ede` 保存为待审候选）**：仅按 `docs/UI-v7-B-review.md` 第 3 节更正本文件的修改范围表、修复章节索引与验收事实，不测试、不联网、不提交、不改产品代码，且不清除任何历史失败记录。该轮**未完全消除**仍存在的不存在章节索引（`§3.1`）与旧 `NOT_STARTED` 表述，本轮据实更正（见 §1.0、§3、§7）。
+- **本轮：B 实机 405 残留历史最小修复 + 说明事实更正，真实基线 `a44a3e5892d16b988522ca9b28d0f54ae9f69ede`（当前 HEAD）**：只改 `app.js`、本文件两文件；修复 `p1Reset()` 在读取/导入失败时未清同帖历史 DOM 与两图 caption、未失效 `watchToken`/`historyToken` 的旧路径（见 §1.0、§2.12），并据实补充本轮真实 8791 GUI 复现 **FAIL** 与**待复验**（见 §3）；不改 `index.html`/`style.css`/`storage.py`/`server.py`/`analysis.py`、`tools/`、vendor、AGENTS、其他文档、配置、元数据、真实 DB；不联网、不调用模型、不启动产品服务/GUI、不提交、不切分支、不清理。
 - **本轮未执行任何测试、语法检查、脚本、HTTP、服务或 GUI**：只读源码与 `git status`/`git diff` 并编辑（见 §7）。
 - 进度与验收是两套独立字段：
-  - 上一轮实现（本工作区）：**DONE**；上一轮唯一一次定向检查：**PASS**（退出码 0，三组 18 项全 PASS，详见 §6，本轮**未**重跑）。
-  - B 实机打回窄修执行轮实现：**DONE**（本轮修复条目见 §2.11，均已落地）；修复后真实实机回归：**主线程正在执行（RUNNING），尚未完成、不预判 PASS**。
-  - 真实 GUI / 真实 8790 / 真实 DB 人工验收：**首轮真实 GUI 整体 FAIL；窄修后主线程真实回归「正在执行」（RUNNING），尚未完成**；提交 `b4b5a53` 的「B 静态批准」仅作**有限 GUI 验证的准入（前置门）**，**不等于**产品 PASS；执行者**不预判 PASS**；人工 accept：**null**（由主线程判定，执行者不自动 accept，**不虚构 GUI 通过**）。
+  - 受限修订轮实现（本工作区）：**DONE**；其唯一一次定向检查：**PASS**（退出码 0，三组 18 项全 PASS，详见 §6，其余各轮**未**重跑）。
+  - B 实机打回窄修执行轮实现：**DONE**（该轮修复条目见 §2.11，均已落地）；该轮修复后主线程真实回归：**在本轮 8791 GUI 复现中为 FAIL**（残留旧同帖历史行与图 caption，见 §1.0、§2.12），**本轮修复后待复验，不预判 PASS**。该轮含的旧时区标签与窄屏历史表两项已由主线程真实 GUI **局部复验**，但**完整回归尚未 PASS**。
+  - 本轮实机 405 残留历史最小修复：**DONE**（见 §2.12）；修复后真实 GUI 复验：**未执行（待复验），不预判 PASS**。
+  - 真实 GUI / 真实 8790/8791 / 真实 DB 人工验收：**首轮真实 GUI 整体 FAIL；窄修后主线程真实回归 FAIL（本轮 8791 复现）；本轮修复后待复验**；提交 `b4b5a53` 的「B 静态批准」仅作**有限 GUI 验证的准入（前置门）**，**不等于**产品 PASS；执行者**不预判 PASS**；人工 accept：**null**（由主线程判定，执行者不自动 accept，**不虚构 GUI 通过**）。
 - 历史事实（首次 900 秒 timeout、`provider.transport` 报 HTTP 200 后 `Decode error`、缺指定说明、原契约只准一次却实际两次定向脚本均 exit 1、一次编辑工具 warning）全部保留在 §3，且不以本轮结果覆盖。
-- 本轮触发原因：主线程在**已通过静态准入**后做真实 8790 实机验收，发现 §3.1 所列明确缺陷（**实机 FAIL**）；本轮据此做四文件窄修，**实机证据与修复过程原样记录，不删不改、不虚构通过**。
+- 历史触发原因（B 实机打回窄修执行轮）：主线程在**已通过静态准入**后做真实 8790 实机验收，发现 `docs/UI-v7-B-review.md` 第 2 节**打回项**所列明确缺陷（**实机 FAIL**）；该轮据此做四文件窄修，**实机证据与修复过程原样记录，不删不改、不虚构通过**。
+- 本轮触发原因：窄修后主线程真实 **8791** GUI 复现发现残留缺陷——数据管理「人工证据」提交 `[]` 触发真实 Handler **405**、业务提示旧材料已清空后，观察清单仍残留**旧同帖历史行与图 caption**。本轮据此做两文件最小修复，**实机证据与修复过程原样记录，不删不改、不虚构通过**。
 
 ## 1. 实际修改文件
 
-### 1.1 本轮修改（B 实机打回窄修执行轮，基线 `b4b5a533061a765ee1634d2cf9da241908d69f46`）
+### 1.0 本轮修改（B 实机 405 残留历史最小修复 + 说明事实更正，基线 `a44a3e5892d16b988522ca9b28d0f54ae9f69ede`）
 
-本轮只改以下四文件（与 `git diff b4b5a53..HEAD` 的产品代码差异一致；本文件为文档）：
+本轮只改以下两文件：
+
+| 文件 | 变更摘要 |
+| --- | --- |
+| `app.js` | `p1Reset()` 增补同帖历史旧路径清理：`state.watchToken++`/`state.historyToken++` 失效在途响应，`#watch-detail-title`/`#watch-detail-status`/`#watch-history-points` 清空并放中性占位，两图 caption `#chart-count-status`/`#chart-rate-status` 复位为初始文案；业务不再残留旧 count/rate。观察资格列表 `#watch-active`/`#watch-history-body` 保持不动（见 §2.12）。 |
+| `docs/UI-v7-B-implementation.md` | 本文件（新增本轮实机 FAIL 与待复验，更正仍存在的不存在章节索引 `§3.1` 与旧 `NOT_STARTED`，历史文件表明确标注所属旧轮；见 §0、§2.12、§3、§7）。 |
+
+本轮未修改：`index.html`、`style.css`、`storage.py`、`server.py`、`analysis.py`、`tools/`、`vendor/`、`AGENTS.md`、`docs/P1-B-implementation.md`、其他文档、配置与元数据、真实 DB。
+
+### 1.1 历史轮：B 实机打回窄修执行轮（基线 `b4b5a533061a765ee1634d2cf9da241908d69f46`）修改的四文件（保留，不清除）
+
+该轮只改以下四文件（与 `git diff b4b5a53..a44a3e5` 的产品代码差异一致；本文件为文档）：
 
 | 文件 | 变更摘要 |
 | --- | --- |
 | `app.js` | 活跃卡时区标签改为 `Asia/Shanghai UTC+08:00`；倒计时按总分钟取整后再拆分（消除「23 小时 60 分」）；导入成功与观察清单刷新后顺序重读并重渲染；新增 `refreshSelectedWatchHistory()` 使退出后详情同步；窗口生效时立即 pending 清空；单点速率 caption 据真实 `rate_per_hour` 如实说明（见 §2.11）。 |
 | `index.html` | 总览热度标题「当前热度（单点观测）」→「当前热度（最新观测）」；观察历史表加 `watch-history-table` 类。 |
 | `style.css` | 仅新增 `.watch-history-table` 的局部 `min-width` 与列宽，维持 `.table-wrap` 局部横向滚动；不改全局表格与页面横向溢出规则。 |
-| `docs/UI-v7-B-implementation.md` | 本文件（记录本轮修复条目，见 §2.11）。 |
+| `docs/UI-v7-B-implementation.md` | 本文件（记录该轮修复条目，见 §2.11）。 |
 
-本轮未修改：`storage.py`、`server.py`、`analysis.py`、`tools/manual_p1_b_check.py`、`tools/serve_b_fixture.py`、`vendor/`、`AGENTS.md`、`docs/P1-B-implementation.md`、其他文档、配置与元数据。
+该轮未修改：`storage.py`、`server.py`、`analysis.py`、`tools/manual_p1_b_check.py`、`tools/serve_b_fixture.py`、`vendor/`、`AGENTS.md`、`docs/P1-B-implementation.md`、其他文档、配置与元数据。
 
-### 1.2 历史轮次实际修改文件（保留，不清除）
+### 1.2 历史轮次（受限修订轮 `479e30a…` / B 窄修轮 `c53eef6…`）实际修改文件（保留，不清除）
 
 以下为**历史轮次**（受限修订轮基线 `479e30a691754b6aec726608189af1d2d770cdbf`、B 窄修轮基线 `c53eef629bd02b0febbf88c18d51195e6c4bba0b`）的实际修改文件，**不属于本轮**，仅为保留历史事实而留存（表内文字为历史原样）：
 
