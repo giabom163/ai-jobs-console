@@ -1000,29 +1000,6 @@ function p1Reset() {
   state.selectedWatchId = null;
   state.groupMeta = {};
   clearWatchCharts();
-  // 同帖历史详情与旧材料同源：state.history / selectedWatchId 已置空，详情 DOM 必须同步清空，
-  // 否则读取/导入失败后仍残留上一周期的同帖历史点表与图 caption（业务仍在展示旧 count/rate）。
-  // 同时失效在途响应令牌，避免过期同帖历史/观察清单响应回填覆写清空后的状态。
-  // 观察资格（#watch-active / #watch-history-body，来自独立 watchlist GET）属"观察资格"而非本次错误，
-  // 保持不动；本次只清被置空数据的可见残留，不新增错误文案，错误仍只走业务/管理状态容器。
-  state.watchToken++;
-  state.historyToken++;
-  const detailTitle = $("#watch-detail-title");
-  if (detailTitle) detailTitle.textContent = "同帖历史";
-  const detailStatus = $("#watch-detail-status");
-  if (detailStatus) {
-    detailStatus.textContent = "旧同帖历史详情已清空，未显示缓存；请重新选择观察周期或重新读取以恢复。";
-  }
-  const detailPoints = $("#watch-history-points");
-  if (detailPoints) {
-    clear(detailPoints);
-    detailPoints.append(h("tr", null, h("td", { colspan: "7", class: "muted" }, "尚未选择观察周期。")));
-  }
-  for (const [id, text] of [["chart-count-status", "累计评论计数（真实观测点）"],
-                            ["chart-rate-status", "每小时变化率（按真实秒数归一）"]]) {
-    const el = $("#" + id);
-    if (el) el.textContent = text;
-  }
   const stats = $("#overview-stats");
   if (stats) stats.hidden = true;
   for (const id of ["ov-identity", "ov-groups", "ov-observed"]) {
