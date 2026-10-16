@@ -207,7 +207,9 @@ class Handler(BaseHTTPRequestHandler):
             except (OSError, ValueError) as exc:
                 return self.send(409, {"error": str(exc), "record_id": record_id})
         if path == "/api/p1/overview":
-            query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+            # keep_blank_values: ?top_k= / ?top_k=1&top_k= must reach the len==1 与 1..3 校验，
+            # 而不是被静默丢弃后按默认 top_k=3 返回 200。
+            query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query, keep_blank_values=True)
             values = query.get("top_k", ["3"])
             if len(values) != 1:
                 raise ValueError("top_k 只接受一个值")

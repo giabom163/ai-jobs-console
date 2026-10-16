@@ -28,7 +28,8 @@ const state = {
   feedsById: {},
   runsById: {},
   online: false,
-  loadedAt: null
+  loadedAt: null,
+  p1: null
 };
 
 /* ---------- 安全 DOM 构建 ---------- */
@@ -604,6 +605,270 @@ function renderRuntime(info) {
   ]);
 }
 
+/* ---------- 渲染：P1 议题与表达线索（真实证据页面） ---------- */
+
+const P1_KIND_LABELS = {
+  title_only: "仅标题线索",
+  post_body: "帖主正文",
+  source_summary: "明确来源摘要"
+};
+const P1_PRECISION_LABELS = { exact: "精确", approximate: "约数", unknown: "未知" };
+
+function p1KindLabel(kind) { return P1_KIND_LABELS[kind] || kind || "未知类型"; }
+function p1PrecisionLabel(precision) { return P1_PRECISION_LABELS[precision] || precision || "未知"; }
+
+function p1StatusText(err) {
+  if (err instanceof ApiError && err.kind === "offline") return "连接失败（无法连接本地服务）";
+  return err && err.status ? `HTTP ${err.status}` : "读取失败";
+}
+
+function p1BodyNode(err) {
+  // 原样显示真实响应体（JSON 解析成功则结构化，否则回落为纯文本消息）。
+  if (err && err.payload && typeof err.payload === "object") {
+    return h("pre", { class: "json" }, JSON.stringify(err.payload, null, 2));
+  }
+  return h("p", { class: "error-text" }, (err && err.message) || "（无响应体）");
+}
+
+function p1OtherCountsNode(other) {
+  if (!other || !Object.keys(other).length) return h("span", { class: "muted" }, "（无）");
+  const rows = [];
+  for (const name of Object.keys(other)) {
+    const count = other[name] || {};
+    const counted = count.value !== null && count.value !== undefined;
+    rows.push(h("div", { class: "p1-other" },
+      `${name} = ${counted ? count.value : "null（未知）"}`,
+      h("span", { class: "muted" }, `（${p1PrecisionLabel(count.precision)}；来源字段 ${count.source_field || "—"}；不计入评论数）`)));
+  }
+  return h("div", { class: "p1-others" }, rows);
+}
+
+function p1DetailPlaceholder(text) {
+  const body = $("#p1-detail-body");
+  clear(body);
+  body.append(h("p", { class: "muted" }, text));
+}
+
+function p1Reset() {
+  // 读取失败 / 离线时清空旧 P1 展示，绝不把旧缓存当作在线数据。
+  state.p1 = null;
+  const stats = $("#p1-stats");
+  if (stats) stats.hidden = true;
+  for (const id of ["p1-identity-total", "p1-group-count", "p1-topk-limit"]) {
+    const el = $("#" + id);
+    if (el) el.textContent = "—";
+  }
+  const groups = $("#p1-groups");
+  if (groups) clear(groups);
+}
+
+function p1EntryCard(entry, bucket) {
+  const count = entry.comment_count || {};
+  const counted = count.value !== null && count.value !== undefined;
+  const heat = counted
+    ? `当前热度（单点）：评论数 ${count.value}（${p1PrecisionLabel(count.precision)}）；等待更多可比观测，不计算增速。`
+    : `评论数未知（${p1PrecisionLabel(count.precision)}）：未采得可核验评论数，不计入 0，也不参与排名；等待更多可比观测，不计算增速。`;
+  return h("article", { class: `card p1-entry ${bucket}` },
+    h("div", { class: "meta" },
+      bucket === "top" ? h("span", { class: "badge pos" }, `#${entry.rank}`) : h("span", { class: "badge neu" }, "未排名"),
+      h("span", { class: "chip" }, p1KindLabel(entry.evidence_kind)),
+      h("span", { class: "chip" }, `来源 ${entry.source_name || "?"}`)
+    ),
+    h("h3", null, linkNode(entry.url, entry.title || "（无标题）")),
+    entry.evidence_kind === "title_only"
+      ? h("p", { class: "excerpt" }, "议题候选 / 证据不足：仅标题线索，无帖主正文或来源摘要；不生成事件梗概或表达线索，不推断作者性别、阵营或群体比例。")
+      : null,
+    h("p", { class: "p1-heat" }, heat),
+    h("dl", { class: "kv" },
+      kv("证据 ID", h("code", { text: entry.evidence_id })),
+      kv("平台", `${entry.platform || "—"}${entry.platform_id ? " · " + entry.platform_id : ""}`),
+      kv("评论计数 comment_count", h("span", null,
+        counted ? String(count.value) : "null（未知）",
+        h("span", { class: "muted" }, ` · ${p1PrecisionLabel(count.precision)} · 来源字段 ${count.source_field || "—"}`))),
+      kv("其他计数（按原名独立，不冒充评论数）", p1OtherCountsNode(entry.other_counts)),
+      kv("观测时间 observed_at", fmtTime(entry.observed_at)),
+      kv("导入时间 imported_at（与观测时间分开）", fmtTime(entry.imported_at)),
+      kv("快照哈希 snapshot_sha256", h("code", { title: entry.snapshot_sha256 || "", text: shortHash(entry.snapshot_sha256) })),
+      kv("源响应哈希 source_response_sha256（输入声明）", h("code", { title: entry.source_response_sha256 || "", text: shortHash(entry.source_response_sha256) }))
+    ),
+    h("div", { class: "card-actions" },
+      h("button", { class: "secondary", type: "button", onclick: () => openP1Detail(entry.evidence_id) }, "查看证据详情"),
+      isSafeUrl(entry.canonical_url)
+        ? h("a", { class: "link", href: entry.canonical_url, target: "_blank", rel: "noopener noreferrer" }, "规范化 URL（仅链接，不加载平台媒体）")
+        : null
+    )
+  );
+}
+
+function p1GroupCard(group) {
+  const card = h("article", { class: "p1-group" },
+    h("div", { class: "p1-group-head" },
+      h("h3", null, group.group_label || "（未命名分组）"),
+      h("span", { class: "chip" }, `候选身份 ${group.identity_count ?? 0}`),
+      h("span", { class: "chip" }, `精确计数 ${group.exact_count ?? 0}`)
+    ),
+    h("p", { class: "hint" }, "人工指定分组；相似标题不直接合并事件；排名仅按精确评论数降序，约数/未知计数单列。")
+  );
+  const top = group.top || [];
+  if (top.length) {
+    card.append(h("h4", { class: "detail-sub" }, `TopK 原帖（前 ${top.length} 条，按精确评论数降序）`));
+    for (const entry of top) card.append(p1EntryCard(entry, "top"));
+  } else {
+    card.append(h("p", { class: "empty" }, "该分组没有可比精确评论数：证据不足，无 TopK 排名（不伪精确、不把未知当 0）。"));
+  }
+  const unranked = group.unranked || [];
+  if (unranked.length) {
+    card.append(h("h4", { class: "detail-sub" }, "未参与排名（评论数为约数或未知）"));
+    for (const entry of unranked) card.append(p1EntryCard(entry, "unranked"));
+  }
+  return card;
+}
+
+function renderP1Overview(data) {
+  state.p1 = data;
+  const stats = $("#p1-stats");
+  stats.hidden = false;
+  $("#p1-identity-total").textContent = String(data.identity_total ?? 0);
+  $("#p1-group-count").textContent = String(data.group_count ?? 0);
+  $("#p1-topk-limit").textContent = `${data.top_k ?? "—"} / ${data.candidate_limit ?? "—"}`;
+  const groups = $("#p1-groups");
+  clear(groups);
+  const status = $("#p1-status");
+  status.classList.remove("error");
+  if (data.empty_state || !(data.groups || []).length) {
+    status.textContent = "本地 P1 证据库为空：候选身份 0。请展开下方“人工导入已取证证据”，由人工填入一条已取证记录后提交（本页面不预填、不自动导入样本、不抓取）。";
+    groups.append(h("p", { class: "empty" }, "暂无候选证据：没有可展示的人工证据或 TopK 原帖。"));
+    return;
+  }
+  status.textContent = `已读取本地 P1 概览：候选身份 ${data.identity_total}，人工分组 ${data.group_count}；排名仅按精确评论数降序（TopK=${data.top_k}）。`;
+  for (const group of data.groups) groups.append(p1GroupCard(group));
+}
+
+function renderP1Detail(data) {
+  const body = $("#p1-detail-body");
+  clear(body);
+  const ev = data.evidence || {};
+  let other = {};
+  try { other = ev.other_counts ? JSON.parse(ev.other_counts) : {}; } catch (err) { other = {}; }
+  const counted = ev.comment_value !== null && ev.comment_value !== undefined;
+  body.append(
+    h("p", { class: "muted" }, "以下为 GET /api/p1/evidence/{id} 的真实返回，未做替代或缓存；原地址仅为可点击链接，不加载封面/头像/视频。"),
+    h("dl", { class: "kv wide" },
+      kv("证据 ID", h("code", { text: ev.id || "—" })),
+      kv("平台", `${ev.platform || "—"}${ev.platform_id ? " · " + ev.platform_id : ""}`),
+      kv("原地址 url", linkNode(ev.url)),
+      kv("规范化 URL canonical_url", linkNode(ev.canonical_url)),
+      kv("原标题 title", ev.title || "（空）"),
+      kv("来源名称 source_name", ev.source_name || "—"),
+      kv("证据类型 evidence_kind", `${p1KindLabel(ev.evidence_kind)}（${ev.evidence_kind || "—"}）`),
+      kv("片段 content（帖主正文 / 明确来源摘要）", ev.content
+        ? ev.content
+        : h("span", { class: "muted" }, "（空：title_only 仅标题线索，无帖主正文/来源摘要 → 议题候选 / 证据不足，不生成事件梗概或表达线索）")),
+      kv("content_source", ev.content_source || "—"),
+      kv("片段定位 [fragment_start, fragment_end)", `${ev.fragment_start ?? "—"} – ${ev.fragment_end ?? "—"}`),
+      kv("content_sha256", h("code", { text: ev.content_sha256 || "—" })),
+      kv("content_raw_sha256", h("code", { text: ev.content_raw_sha256 || "—" })),
+      kv("观测时间 observed_at", fmtTime(ev.observed_at)),
+      kv("观测原始串 observed_raw", ev.observed_raw || "—"),
+      kv("发布时间 published_at", fmtTime(ev.published_at)),
+      kv("发布原始串 published_raw", ev.published_raw || "—"),
+      kv("时间质量 time_quality", `${qualityLabel(ev.time_quality)}（${ev.time_quality || "—"}）`),
+      kv("导入时间 imported_at（与观测时间分开）", fmtTime(ev.imported_at)),
+      kv("评论计数 comment_count", h("span", null,
+        counted ? String(ev.comment_value) : "null（未知）",
+        h("span", { class: "muted" }, ` · ${p1PrecisionLabel(ev.comment_precision)} · 来源字段 ${ev.comment_source_field || "—"}`))),
+      kv("其他计数 other_counts（按原名）", p1OtherCountsNode(other)),
+      kv("分组 group_label", ev.group_label || "—"),
+      kv("快照路径 snapshot_path", h("code", { text: ev.snapshot_path || "—" })),
+      kv("快照哈希 snapshot_sha256", h("code", { text: ev.snapshot_sha256 || "—" })),
+      kv("源响应哈希 source_response_sha256", h("code", { text: ev.source_response_sha256 || "—" }))
+    ),
+    h("p", { class: "hint" }, `源响应哈希（source_response_sha256）：输入声明，本服务未核源响应字节（source_response_verified=${String(data.source_response_verified)}）。`),
+    h("p", { class: "hint" }, `快照哈希（snapshot_sha256）：本地内容寻址快照，详情回读已核验（snapshot_sha256_verified=${String(data.snapshot_sha256_verified)}）。`),
+    h("h3", { class: "detail-sub" }, "snapshot（真实输入记录 JSON，不是 HTTP 原始响应）"),
+    h("pre", { class: "json" }, JSON.stringify(data.snapshot, null, 2))
+  );
+}
+
+async function loadP1() {
+  const status = $("#p1-status");
+  const topk = $("#p1-topk").value || "3";
+  status.classList.remove("error");
+  status.textContent = `正在读取 /api/p1/overview?top_k=${topk} …`;
+  try {
+    const data = await api(`/api/p1/overview?top_k=${encodeURIComponent(topk)}`);
+    renderP1Overview(data);
+  } catch (err) {
+    p1Reset();
+    status.classList.add("error");
+    status.textContent = `P1 概览读取失败（${p1StatusText(err)}）：${(err && err.message) || ""}；旧 P1 展示已清空，未显示缓存。`;
+    clear($("#p1-groups"));
+    $("#p1-groups").append(h("p", { class: "empty" }, "无法读取本地 P1 概览，当前无可展示的实时证据。"), p1BodyNode(err));
+  }
+}
+
+async function openP1Detail(evidenceId) {
+  const body = $("#p1-detail-body");
+  clear(body);
+  body.append(h("p", { class: "muted" }, `正在读取 /api/p1/evidence/${evidenceId} …`));
+  try {
+    const data = await api(`/api/p1/evidence/${encodeURIComponent(evidenceId)}`);
+    renderP1Detail(data);
+  } catch (err) {
+    clear(body);
+    body.append(
+      h("h3", { class: "detail-sub" }, "P1 证据详情读取失败"),
+      h("p", { class: "error-text" }, `${p1StatusText(err)}：${(err && err.message) || ""}；旧详情已清空。`),
+      p1BodyNode(err),
+      err.status === 409
+        ? h("p", { class: "muted" }, "服务端回读本地快照时发现哈希不一致或文件缺失（409），原样显示，不做替代或降级。")
+        : null
+    );
+  }
+}
+
+async function submitP1Import() {
+  const button = $("#p1-import-submit");
+  const textarea = $("#p1-import-records");
+  const raw = textarea.value.trim();
+  if (!raw) {
+    show("请先在文本框中粘贴人工已取证的 records 数组（本页面不预填、不自动导入）。", true);
+    return;
+  }
+  let records;
+  try {
+    records = JSON.parse(raw);
+  } catch (err) {
+    show(`JSON 解析失败：${err.message}`, true);
+    return;
+  }
+  if (!Array.isArray(records)) {
+    show("内容必须是 records 数组（形如 [{...}]）。", true);
+    return;
+  }
+  if (records.length > 3) {
+    show(`P1 候选一次最多 3 条，且全库候选身份总数 ≤3；当前 ${records.length} 条，服务端将返回 422/409。`, true);
+    return;
+  }
+  button.disabled = true;
+  try {
+    const result = await api("/api/p1/import", { method: "POST", body: { records } });
+    show(`P1 导入完成：新增 ${result.added}，重复 ${result.duplicates}，候选身份总数 ${result.identity_total} / ${result.candidate_limit}。`);
+    textarea.value = "";
+    await loadP1();
+  } catch (err) {
+    p1Reset();
+    const status = $("#p1-status");
+    status.classList.add("error");
+    status.textContent = `P1 导入失败（${p1StatusText(err)}）：${(err && err.message) || ""}；旧 P1 展示已清空，未显示缓存。`;
+    clear($("#p1-groups"));
+    $("#p1-groups").append(h("p", { class: "empty" }, "导入未成功，当前未展示 P1 证据。"), p1BodyNode(err));
+    show(`P1 导入失败（${p1StatusText(err)}）：${(err && err.message) || ""}`, true);
+  } finally {
+    button.disabled = !state.online;
+  }
+}
+
 /* ---------- 数据加载 ---------- */
 
 function applyData(data) {
@@ -624,7 +889,8 @@ function applyData(data) {
 
 function setWriteAvailability(enabled) {
   for (const selector of ["#refresh", "#report-generate", "#report-copy", "#feed-form button[type=submit]",
-                          "#keyword-form button[type=submit]", "#import-form button[type=submit]", "#analysis-form button[type=submit]"]) $(selector).disabled = !enabled;
+                          "#keyword-form button[type=submit]", "#import-form button[type=submit]",
+                          "#analysis-form button[type=submit]", "#p1-import-submit"]) $(selector).disabled = !enabled;
 }
 
 function invalidateData() {
@@ -651,6 +917,12 @@ function invalidateData() {
   $("#report-out").value = "";
   clear($("#import-feed"));
   $("#analysis-body").textContent = "读取失败，旧分析队列已隐藏。";
+  p1Reset();
+  const p1Status = $("#p1-status");
+  p1Status.classList.add("error");
+  p1Status.textContent = "服务离线或读取失败，旧 P1 展示已清空，未显示缓存。";
+  $("#p1-groups").append(h("p", { class: "empty" }, "无法读取本地 P1 概览，当前无可展示的实时证据。"));
+  p1DetailPlaceholder("服务离线或读取失败，旧 P1 证据详情已清空。");
 }
 
 async function load({keepNotice = false} = {}) {
@@ -828,7 +1100,13 @@ $("#runtime-load").addEventListener("click", async () => {
   }
 });
 
-$("#reload-data").addEventListener("click", () => load());
+$("#reload-data").addEventListener("click", () => { load(); loadP1(); });
+
+/* ---------- P1 事件绑定 ---------- */
+$("#p1-topk").addEventListener("change", () => loadP1());
+$("#p1-reload").addEventListener("click", () => loadP1());
+$("#p1-import-submit").addEventListener("click", submitP1Import);
+$("#p1-detail-close").addEventListener("click", () => p1DetailPlaceholder("已关闭证据详情。点击上方任一条目的“查看证据详情”可重新读取本地证据。"));
 
 async function loadAnalysis() {
   const body = $("#analysis-body");
@@ -876,3 +1154,4 @@ $("#analysis-form").addEventListener("submit", async (event) => {
   } catch (err) { show(`创建失败（HTTP ${err.status || 0}）：${err.message}`, true); }
 });
 load();
+loadP1();

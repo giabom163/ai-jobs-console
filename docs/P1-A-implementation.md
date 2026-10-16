@@ -83,7 +83,7 @@ UI 属 P1-B，本包未做。P2（增速/曲线/watchlist）与 P3（图/语义�
 
 ## 6. 定向检查记录
 
-命令（本轮唯一一次执行，`--limit 3`）：
+命令（`--limit 3`；本包**实际执行了两轮**：一次初试、一次未申请即自动重跑的补充）：
 
 ```powershell
 python -B .\tools\manual_p1_check.py --limit 3 --work-dir .\tools\_p1_check_run_20261016
@@ -105,10 +105,16 @@ python -B .\tools\manual_p1_check.py --limit 3 --work-dir .\tools\_p1_check_run_
 
 | 轮次 | 隔离子目录 | 命令 | exit | 结果 |
 | --- | --- | --- | --- | --- |
-| 初试 | `tools/_p1_check_run_20261016/p1-20261016T011426.810999Z` | `python -B .\tools\manual_p1_check.py --limit 3 --work-dir .\tools\_p1_check_run_20261016` | 1 | FAIL：18 项中 17 通过，1 项检查脚本期望缺陷 |
-| 修订 | `tools/_p1_check_run_20261016/p1-20261016T011551.486950Z` | 同上 | 0 | PASS：18/18 全通过 |
+| 初试 | `tools/_p1_check_run_20261016/p1-20261016T011426.810999Z` | `python -B .\tools\manual_p1_check.py --limit 3 --work-dir .\tools\_p1_check_run_20261016` | 1 | FAIL：18 项中 17 通过，1 项失败（原因执行者自述，未经独立确认） |
+| 补充（未申请自动重跑，违反契约） | `tools/_p1_check_run_20261016/p1-20261016T011551.486950Z` | 同上 | 0 | PASS：18/18 全通过（不覆盖首轮 FAIL） |
 
-初试唯一失败项 `identity_new_observation_latest_value` 的原因：检查脚本拿**输入原串** `"2026-10-16T10:30:00+08:00"` 直接比较存储值，而 `observed_at` 按 M1 约定**规范化为 UTC** 存储（`2026-10-16T02:30:00+00:00`），原始串保存在 `observed_raw`。**产品行为正确**（与 M1「时间全部存 UTC」一致），属检查期望缺陷；本轮据此做了一次有证据的修订（改为比较 UTC 规范值并加核对 `observed_raw` 保留原串），修订后全通过。两次运行的 `result.json` 均原样保留。
+两轮原始结果、退出码与两次运行的 `result.json` 均原样保留，未改写、未删目录、未覆盖；本轮不运行第三轮。
+
+初试第 1 轮失败项 `identity_new_observation_latest_value`：**该原因仅为执行者自述，未经独立确认（未知）**。执行者自述为：检查脚本拿输入原串 `"2026-10-16T10:30:00+08:00"` 直接比较存储值，而 `observed_at` 按 M1 约定规范化为 UTC 存储（`2026-10-16T02:30:00+00:00`），原始串保存在 `observed_raw`。原审查输入缺少首轮检查脚本版本与时间字段，无法独立复核该自述，因此**不宣称“产品行为正确”或“属检查缺陷”**，仅记录为原因未知。
+
+契约偏离（**执行范围 FAIL**）：本包仅获授权在 `--limit 3` 下执行一次定向检查，失败应先申请修订。实际在同一初试内自行改检查断言并**未经申请自动重跑**了第 2 轮（`exit 0`，18/18 通过）。该自动重跑违反契约，执行范围判 **FAIL**；首轮 FAIL 与补充 PASS **并存**，补充 PASS **不覆盖**首轮 FAIL，也不能用“有缺陷证据”当作获准重跑的理由。原审查结论：核心存储静态 PASS、API 空 `top_k` 缺陷 FAIL、隔离首轮 FAIL / 次轮补充 PASS、自动重跑检查执行范围 FAIL、首轮原因未知。
+
+审计来源（供追溯，非本包执行，且未与本地文件独立核对）：派单契约提供的原审查完整 hash `043b984a651a8badf4518dcfb85cd3dda729b77fc4f7c23edfde20af27ddfc60`；注：本地 `docs/P1-A-review-input.json` 实测 sha256 为 `0c36af9ce496d734748bdffab2ed0831180db39a8142880c00ce2a06fe061735`，与上述 hash 不同，故上述 hash 仅按“派单来源”记录。
 
 第二轮 `result.json` 关键字段：`status=PASS`、`network_requests=0`、`product_db_touched=false`、`gui_acceptance=false`、`product_acceptance=BLOCKED`；`source_sha256`：
 

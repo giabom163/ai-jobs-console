@@ -320,6 +320,56 @@ footer {
   font-size: 11px;
 }
 
+/* P1：议题与表达线索（真实证据页面，复用既有面板/卡片/表格风格） */
+.p1-status {
+  margin-top: 12px;
+  font-size: 12.5px;
+  color: #4a5751;
+  overflow-wrap: anywhere;
+}
+.p1-status.error { color: var(--danger); }
+.p1-groups { margin-top: 14px; display: grid; gap: 14px; }
+.p1-group {
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 16px;
+  background: #fcfdfb;
+}
+.p1-group-head { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.p1-group-head h3 { font-size: 16px; margin: 0; }
+.p1-entry { background: #fdfdfb; }
+.p1-entry.unranked { border-style: dashed; }
+.p1-heat {
+  font-size: 12.5px;
+  color: #3f5750;
+  background: var(--accent-soft);
+  border-radius: 9px;
+  padding: 8px 11px;
+  margin: 0 0 10px;
+  overflow-wrap: anywhere;
+}
+.p1-others { display: grid; gap: 3px; }
+.p1-other { font-size: 12px; overflow-wrap: anywhere; }
+.inline-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  margin-bottom: 0;
+}
+.inline-field select { width: auto; margin-top: 0; }
+#p1-import-panel > summary {
+  cursor: pointer;
+  font-size: 15px;
+  font-weight: 700;
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  list-style-position: inside;
+}
+#p1-import-panel[open] > summary { margin-bottom: 10px; }
+
 /* 响应式 */
 @media (max-width: 900px) {
   .top, .tabs, .notice { padding-left: 18px; padding-right: 18px; }
@@ -336,4 +386,6 @@ footer {
   .stats strong { font-size: 20px; }
   .filters { grid-template-columns: 1fr; }
   .panel { padding: 16px; }
+  .p1-group-head { flex-direction: column; align-items: flex-start; }
+  .inline-field { width: 100%; }
 }

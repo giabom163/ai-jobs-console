@@ -23,7 +23,8 @@
   </header>
 
   <nav class="tabs" role="tablist" aria-label="工作台视图">
-    <button class="tab" role="tab" id="tab-sources" aria-controls="view-sources" aria-selected="true" data-view="sources" tabindex="0">来源与导入</button>
+    <button class="tab" role="tab" id="tab-p1" aria-controls="view-p1" aria-selected="true" data-view="p1" tabindex="0">议题与表达线索</button>
+    <button class="tab" role="tab" id="tab-sources" aria-controls="view-sources" aria-selected="false" data-view="sources" tabindex="-1">来源与导入</button>
     <button class="tab" role="tab" id="tab-records" aria-controls="view-records" aria-selected="false" data-view="records" tabindex="-1">原文与证据</button>
     <button class="tab" role="tab" id="tab-report" aria-controls="view-report" aria-selected="false" data-view="report" tabindex="-1">报告模板</button>
     <button class="tab" role="tab" id="tab-runs" aria-controls="view-runs" aria-selected="false" data-view="runs" tabindex="-1">运行状态</button>
@@ -32,8 +33,66 @@
   <main id="main">
     <div id="notice" class="notice" role="status" aria-live="polite"></div>
 
+    <!-- 视图五（Demo 默认）：议题与表达线索（P1 真实证据页面） -->
+    <section id="view-p1" class="view" role="tabpanel" aria-labelledby="tab-p1" tabindex="0">
+      <section class="panel">
+        <div class="section-title">
+          <div><p class="eyebrow">P1 · MANUAL EVIDENCE</p><h2>议题与表达线索</h2></div>
+          <div class="card-actions">
+            <label class="inline-field">TopK
+              <select id="p1-topk">
+                <option value="3" selected>3</option>
+                <option value="2">2</option>
+                <option value="1">1</option>
+              </select>
+            </label>
+            <button id="p1-reload" class="secondary" type="button">重新读取 P1 概览</button>
+          </div>
+        </div>
+        <p class="hint">
+          仅展示人工导入的候选证据（全库最多 3 个候选身份）。分组为人工指定，相似标题不直接合并事件；
+          TopK 仅对精确评论数降序排名，约数与未知计数单列不参与排名。标题线索证据不足时降级为议题候选，
+          不推断作者性别、阵营或群体比例，不把标题指控当作事件事实，也不把关联当作因果。
+        </p>
+        <div id="p1-status" class="p1-status" role="status" aria-live="polite">尚未读取 P1 概览。</div>
+        <section class="stats" id="p1-stats" aria-label="P1 候选总览" hidden>
+          <article><span>候选身份总数</span><strong id="p1-identity-total">—</strong></article>
+          <article><span>人工分组数</span><strong id="p1-group-count">—</strong></article>
+          <article><span>TopK / 候选上限</span><strong id="p1-topk-limit">—</strong></article>
+        </section>
+        <div id="p1-groups" class="p1-groups"></div>
+      </section>
+
+      <section class="panel">
+        <div class="section-title">
+          <div><p class="eyebrow">EVIDENCE</p><h2>原帖证据详情</h2></div>
+          <button id="p1-detail-close" class="secondary" type="button">关闭</button>
+        </div>
+        <div id="p1-detail-body">
+          <p class="muted">尚未选择证据。点击上方任一条目的“查看证据详情”，读取本地 GET /api/p1/evidence/&lt;id&gt;。</p>
+        </div>
+      </section>
+
+      <details class="panel" id="p1-import-panel">
+        <summary><span class="eyebrow">MANUAL IMPORT</span> 人工导入已取证证据</summary>
+        <p class="hint">
+          本页面不预填、不自动导入样本、不抓取、不调用模型。仅提交人工已取证的 records 数组（一次最多 3 条，
+          全库候选身份总数 ≤3）；提交后 POST 一次到同源 /api/p1/import，并重新以 GET 读取本地概览。
+          post_body 为帖主正文，source_summary 为明确来源摘要；禁止填评论／回复正文。
+        </p>
+        <label>已取证的 records 数组（仅粘贴数组本身，形如 [{...}]）
+          <textarea id="p1-import-records" rows="8" autocomplete="off" spellcheck="false"
+            placeholder="（在此粘贴人工已取证的 records 数组；本页面不预填、不自动导入）"></textarea>
+        </label>
+        <div class="card-actions">
+          <button id="p1-import-submit" class="primary" type="button">导入到本地证据库</button>
+          <span class="hint">POST /api/p1/import；只接受 {records:[...]}；错误原样显示 HTTP 状态与响应体。</span>
+        </div>
+      </details>
+    </section>
+
     <!-- 视图一：来源与导入 -->
-    <section id="view-sources" class="view" role="tabpanel" aria-labelledby="tab-sources" tabindex="0">
+    <section id="view-sources" class="view" role="tabpanel" aria-labelledby="tab-sources" tabindex="0" hidden>
       <section class="stats" aria-label="全库统计">
         <article><span>全表记录（分母）</span><strong id="stat-records">—</strong></article>
         <article><span>规范记录数</span><strong id="stat-canonical">—</strong></article>
