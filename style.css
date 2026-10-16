@@ -232,6 +232,15 @@ h3 { font-size: 15px; margin: 0 0 8px; }
 .table td.num, .table th:where(.num) { font-variant-numeric: tabular-nums; }
 .table code { font-size: 11px; overflow-wrap: anywhere; }
 
+/* 观察周期历史表（10 列）：窄屏保持 .table-wrap 局部横向滚动，不撑破页面；首列标题与来源/时间/原因列给足宽度，
+   标题在 160px 内正常换行，不再被挤成中文竖排。仅作用于该表，不改其他表格与页面框架。 */
+.watch-history-table { min-width: 1080px; }
+.watch-history-table th:nth-child(1), .watch-history-table td:nth-child(1) { min-width: 160px; }
+.watch-history-table th:nth-child(2), .watch-history-table td:nth-child(2) { min-width: 84px; }
+.watch-history-table th:nth-child(4), .watch-history-table td:nth-child(4),
+.watch-history-table th:nth-child(5), .watch-history-table td:nth-child(5) { min-width: 130px; }
+.watch-history-table th:nth-child(6), .watch-history-table td:nth-child(6) { min-width: 120px; }
+
 /* 筛选 */
 .filters {
   display: grid;

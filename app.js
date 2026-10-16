@@ -1275,8 +1275,8 @@ function setWindowInputs(fromValue, toValue) {
   state.windowTo = isoTo;
   syncFilterBars();
   loadP1();                                  // 与总览 / 议题 / 检索共用同一窗口与分母
+  // 观察清单成功刷新后统一重读所选周期历史（同一新窗口）；不再并发另起旧 record 的 loadWatchHistory，避免旧值覆写。
   loadWatchlist();
-  if (state.selectedWatchId) loadWatchHistory(state.selectedWatchId);
 }
 
 function renderWindowPending() {
@@ -1392,7 +1392,11 @@ function watchStatusText(item) {
     const expires = new Date(item.expires_at).getTime();
     const left = expires - Date.now();
     if (Number.isFinite(left) && left > 0) {
-      return `观察中 · 距到期 ${Math.floor(left / 3600000)} 小时 ${Math.round((left % 3600000) / 60000)} 分`;
+      // 按总剩余分钟一次取整后再拆 hours/minutes，确保 minutes 落在 0..59（避免出现 23 小时 60 分）。
+      const totalMinutes = Math.floor(left / 60000);
+      const hours = Math.floor(totalMinutes / 60);
+      const minutes = totalMinutes % 60;
+      return `观察中 · 距到期 ${hours} 小时 ${minutes} 分`;
     }
     return "观察中";
   }
@@ -1412,7 +1416,7 @@ function watchActiveCard(item) {
     h("h3", null, linkNode(item.url, item.title || "（无标题）")),
     h("dl", { class: "kv" },
       kv("加入原因", item.entry_reason || "—"),
-      kv("加入时刻（服务器 UTC）", fmtTime(item.entered_at)),
+      kv("加入时刻（Asia/Shanghai UTC+08:00）", fmtTime(item.entered_at)),
       kv("24h 到期", `${fmtTime(item.expires_at)}（${watchStatusText(item)}）`),
       kv("首次真实观测", fmtTime(item.first_observed_at)),
       kv("最近真实观测", fmtTime(item.latest_observed_at))),
@@ -1530,8 +1534,14 @@ function renderChart(key, label, points, valueOf, captionId, kind) {
           ? `${label}：仅 1 个已计算速率区间，如实显示该真实速率（不补 0、不插值）`
           : `${label}：${known.length} 个已计算速率区间（缺测/未计算保留断点，不补 0、不插值）`;
     } else {
+      // 窗口内仅 1 个计数观测点时：若该点已有真实可比的已计算速率（真实前值在窗口外/窗口内均可），
+      // caption 不得再说“等待第二个观测点 / 不声称增速”而与速率图矛盾；改为如实说明速率以真实可比区间为准。
+      const rateAvailable = points.some((point) =>
+        point.rate_per_hour !== null && point.rate_per_hour !== undefined);
       caption.textContent = known.length === 1
-        ? `${label}：仅 1 个真实观测点，等待第二个观测点（不补 0、不插值、不声称增速）`
+        ? (rateAvailable
+            ? `${label}：窗口内仅 1 个真实观测点；速率以真实可比区间为准（不补 0、不插值、不编点）`
+            : `${label}：仅 1 个真实观测点，等待第二个观测点（不补 0、不插值、不声称增速）`)
         : `${label}：${known.length} 个可比真实观测点（缺测/未知保留断点，不补 0、不插值）`;
     }
   }
@@ -1645,6 +1655,33 @@ async function loadWatchHistory(watchId) {
   }
 }
 
+// 观察清单成功刷新后：以最新周期记录（status / evidence_id 均为最新）重读所选同帖历史，
+// 避免退出/新观测后详情与曲线仍停留在旧值（例如列表已“已退出”而详情还写“观察中”）。
+// 所选 watch_id 已不在清单中则清空详情；旧周期仍可从上方列表重新选择查看。
+// 统一由 loadWatchlist 触发，不在 watch-reload 等入口并发另起旧 record 的 loadWatchHistory，防止旧值覆写新值。
+async function refreshSelectedWatchHistory() {
+  const watchId = state.selectedWatchId;
+  if (!watchId) return;
+  const record = ((state.watch && state.watch.history) || []).find((item) => item.watch_id === watchId);
+  if (!record) {
+    state.historyToken++;                 // 失效在途旧历史响应
+    state.history = null;
+    state.selectedWatchId = null;
+    clearWatchCharts();
+    const title = $("#watch-detail-title");
+    if (title) title.textContent = "同帖历史";
+    const status = $("#watch-detail-status");
+    if (status) status.textContent = "所选观察周期已不在当前观察清单中；旧图与旧表已清空，可从上方重新选择周期查看。";
+    const points = $("#watch-history-points");
+    if (points) {
+      clear(points);
+      points.append(h("tr", null, h("td", { colspan: "7", class: "muted" }, "尚未选择观察周期。")));
+    }
+    return;
+  }
+  await loadWatchHistory(watchId);
+}
+
 async function loadWatchlist() {
   const token = ++state.watchToken;
   try {
@@ -1652,6 +1689,7 @@ async function loadWatchlist() {
     if (token !== state.watchToken) return;
     state.watch = data;
     renderWatchlist();
+    await refreshSelectedWatchHistory();   // 成功刷新后按最新周期记录更新所选详情/曲线（不存在则清空）
   } catch (err) {
     if (token !== state.watchToken) return;
     state.watch = null;
@@ -1772,6 +1810,13 @@ async function openP1Drawer(evidenceId, trigger) {
 async function loadP1() {
   const token = ++state.overviewToken;
   setBizStatus("loading", "正在读取本地数据…");
+  // 窗口生效时立即进入 pending：同步清空上一观测窗口的三业务旧候选、旧卡与筛选 note，
+  // 表明新窗口正在读取；读取期间绝不继续展示上一窗口结果，也不用窗口外最新值冒充窗口内候选。
+  if (p1WindowActive()) {
+    state.windowCandidates = null;
+    state.windowTruncated = 0;
+    renderWindowPending();
+  }
   try {
     // 始终按候选上限载入全部候选（top_k=3），展示用 K 在前端过滤后重算，避免后端截断候选。
     const data = await api(`/api/p1/overview?top_k=${P1_LOAD_TOP_K}`);
@@ -1843,6 +1888,10 @@ async function submitP1Import() {
     textarea.value = "";
     setAdminStatus("ok", `导入完成：新增 ${result.added}，重复 ${result.duplicates}，候选总数 ${result.identity_total} / ${result.candidate_limit}。`, null);
     await loadP1();
+    // 导入新观测后：等待最新观察清单（最新观测/到期状态），并按最新所选周期重读同帖历史，
+    // 避免旧 evidence_id、旧图；此处沿用 loadWatchlist 的失败清空语义（GET 失败仍为空，原导入状态留证）。
+    await loadWatchlist();
+    renderBusinessViews();
   } catch (err) {
     // 导入失败（含 422）：清空旧材料与旧详情，绝不把旧数据当成功。
     p1Reset();
@@ -2126,8 +2175,8 @@ for (const id of ["#overview-reload", "#topics-reload", "#search-reload"]) {
 $("#watch-reload").addEventListener("click", () => {
   load();
   loadP1();
+  // loadWatchlist 成功后按最新周期记录重读所选历史；不在此并发旧 record 的 loadWatchHistory，避免旧值覆写新值。
   loadWatchlist();
-  if (state.selectedWatchId) loadWatchHistory(state.selectedWatchId);
 });
 // 单图 resize 异常独立捕获：只清理该图并给业务短提示，保留可读历史表与另一张图；
 // 真实 error 只落数据管理「人工证据」状态容器留证。沿用已实现的图表 try/catch 逻辑，不新增框架。
