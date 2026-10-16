@@ -6,8 +6,10 @@
   * 最多 3 个**明确标注为合成**的 identity；时刻与计数只是夹具，不是任何来源实测值。
   * 只覆盖定向断言：30/60 分钟速率、重复同刻同值合并、乱序导入排序、同刻不同计数冲突、
     unknown/approximate、回撤（负值）、source_changed、单点等待、零速率、日期窗口跨前点、
-    观察周期（加入/重复/退出/到期/显式重加保留旧周期/24h 上限/原子 cap）、strict query/body、
+    观察周期（加入/重复/退出/到期后显式重加保留旧周期/活跃数自然≤3）、strict query/body、
     同源拒写与各错误状态、全库 3 身份上限（第 4 身份真实导入被拒）。
+    只使用 A/B/C 三条真实 evidence 身份；不再伪造第 4 身份或重复活跃周期来强行触达
+    “第 4 个活跃观察” cap 分支（合法状态下身份总数≤3，该分支无法由纯 API 状态自然到达）。
   * 不跑全量套件、不做压力/长时间测试、不清理产物、失败后保留原始 stdout/stderr。
 
 用法：`python tools/manual_p1_b_check.py --limit 3 --evidence-dir <不存在的新目录>`
@@ -290,8 +292,10 @@ def group_watch(db, port, request):
     chk.expect("history_len_4", len(data["history"]) == 4, len(data["history"]))
     out.append(chk)
 
-    # 到期（隔离夹具定向设 expires_at 为过去）+ 显式重加 + 原子上限（第 4 个活跃周期被 409 拒绝）。
-    chk = Check("watch_expiry_and_atomic_cap")
+    # 到期（隔离夹具把 expires_at 定向设为过去）+ 真实 POST 显式重加新周期 + 旧过期周期保留。
+    # 不再伪造第 4 个身份或重复活跃周期：合法状态下身份总数≤3，独立的“第 4 个活跃观察” cap 分支
+    # 无法由纯 API 状态自然到达，故不为覆盖该分支而注入虚构周期行。
+    chk = Check("watch_expiry_and_readd")
     with db:
         db.execute("UPDATE p1_watch_periods SET expires_at=? WHERE watch_id=?",
                    ((datetime.now(timezone.utc) - timedelta(hours=1)).isoformat(), created[c]["watch_id"]))
@@ -301,39 +305,46 @@ def group_watch(db, port, request):
     chk.expect("expired_derived_from_clock", expired["status"] == "expired", expired["status"])
     chk.expect("expired_not_in_active", all(x["watch_id"] != created[c]["watch_id"] for x in data["active"]),
                [x["watch_id"] for x in data["active"]])
-    # 隔离夹具：直接插入一个活跃周期占满上限（不创建第 4 个 evidence 身份，仅为触发原子 cap 分支）。
-    with db:
-        now = datetime.now(timezone.utc)
-        db.execute("INSERT INTO p1_watch_periods(watch_id,identity_key,evidence_id,entered_at,expires_at,entry_reason) "
-                   "VALUES(?,?,?,?,?,?)",
-                   ("p1w-ghost-cap", "fixture.invalid\x1fid\x1fcap-ghost", "p1ev-ghost",
-                    now.isoformat(), (now + timedelta(hours=24)).isoformat(), "隔离夹具占满上限（非真实来源）"))
-    status, body = request("POST", "/api/p1/watchlist", {"evidence_id": ids[c], "reason": "夹具尝试第 4 个活跃周期"})
-    chk.expect("cap_409", status == 409, {"status": status, "body": body[:240]})
+    chk.expect("old_c_period_kept_expired", expired["status"] == "expired", expired["status"])
+    # 到期释放了活跃槽位：经真实 Handler 显式重加 C，生成新周期；旧周期仍以 expired 保留。
+    status, body = request("POST", "/api/p1/watchlist", {"evidence_id": ids[c], "reason": "夹具到期后显式重加 C（非真实来源）"})
+    readded_c = json.loads(body).get("watch") if body else {}
+    chk.expect("c_readd_201_new_period", status == 201 and readded_c.get("watch_id") not in (None, created[c]["watch_id"]),
+               {"status": status, "watch_id": readded_c.get("watch_id")})
     status, body = request("GET", "/api/p1/watchlist")
     data = json.loads(body)
+    old_c = [x for x in data["history"] if x["watch_id"] == created[c]["watch_id"]]
+    chk.expect("old_c_still_expired", len(old_c) == 1 and old_c[0]["status"] == "expired", old_c)
+    chk.expect("c_active_again", any(x["watch_id"] == readded_c.get("watch_id") and x["status"] == "active" for x in data["active"]),
+               [x["watch_id"] for x in data["active"]])
+    # 恰 A/B/C 三条真实身份各保有一个有效活跃周期；活跃数自然不超过上限。
     chk.expect("active_never_over_3", len(data["active"]) <= 3, len(data["active"]))
-    chk.expect("cap_target_still_inactive", all(x["evidence_id"] != ids[c] for x in data["active"]),
-               [x["evidence_id"] for x in data["active"]])
+    chk.expect("three_active_periods", len(data["active"]) == 3, len(data["active"]))
     out.append(chk)
 
     # Top2 掉榜仍观察 + 可继续追加真实观测；第 4 身份真实导入被全库上限拒绝。
     chk = Check("watch_outlives_topk_and_identity_cap")
     overview = storage.p1_overview(db, 2)
+    group_labels = sorted(g["group_label"] for g in overview["groups"])
     top2_ids = [e["evidence_id"] for g in overview["groups"] for e in g["top"]]
     status, body = request("GET", "/api/p1/watchlist")
     active_ids = [x["evidence_id"] for x in json.loads(body)["active"]]
-    chk.expect("A_off_top2_but_active", ids[a] not in top2_ids and ids[a] in active_ids,
-               {"top2": top2_ids, "active": active_ids})
+    # watch_item() 返回身份“当前最新真实证据”的 evidence_id，会随新观测更新；这里读取 A 的当前最新 id
+    # 并按身份对照，避免拿旧 evidence_id 误判观察身份消失。
+    a_now = latest_evidence(db, a)["id"]
+    chk.expect("A_off_top2_but_active", a_now not in top2_ids and a_now in active_ids,
+               {"a_now": a_now, "top2": top2_ids, "active": active_ids, "groups": group_labels})
     before = len(points_of(db, ids[a]))
     storage.p1_import(db, ROOT_FOR_FIXTURE, [rec(a, "2026-10-10T08:00:00+08:00", 175, "exact", "stat.other")], 3)
     after = points_of(db, ids[a])
     chk.expect("new_observation_appended_while_watched", len(after) == before + 1 and after[-1]["delta"] == 5,
                {"before": before, "after": len(after), "delta": after[-1]["delta"]})
+    a_after = latest_evidence(db, a)["id"]
+    chk.expect("a_evidence_id_updated", a_after != a_now, {"before": a_now, "after": a_after})
     status, body = request("GET", "/api/p1/watchlist")
     data = json.loads(body)
-    chk.expect("still_active_after_new_point", any(x["evidence_id"] == ids[a] and x["status"] == "active" for x in data["active"]),
-               [x["status"] for x in data["active"]])
+    chk.expect("still_active_after_new_point", any(x["evidence_id"] == a_after and x["status"] == "active" for x in data["active"]),
+               [x["evidence_id"] for x in data["active"]])
     fourth = rec("fixture-D", "2026-10-10T09:00:00+08:00", 10)
     status, body = request("POST", "/api/p1/import", {"records": [fourth]})
     chk.expect("fourth_identity_rejected_409", status == 409, {"status": status, "body": body[:200]})
@@ -397,6 +408,10 @@ def group_http_edges(db, port, request):
     chk.expect("history_route", "/api/p1/history" in server_src, True)
     chk.expect("vendor_whitelist_only", "VENDOR_STATIC" in server_src and "/vendor/echarts/echarts.min.js" in server_src, True)
     chk.expect("watch_ddl_idempotent", "CREATE TABLE IF NOT EXISTS p1_watch_periods" in storage_src, True)
+    chk.expect("watch_cap_atomic_immediate", "BEGIN IMMEDIATE" in storage_src and "def immediate_write" in storage_src, True)
+    # 回归锁：本脚本不得再直接向 p1_watch_periods 注入周期行（此前用于绕 cap 的 ghost 身份）。
+    self_src = Path(__file__).read_text(encoding="utf-8")
+    chk.expect("no_direct_watch_period_insert", ("INSERT INTO " + "p1_watch_periods") not in self_src, True)
     chk.expect("index_local_vendor_script", 'src="/vendor/echarts/echarts.min.js"' in index_src, True)
     chk.expect("no_cdn_reference", "cdn." not in index_src.lower() and "cdn." not in server_src.lower(), True)
     tree = ast.parse(server_src)

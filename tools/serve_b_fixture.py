@@ -64,17 +64,33 @@ def rec(pid, observed_at, value, precision="exact", field="fixtureCount"):
 
 
 class Ledger:
-    """真实响应账本：与真实 send 同序列化，逐条记录 path/status/原始 body。"""
+    """真实响应账本：与真实 send 同序列化，逐条记录 path/status 与**完整**响应体。
+
+    响应体按内容哈希完整写入独立 artifact 目录（不截断、不打截断标记），账本只引用其
+    sha256 / 长度 / 路径，避免大响应（例如本地 ECharts）无法从账本恢复。
+    """
 
     def __init__(self, path: Path):
         self.path = path
+        self.bodies_dir = path.parent / "http-bodies"
+        self.bodies_dir.mkdir(parents=True, exist_ok=True)
         self.lock = threading.Lock()
         self.path.write_text("", encoding="utf-8")
 
-    def record(self, entry: dict) -> None:
+    def _store_body(self, data: bytes) -> str:
+        sha = sha256_hex(data)
+        target = self.bodies_dir / f"{sha}.body"
+        if not target.exists():
+            target.write_bytes(data)
+        return str(target)
+
+    def record(self, entry: dict, data: bytes) -> None:
+        body_path = self._store_body(data)
+        payload = {**entry, "body_sha256": sha256_hex(data), "body_length": len(data),
+                   "body_path": body_path, "body_complete": True}
         with self.lock:
             with self.path.open("a", encoding="utf-8") as stream:
-                stream.write(json.dumps(entry, ensure_ascii=False, sort_keys=True) + "\n")
+                stream.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
 
     def entries(self) -> list:
         if not self.path.exists():
@@ -94,9 +110,7 @@ def build_handler(module, ledger: Ledger):
         def send(self, code, value, kind="application/json; charset=utf-8"):
             data = value if isinstance(value, bytes) else json.dumps(value, ensure_ascii=False).encode()
             ledger.record({"at": utcnow().isoformat(), "method": self.command, "path": self.path,
-                           "status": int(code), "content_type": kind,
-                           "body_sha256": sha256_hex(data), "body_length": len(data),
-                           "body": data.decode("utf-8", "replace")[:4000]})
+                           "status": int(code), "content_type": kind}, data)
             return module.Handler.send(self, code, value, kind)
 
     return FixtureHandler
@@ -104,13 +118,13 @@ def build_handler(module, ledger: Ledger):
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--limit", type=int, required=True, help="必填；只接受 1..3，首次使用 3")
+    parser.add_argument("--limit", type=int, required=True, help="必填；只接受 3（夹具固定三身份，首次即 --limit 3）")
     parser.add_argument("--evidence-dir", type=Path, required=True, help="必填；必须是不存在的新目录")
     parser.add_argument("--port", type=int, choices=ALLOWED_PORTS, required=True, help="只允许 8791 或 8792")
     parser.add_argument("--seconds", type=int, default=MAX_SECONDS, help="自动停止秒数，1..180，默认 180")
     args = parser.parse_args()
-    if not 1 <= args.limit <= 3:
-        parser.error("--limit 只接受 1..3；首次使用 --limit 3")
+    if args.limit != 3:
+        parser.error("--limit 只接受 3；夹具固定三个合成身份，1/2 会在半初始化后失败，故在创建目录前拒绝")
     if not 1 <= args.seconds <= MAX_SECONDS:
         parser.error(f"--seconds 只接受 1..{MAX_SECONDS}")
     if args.evidence_dir.exists():

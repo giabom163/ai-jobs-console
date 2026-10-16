@@ -44,6 +44,7 @@ const state = {
   history: null,                  // 当前选中周期的真实历史点
   selectedWatchId: null,
   windowCandidates: null,         // 观测窗口内：evidence_id -> 窗口内最新真实观测快照
+  windowTruncated: 0,             // 因分页未取完被明确排除、不计入完成候选的身份数
   windowFrom: null,               // 已应用窗口起点（显式 +08:00 字符串）或 null
   windowTo: null,                 // 已应用窗口终点（不含观测时刻）或 null
   windowInput: { from: "", to: "" },
@@ -830,7 +831,10 @@ function p1FilterSummary(filtered) {
     `关键词=${filters.keyword ? filters.keyword : "（无）"}`,
     windowText
   ];
-  return `统一筛选：${parts.join(" · ")}；本次符合观测窗口的原帖候选（同一分母）${active.length} 条，其他筛选后 ${filtered.length} 条。`;
+  const truncatedNote = p1WindowActive() && state.windowTruncated
+    ? `；另有 ${state.windowTruncated} 条候选因历史分页未取完被明确排除，不计入完成候选与分母`
+    : "";
+  return `统一筛选：${parts.join(" · ")}；本次符合观测窗口的原帖候选（同一分母）${active.length} 条，其他筛选后 ${filtered.length} 条${truncatedNote}。`;
 }
 
 function p1ContentNote() {
@@ -991,6 +995,7 @@ function p1Reset() {
   state.p1Content = {};
   state.selectedTopic = null;
   state.windowCandidates = null;
+  state.windowTruncated = 0;
   state.history = null;
   state.selectedWatchId = null;
   state.groupMeta = {};
@@ -1210,17 +1215,20 @@ async function enrichP1Contents(token) {
 /* ---------- 观测窗口 / 同帖历史 / 观察清单（真实 API，不抓取、不补 0） ---------- */
 
 // 稳定分页遍历：has_more 为真时继续请求；达到分页上限则明确标为截断，绝不伪称完整历史。
-async function fetchHistoryPoints(evidenceId, token) {
+// 每页请求前后核对令牌：旧窗口/旧选择的在途分页立即停止，不再继续消耗请求。
+async function fetchHistoryPoints(evidenceId, isStale) {
   const from = state.windowFrom;
   const to = state.windowTo;
   let offset = 0;
   const all = [];
   let truncated = false;
   for (let page = 0; page < 20; page += 1) {
+    if (isStale()) return null;            // 请求前：过期即停
     const query = new URLSearchParams({ evidence_id: evidenceId, limit: "500", offset: String(offset) });
     if (from) query.set("from", from);
     if (to) query.set("to", to);
     const data = await api(`/api/p1/history?${query.toString()}`);
+    if (isStale()) return null;            // 响应后：过期响应不写状态、不再发下一页
     const points = data.points || [];
     all.push(...points);
     if (!data.has_more) return { points: all, truncated };
@@ -1233,13 +1241,20 @@ async function fetchHistoryPoints(evidenceId, token) {
 async function loadWindowCandidates(token) {
   if (!p1WindowActive()) return null;
   const candidates = new Map();
+  state.windowTruncated = 0;
   for (const entry of state.p1Entries) {
-    const history = await fetchHistoryPoints(entry.evidence_id, token);
+    const history = await fetchHistoryPoints(entry.evidence_id, () => token !== state.overviewToken);
     if (history === null || token !== state.overviewToken) return null;
     if (!history.points.length) continue;   // 窗口内无该帖观测：不进入分母
+    if (history.truncated) {
+      // 分页仍 has_more：接口升序，截断页末点不是窗口内真实最新点。
+      // 明确标记为“加载不完整”并排除，不计入完成候选，也不冒充窗口内最新值。
+      state.windowTruncated += 1;
+      continue;
+    }
     const last = history.points[history.points.length - 1];
     candidates.set(entry.evidence_id, { ...entry, observed_at: last.observed_at,
-      comment_count: last.comment_count, window_truncated: history.truncated });
+      comment_count: last.comment_count, window_truncated: false });
   }
   return candidates;
 }
@@ -1266,7 +1281,7 @@ function setWindowInputs(fromValue, toValue) {
 
 function renderWindowPending() {
   state.groupMeta = {};
-  for (const id of ["overview-topics", "topic-list", "search-results", "topic-topk"]) {
+  for (const id of ["overview-topics", "topic-list", "search-results", "topic-topk", "overview-shortcuts"]) {
     const el = $("#" + id);
     if (!el) continue;
     clear(el);
@@ -1300,6 +1315,18 @@ function setWatchAdminStatus(kind, text, bodyNode) {
   if (bodyNode) host.append(bodyNode);
 }
 
+// 写请求（加入 / 退出）失败：先清旧观察业务缓存，再真实重读 GET；GET 失败仍保持空，绝不复用旧值。
+// 重读（成功或失败）不得覆盖写请求的原始错误证据，故最后再落管理证据。
+async function refreshWatchAfterWriteFailure(err, actionLabel) {
+  const adminText = `${actionLabel}失败（${p1StatusText(err)}）：${(err && err.message) || ""}`;
+  const adminBody = p1BodyNode(err);
+  state.watch = null;
+  renderWatchlist();                 // data 为空 → 清空旧活跃/历史展示，避免继续把已过期或已改变的周期显示成活跃
+  await loadWatchlist();             // 真实重读 GET；失败时 loadWatchlist 保持空并给出失败占位
+  setWatchAdminStatus("error", adminText, adminBody);
+  show(`${actionLabel}失败（${p1StatusText(err)}）：旧观察展示已清空并已重读；原帖、证据与历史均未改变。`, true);
+}
+
 async function submitWatchAdd(evidenceId, reason, form) {
   const text = (reason || "").trim();
   if (!text || text.length > 200) {
@@ -1313,8 +1340,7 @@ async function submitWatchAdd(evidenceId, reason, form) {
     await loadWatchlist();
     renderBusinessViews();
   } catch (err) {
-    show(`加入观察失败（${p1StatusText(err)}）：原帖、证据与历史均未改变。`, true);
-    setWatchAdminStatus("error", `加入观察失败（${p1StatusText(err)}）：${(err && err.message) || ""}`, p1BodyNode(err));
+    await refreshWatchAfterWriteFailure(err, "加入观察");
   }
 }
 
@@ -1331,8 +1357,7 @@ async function submitWatchExit(watchId, reason, form) {
     await loadWatchlist();
     renderBusinessViews();
   } catch (err) {
-    show(`退出观察失败（${p1StatusText(err)}）：观察周期与历史均未改变。`, true);
-    setWatchAdminStatus("error", `退出观察失败（${p1StatusText(err)}）：${(err && err.message) || ""}`, p1BodyNode(err));
+    await refreshWatchAfterWriteFailure(err, "退出观察");
   }
 }
 
@@ -1546,13 +1571,36 @@ function renderWatchHistory(record, history) {
       + (truncated ? "历史分页已达上限，未声称完整。" : "");
   }
   clearWatchCharts();
-  renderChart("chart-count", "累计评论计数", points,
-    (point) => (point.comment_count && point.comment_count.precision === "exact" && point.comment_count.value !== null
-      ? point.comment_count.value : null), "chart-count-status");
-  renderChart("chart-rate", "每小时变化率", points,
-    (point) => (point.rate_per_hour === null || point.rate_per_hour === undefined ? null : point.rate_per_hour),
-    "chart-rate-status");
+  // 先渲染真实可读历史表：即使图表初始化/绘制失败，表与另一张图仍保留，绝不把已取得的真实点伪装成空窗口。
   renderWatchPoints(points, truncated);
+  const chartErrors = [];
+  for (const spec of [
+    { key: "chart-count", label: "累计评论计数", captionId: "chart-count-status",
+      valueOf: (point) => (point.comment_count && point.comment_count.precision === "exact" && point.comment_count.value !== null
+        ? point.comment_count.value : null) },
+    { key: "chart-rate", label: "每小时变化率", captionId: "chart-rate-status",
+      valueOf: (point) => (point.rate_per_hour === null || point.rate_per_hour === undefined ? null : point.rate_per_hour) },
+  ]) {
+    try {
+      renderChart(spec.key, spec.label, points, spec.valueOf, spec.captionId);
+    } catch (err) {
+      // 单图异常：清空该图并给短占位，保留可读表与另一张图；真实错误只落管理证据容器。
+      const chart = state.charts[spec.key];
+      if (chart && typeof chart.dispose === "function") { try { chart.dispose(); } catch (ignore) { /* 忽略 dispose 失败 */ } }
+      state.charts[spec.key] = null;
+      const el = $("#" + spec.key);
+      if (el) {
+        clear(el);
+        el.append(h("p", { class: "muted" }, "该图表渲染失败；下方可读历史表为同源真实值，另一张图不受影响。"));
+      }
+      const caption = $("#" + spec.captionId);
+      if (caption) caption.textContent = `${spec.label}：图表渲染失败（保留可读历史表）`;
+      chartErrors.push(`${spec.label}：${(err && err.message) || err}`);
+    }
+  }
+  if (chartErrors.length) {
+    setWatchAdminStatus("error", `图表渲染失败（已保留可读历史表与另一张图）：${chartErrors.join("；")}`);
+  }
 }
 
 async function loadWatchHistory(watchId) {
@@ -1568,7 +1616,7 @@ async function loadWatchHistory(watchId) {
   clear($("#watch-history-points"));
   $("#watch-history-points").append(h("tr", null, h("td", { colspan: "7", class: "muted" }, "正在读取真实观测历史…")));
   try {
-    const history = await fetchHistoryPoints(record.evidence_id, token);
+    const history = await fetchHistoryPoints(record.evidence_id, () => token !== state.historyToken);
     if (history === null || token !== state.historyToken) return;
     state.history = history;
     renderWatchHistory(record, history);
@@ -1593,11 +1641,21 @@ async function loadWatchlist() {
   } catch (err) {
     if (token !== state.watchToken) return;
     state.watch = null;
+    state.historyToken++;                 // 失效在途 / 旧历史响应
+    state.history = null;
+    state.selectedWatchId = null;
     clearWatchCharts();
     clear($("#watch-active"));
     clear($("#watch-history-body"));
     $("#watch-history-body").append(h("tr", null, h("td", { colspan: "10", class: "muted" }, "观察清单读取失败，旧展示已清空。")));
-    setBizStatus("error", `观察清单读取失败（${p1StatusText(err)}）；旧观察展示已清空。`);
+    const points = $("#watch-history-points");
+    if (points) {
+      clear(points);
+      points.append(h("tr", null, h("td", { colspan: "7", class: "muted" }, "观察清单读取失败，旧同帖历史点已清空。")));
+    }
+    const detail = $("#watch-detail-status");
+    if (detail) detail.textContent = "观察清单读取失败：旧观察展示、旧同帖历史点与旧图均已清空，未显示缓存。";
+    setBizStatus("error", `观察清单读取失败（${p1StatusText(err)}）；旧观察展示与旧历史已清空。`);
     setWatchAdminStatus("error", `观察清单读取失败（${p1StatusText(err)}）：${(err && err.message) || ""}`, p1BodyNode(err));
   }
 }
@@ -1707,6 +1765,7 @@ async function loadP1() {
     applyP1(data);
     buildFilterBars();
     state.windowCandidates = null;
+    state.windowTruncated = 0;
     renderBusinessViews();
     await enrichP1Contents(token);
     if (token !== state.overviewToken) return;

@@ -1,4 +1,5 @@
 """M1 evidence storage. Standard library, bounded manual batches, no model calls."""
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 import hashlib
@@ -622,6 +623,36 @@ def p1_watchlist(db, moment=None):
             "empty_state": not items}
 
 
+@contextmanager
+def immediate_write(db):
+    """取得 SQLite 写锁后再做 cap 检查，避免跨连接把上限读空后分别插入。
+
+    仅 `with db` 不会在前置 SELECT 之前开启写事务，因此重复检查与活跃计数会和插入
+    分处不同事务、被并发连接同时读到尚有余量。这里在检查前显式 `BEGIN IMMEDIATE`，
+    成功统一 commit、异常统一 rollback。若调用方已开启事务，则退回 SAVEPOINT，
+    既保留原子门也不提交/回滚调用方事务。
+    """
+    if db.in_transaction:
+        db.execute("SAVEPOINT p1_watch_add")
+        try:
+            yield
+        except BaseException:
+            db.execute("ROLLBACK TO p1_watch_add")
+            db.execute("RELEASE p1_watch_add")
+            raise
+        else:
+            db.execute("RELEASE p1_watch_add")
+    else:
+        db.execute("BEGIN IMMEDIATE")
+        try:
+            yield
+        except BaseException:
+            db.rollback()
+            raise
+        else:
+            db.commit()
+
+
 def p1_watch_add(db, evidence_id, reason, moment=None):
     """Explicit human join. 24h period from real server UTC now; atomic cap 3; never renews."""
     if not isinstance(evidence_id, str) or not evidence_id.strip():
@@ -631,7 +662,7 @@ def p1_watch_add(db, evidence_id, reason, moment=None):
     row = db.execute("SELECT * FROM p1_evidence WHERE id=?", (evidence_id.strip(),)).fetchone()
     if row is None:
         raise P1NotFound("evidence 不存在")
-    with db:
+    with immediate_write(db):
         periods = list(db.execute("SELECT * FROM p1_watch_periods WHERE identity_key=?", (row["identity_key"],)))
         if any(watch_status(period, moment) == "active" for period in periods):
             raise P1Conflict("该原帖已有活跃观察周期；已拒绝重复加入且未延长 24h")

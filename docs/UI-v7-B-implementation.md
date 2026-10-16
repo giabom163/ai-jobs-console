@@ -1,0 +1,126 @@
+# UI v7-B 实现说明（受限修订轮）
+
+## 0. 本轮定位与状态
+
+- 任务：`gender-ui-v7-b-flash-20261016`；工作区为本 attempt worktree；真实基线 commit `479e30a691754b6aec726608189af1d2d770cdbf`。
+- 本轮只做「与方案/审查不符的最小修复」，严格限定允许 8 文件；不改 vendor、AGENTS、`analysis.py`、其他说明文档、配置、元数据、真实 DB；不联网、不调用模型、不启动产品 8790/GUI 助手、不提交、不切分支、不清理。
+- 本工作包已知实例：B 工作包累计已用约 1494 秒，总上限 3600 秒；本轮实现 + 一次定向检查须在 900 秒内完成。
+- 进度与验收是两套独立字段：
+  - 实现（本工作区）：**DONE**（下述必修项均已落地）。
+  - 定向检查（本轮唯一一次）：**PASS**（退出码 0，三组 18 项全 PASS，详见 §6）。
+  - 真实 GUI / 真实 8790 / 真实 DB 人工验收：**NOT_STARTED**；人工 accept：**null**（由主线程判定，执行者不自动 accept）。
+- 历史失败事实（首次 900 秒 timeout、`provider.transport` 报 HTTP 200 后 `Decode error`、缺指定说明、原契约只准一次却实际两次定向脚本均 exit 1）全部保留在 §3，且不以本轮结果覆盖。
+
+## 1. 实际修改文件
+
+| 文件 | 变更摘要 |
+| --- | --- |
+| `storage.py` | `p1_watch_add` 在重复检查/活跃计数/插入前显式取得 SQLite 写锁（`BEGIN IMMEDIATE`），异常 rollback、成功 commit；调用方已有事务时退回 SAVEPOINT。 |
+| `app.js` | 分页每页前后核对令牌、截断身份不计入窗口候选；pending 清 `#overview-shortcuts`；历史先渲染可读表、两图各自 try/catch；watchlist GET 失败与 watch POST 失败清旧缓存/重读 GET 并保留原错证据。 |
+| `tools/manual_p1_b_check.py` | 移除 ghost 身份与所有绕 cap 的虚构身份/重复活跃周期；改为 C 到期后真实 `POST` 显式重加；`A_off_top2_but_active` 按身份（当前最新 evidence_id）核对；新增 cap 原子性与“无直接注入周期行”静态回归锁。 |
+| `tools/serve_b_fixture.py` | 创建目录前只接受 `--limit 3`；账本响应体改为按内容哈希完整写入独立 artifact（不截断、不打截断标记），账本引用其 sha256/长度/路径。 |
+| `docs/UI-v7-B-implementation.md` | 本文件（补齐此前缺失的指定实现说明）。 |
+
+未修改：`server.py`、`index.html`、`style.css`（审查必修项不涉及，保持原样即为最小改动），以及 `vendor/`、`AGENTS.md`、`analysis.py`、`docs/P1-B-implementation.md`、其他文档、配置与元数据。
+
+## 2. 必修项与对应修复
+
+### 2.1 窗口分页不再用截断点冒充窗口最新候选（app.js）
+
+- `fetchHistoryPoints(evidenceId, isStale)`：改为每页**请求前**与**响应后**都核对令牌，过期立即返回 `null`，旧窗口/旧选择不再继续发满 20 页。
+- `loadWindowCandidates(token)`：接口顺序为升序，`has_more` 仍为真时截断页末点不是窗口内真实最新点。现在对 `history.truncated` 为真的身份**明确标记为加载不完整并排除**，不计入完成候选、也不取 `points[-1]` 当窗口最新值；被排除数量记入 `state.windowTruncated`，在统一筛选说明中以“另有 N 条候选因历史分页未取完被明确排除，不计入完成候选与分母”呈现。
+- 总览 / 议题 / 检索三视图仍共用 `p1ActiveEntries()` 的同一窗口候选集合，**保持三个业务同分母**。
+- `renderWindowPending()` 现在同步清空 `#overview-shortcuts` 并放入“正在读取…”占位，窗口切换期间不再残留上一窗口原帖卡片。失败路径经 `loadP1` 的 catch → `p1Reset()`，`p1Reset` 已清 `overview-shortcuts`。
+
+### 2.2 storage 观察 cap 跨连接原子（storage.py）
+
+- 新增 `immediate_write(db)` 上下文管理器。`p1_watch_add` 的“重复检查 + 活跃计数 + 插入”整体放入其中：
+  - 连接未处于事务时先 `BEGIN IMMEDIATE` 取得写锁，成功 `commit()`、异常 `rollback()`；
+  - 调用方已开启事务时退回 `SAVEPOINT p1_watch_add`（成功 RELEASE、异常 ROLLBACK TO + RELEASE），**不提交也不回滚调用方事务**。
+- `server.py` 既有进程内 `WRITE_LOCK` 保留（Handler 仍串行化单进程写），存储层 `BEGIN IMMEDIATE` 作为跨连接原子门。
+- 既有 DDL `CREATE TABLE IF NOT EXISTS p1_watch_periods` 保持幂等。
+
+### 2.3 图表失败仍保留可读表与另一张图（app.js）
+
+- `renderWatchHistory(record, history)` 顺序调整为：**先** `renderWatchPoints(points, truncated)` 渲染真实可读历史表，**再**逐图渲染。
+- 两张图各自独立 `try/catch` 包裹 `echarts.init()` / `setOption()` / `resize()`：任一图抛错时销毁并清空该图、给短占位“该图表渲染失败；下方可读历史表为同源真实值，另一张图不受影响”，并更新该图 caption；另一张图与可读表保留。
+- 图表异常不再冒泡到 `loadWatchHistory` 的读取失败分支，**不会**把已成功取得的真实点渲染成空窗口。
+- 业务短提示走 `setWatchAdminStatus` 的固定文案，图表真实错误 message 只落数据管理“人工证据”状态容器留证。
+
+### 2.4 watchlist GET 失败清旧历史（app.js）
+
+- `loadWatchlist()` 的 catch 现在同时：在丢弃已失效的旧响应之外，令 `state.historyToken++`（失效在途/旧历史）、`state.history = null`、`state.selectedWatchId = null`；清空并占位 `#watch-active`、`#watch-history-body`、`#watch-history-points`、两张图与 `#watch-detail-status`。旧历史点与详情图不再残留在页面。
+
+### 2.5 watch POST 失败清缓存并真实重读 GET（app.js）
+
+- 新增 `refreshWatchAfterWriteFailure(err, actionLabel)`：先 `state.watch = null` 并 `renderWatchlist()` 清空旧观察展示，再 `await loadWatchlist()` 真实重读 GET；GET 失败时 `loadWatchlist` 自身保持空展示（不复用旧值）。最后再落写请求的原始错误证据（`setWatchAdminStatus`），**避免被 GET 的失败状态覆盖**。
+- `submitWatchAdd` / `submitWatchExit` 的 catch 统一改走该函数。
+
+### 2.6 定向检查脚本去虚构身份并补到期重加（tools/manual_p1_b_check.py）
+
+- 删除 `p1w-ghost-cap` ghost 身份及其“占满上限触发第 4 活跃 cap 分支”的注入；不再伪造任何第 4 身份或重复活跃周期。全库身份上限仍由真实 `POST /api/p1/import`（`fixture-D`）→ 409 与 `count(DISTINCT identity_key)==3` 覆盖；活跃数只保留自然不变量 `active <= 3`。
+- `watch_expiry_and_atomic_cap` 重写为 `watch_expiry_and_readd`：把 C 的 `expires_at` 定向设为过去 → 断言 `expired` 且不在 active、旧周期仍在 history 且为 `expired`；再用真实 `POST /api/p1/watchlist` **显式重加 C** → 断言 201、新 `watch_id`、旧周期仍 `expired`、C 重新 active；结束时 A/B/C 各保有一个有效活跃周期且 `active <= 3`。
+- `A_off_top2_but_active` 断言保留（不删）。改为按**身份**核对：`a_now = latest_evidence(db, "fixture-A")["id"]`，断言 `a_now not in top2` 且 `a_now in active`。
+- 仅使用 A/B/C 三条真实 evidence 身份，全部经真实 `storage.p1_import` / 真实 `POST` 写入隔离库。
+
+### 2.7 隔离 GUI 助手 limit 预检与账本完整（tools/serve_b_fixture.py）
+
+- `--limit` 改为只接受 `3`，且在 `--evidence-dir` 创建前校验失败即 `parser.error`（不会半初始化三身份）。
+- `Ledger` 响应体不再 `[:4000]` 截断：按内容哈希完整写入 `<evidence-dir>/http-bodies/<sha>.body`（独立 artifact，不截断、不打截断标记），账本行引用 `body_sha256` / `body_length` / `body_path` / `body_complete: true`。
+
+## 3. 历史失败事实（保留，不得删除或覆盖）
+
+- Flash 首次执行 **900 秒 timeout**，已停稳；`provider.transport` 报告 HTTP 200 后出现 `Decode error`，已停稳。
+- 原契约只允许**一次**定向检查，实际执行了**两次**定向脚本，两次均 **exit 1** → 执行范围 **FAIL**。
+- 第一次运行的期望值存在**时区换算错误**，且失败后**未停止**。
+- 第二次运行 `watch_outlives...` 断言 **FAIL**；失败 detail（原始值）：
+  - `top2 = [p1ev-ad96b9246f41f8b2bf3a86dd9438df1619efb57a28d3e3e98b9c0c1f47270080, p1ev-b5df278caf3fb8880c9f978416ebc1881366f2d93951913c5d7545ac4a71c509]`
+  - `active = [p1ev-6b7db0c522f06279c409a46a79c668e9ae4d35d865010673535f9947ce02932c, p1ev-b5df278caf3fb8880c9f978416ebc1881366f2d93951913c5d7545ac4a71c509, p1ev-ghost]`
+- 此前缺失指定说明 `docs/UI-v7-B-implementation.md`；本轮补齐本文件。
+- 上述原始 stdout/stderr/result 由主线程保存在**外部证据目录**；本工作区未提供其原始字节，故本轮**不补造**退出码或输出，也不删除/覆盖主线程的外部保存。
+
+## 4. `A_off_top2_but_active` 静态根因（不臆断）
+
+- 静态核对（用真实 `storage` 纯函数 `p1_prepare` / `json_bytes` / `digest` 逐条重算 evidence_id，不建库、不启服务）确认夹具映射与历史 detail 完全一致：
+  - 组：三条夹具记录 `group_label = "隔离合成分组"`，同一组。
+  - Top2（`p1_overview(db, 2)`）：C=320 → `p1ev-ad96b92…`，B=240 → `p1ev-b5df278…`。
+  - A 的最新真实观测为 2026-10-10T07:00（值 170，`stat.other`）→ `p1ev-6b7db0c…`，确实落在 Top2 之外。
+  - ghost 行无对应 `p1_evidence`，`watch_item()` 为其退化为 `evidence_id="p1ev-ghost"`、`latest_observed_at=null`。
+- 根因：`watch_item()` 返回的是**身份当前最新真实证据**的 `evidence_id`（会随新观测更新），而旧断言拿 group_watch 开始时捕获的**旧 evidence_id** 对照实时 active 列表；叠加被删除的 ghost / 重复活跃周期注入，active 槽位可能被非真实项占用。按身份/当前最新 evidence_id 对照即可消除该脆弱点。
+- 处理：保留断言，改为按当前最新 evidence_id（等价于按身份）对照，并新增 `a_evidence_id_updated` 明确“evidence_id 随新观测更新属正常”，不把合法的 evidence_id 更新误判为观察身份消失；**未删除断言刷 PASS**。
+
+## 5. 已知限制（本轮不重构）
+
+- 审查提到 `storage.p1_history` 每次分页会把该身份全历史读入并重算（长历史下重复全量扫描，属性能建议）。本轮按“不扩大任务、不重构内核”要求**保留为已知限制**：首版小数据、身份上限 ≤3、响应点上限 500；未改分页内核语义（比较仍先基于完整有序历史判定，再套窗口）。
+- 合法状态下身份总数 ≤3 且同身份重复优先冲突，因此“第 4 个不同活跃观察”cap 分支难以由纯 API 状态自然到达；本轮**不为覆盖该分支注入虚构周期行**，只断言 `active <= 3` 与真实第 4 身份导入 409。
+
+## 6. 本轮一次定向检查（唯一一次）
+
+- 执行目录：本工作区；解释器：`C:\Users\Lenovo\.workbuddy\binaries\python\versions\3.13.12\python.exe`（Python 3.13.12）。
+- 命令（仅执行一次，未使用会吞 exit 1 的 shell 包装）：
+  `python tools/manual_p1_b_check.py --limit 3 --evidence-dir <全新隔离目录>`
+- 真实退出码：**0**（PASS）。
+- stdout 原文（单行 JSON）：
+  `{"status": "PASS", "evidence_dir": "...\\b-revise-20261016-160847\\evidence", "summary": {"group1_history_rules": {"total": 10, "failed": 0}, "group2_watch_lifecycle": {"total": 5, "failed": 0}, "group3_http_edges_static": {"total": 3, "failed": 0}}}`
+- stderr：空。
+- 产物（外部证据目录，未写入工作区、未删除、不覆盖主线程此前保存）：`C:\Users\Lenovo\AppData\Local\Temp\opencode\b-revise-20261016-160847\`，含 `stdout.log`、`stderr.log`，以及脚本自建的 `evidence\result.json`、`evidence\fixture.db`、`evidence\root\`。
+- `result.json` 关键字段：`status=PASS`、`port=55996`（脚本内部真实 Handler 临时回环端口，非 8790/8791/8792）、`isolation_row_count=18`、`isolation_watch_rows=5`、`product_acceptance=BLOCKED`、`gui_acceptance=false`、`real_db_touched=false`、`network_requests=0`；三组共 18 个检查全部 PASS（10 + 5 + 3）。
+- 说明：仅此一次；后续未再修、未重跑。此隔离夹具路径的 PASS **不等于**产品最终 PASS，也不替代真实 8790/GUI/真实 DB 的人工验收。检查前已完成全部代码修改；检查后仅回填本节与 §0 的文档文字，未改任何被检代码。
+
+## 7. 未执行 / 未覆盖
+
+- 真实 GUI：**未开始**（未接管任何标签页、未启动 `tools/serve_b_fixture.py`）。
+- 产品 8790 服务、真实 `sentiment.db`、网络、`/api/refresh`、外部模型：**均未执行/未触碰**。
+- vendor 文件哈希未在本轮独立重算（沿用既有 provenance）。
+- 定向检查只证明隔离夹具路径；**不等于**产品最终 PASS，也不替代主线程真实路径 / GUI 验收。
+- 本轮未执行除唯一一次定向检查以外的额外测试；仅执行了允许的受限语法检查（内存 `compile()` 与 `node --check app.js`）。
+
+## 8. 审查口径澄清
+
+- 审查对 A 的描述仅为**静态审计**，不覆盖主线程 A 的实机 PASS；本文件不据此改判 A。
+- 审查中“`docs/P1-B-implementation.md` 存在”与本轮工作区结果无关：该文件属于既有内容，**本轮未改**；本轮只补齐指定 `docs/UI-v7-B-implementation.md`。
+
+## 9. 交付边界
+
+- 本工作区仅修改上述文件，未提交、未切分支、未修改 `.git`、外部配置、vendor、真实库或桥状态文件。
+- 本文件为 UTF-8 + LF 写入，避免 CRLF 导致的跨环境 hash 差异。
