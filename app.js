@@ -49,7 +49,7 @@ const state = {
   windowTo: null,                 // 已应用窗口终点（不含观测时刻）或 null
   windowInput: { from: "", to: "" },
   groupMeta: {},
-  charts: { count: null, rate: null }
+  charts: { "chart-count": null, "chart-rate": null }   // key 必须与 DOM id / renderChart 存储 key 完全一致
 };
 
 // 概览始终按候选上限（3）载入全部候选，展示 K 由前端在选择范围内重算，避免后端 top_k 截断。
@@ -1462,7 +1462,7 @@ function renderWatchlist() {
 }
 
 function clearWatchCharts() {
-  for (const key of ["count", "rate"]) {
+  for (const key of ["chart-count", "chart-rate"]) {
     const chart = state.charts[key];
     if (chart && typeof chart.dispose === "function") { try { chart.dispose(); } catch (err) { /* 忽略 dispose 失败 */ } }
     state.charts[key] = null;
@@ -1485,16 +1485,21 @@ function renderWatchPoints(points, truncated) {
   for (const point of points) {
     const count = point.comment_count || {};
     const known = count.precision === "exact" && count.value !== null && count.value !== undefined;
-    const comparable = ["comparable", "retraction"].includes(point.comparison);
+    const prevAt = point.previous_observed_at;
+    // 实际间隔列：仅当确有真实前值时才显示“比较起点→终点（格式化时区时间）+ 秒数”，不推断缺前值。
+    const intervalText = prevAt
+      ? `${fmtTime(prevAt)} → ${fmtTime(point.observed_at)}（${formatInterval(point.interval_seconds)}）`
+      : "—";
     let label = COMPARISON_LABELS[point.comparison] || point.comparison || "—";
-    if (point.previous_observed_at && !comparable) {
-      label += "；参考前值在窗口外，不据此改判";
+    // 仅当比较起点确早于当前观测窗口起点时才说明“窗口外”，窗口内不得误标。
+    if (prevAt && state.windowFrom && new Date(prevAt).getTime() < new Date(state.windowFrom).getTime()) {
+      label += "；比较起点在观测窗口之外（沿用窗口外真实前值，已按真实间隔计算）";
     }
     body.append(h("tr", null,
       h("td", null, fmtTime(point.observed_at)),
       h("td", { class: "num" }, known ? String(count.value) : "未知"),
       h("td", null, p1PrecisionLabel(count.precision)),
-      h("td", { class: "num" }, formatInterval(point.interval_seconds)),
+      h("td", { class: "num" }, intervalText),
       h("td", { class: "num" }, point.delta === null || point.delta === undefined ? "—" : String(point.delta)),
       h("td", { class: "num" }, point.rate_per_hour === null || point.rate_per_hour === undefined
         ? "—" : `${fmtNumber(point.rate_per_hour)} 条/小时`),
@@ -1506,7 +1511,7 @@ function renderWatchPoints(points, truncated) {
   }
 }
 
-function renderChart(key, label, points, valueOf, captionId) {
+function renderChart(key, label, points, valueOf, captionId, kind) {
   const el = $("#" + key);
   const caption = $("#" + captionId);
   const series = points.map((point) => ({ time: point.observed_at, value: valueOf(point) }));
@@ -1517,9 +1522,18 @@ function renderChart(key, label, points, valueOf, captionId) {
     return;
   }
   if (caption) {
-    caption.textContent = known.length === 1
-      ? `${label}：仅 1 个真实观测点，等待第二个观测点（不补 0、不插值、不声称增速）`
-      : `${label}：${known.length} 个可比真实观测点（缺测/未知保留断点，不补 0、不插值）`;
+    if (kind === "rate") {
+      // 速率图：单个已计算速率区间也是真实速率，必须如实显示，不得说“等待第二个观测点”从而否认已算速率。
+      caption.textContent = known.length === 0
+        ? `${label}：暂无已计算速率区间（相邻可比精确观测点不足），不补 0、不插值`
+        : known.length === 1
+          ? `${label}：仅 1 个已计算速率区间，如实显示该真实速率（不补 0、不插值）`
+          : `${label}：${known.length} 个已计算速率区间（缺测/未计算保留断点，不补 0、不插值）`;
+    } else {
+      caption.textContent = known.length === 1
+        ? `${label}：仅 1 个真实观测点，等待第二个观测点（不补 0、不插值、不声称增速）`
+        : `${label}：${known.length} 个可比真实观测点（缺测/未知保留断点，不补 0、不插值）`;
+    }
   }
   const lib = chartLib();
   if (!lib) {
@@ -1575,14 +1589,14 @@ function renderWatchHistory(record, history) {
   renderWatchPoints(points, truncated);
   const chartErrors = [];
   for (const spec of [
-    { key: "chart-count", label: "累计评论计数", captionId: "chart-count-status",
+    { key: "chart-count", label: "累计评论计数", captionId: "chart-count-status", kind: "count",
       valueOf: (point) => (point.comment_count && point.comment_count.precision === "exact" && point.comment_count.value !== null
         ? point.comment_count.value : null) },
-    { key: "chart-rate", label: "每小时变化率", captionId: "chart-rate-status",
+    { key: "chart-rate", label: "每小时变化率", captionId: "chart-rate-status", kind: "rate",
       valueOf: (point) => (point.rate_per_hour === null || point.rate_per_hour === undefined ? null : point.rate_per_hour) },
   ]) {
     try {
-      renderChart(spec.key, spec.label, points, spec.valueOf, spec.captionId);
+      renderChart(spec.key, spec.label, points, spec.valueOf, spec.captionId, spec.kind);
     } catch (err) {
       // 单图异常：清空该图并给短占位，保留可读表与另一张图；真实错误只落管理证据容器。
       const chart = state.charts[spec.key];
@@ -2115,11 +2129,29 @@ $("#watch-reload").addEventListener("click", () => {
   loadWatchlist();
   if (state.selectedWatchId) loadWatchHistory(state.selectedWatchId);
 });
-window.addEventListener("resize", () => {
-  for (const key of ["count", "rate"]) {
-    const chart = state.charts[key];
-    if (chart && typeof chart.resize === "function") chart.resize();
+// 单图 resize 异常独立捕获：只清理该图并给业务短提示，保留可读历史表与另一张图；
+// 真实 error 只落数据管理「人工证据」状态容器留证。沿用已实现的图表 try/catch 逻辑，不新增框架。
+function resizeWatchChart(key, label) {
+  const chart = state.charts[key];
+  if (!chart || typeof chart.resize !== "function") return;
+  try {
+    chart.resize();
+  } catch (err) {
+    try { if (typeof chart.dispose === "function") chart.dispose(); } catch (ignore) { /* 忽略 dispose 失败 */ }
+    state.charts[key] = null;
+    const el = $("#" + key);
+    if (el) {
+      clear(el);
+      el.append(h("p", { class: "muted" }, "该图表调整尺寸失败；下方可读历史表为同源真实值，另一张图不受影响。"));
+    }
+    const caption = $("#" + key + "-status");
+    if (caption) caption.textContent = `${label}：图表调整尺寸失败（保留可读历史表）`;
+    setWatchAdminStatus("error", `图表调整尺寸失败（已保留可读历史表与另一张图）：${label}：${(err && err.message) || err}`);
   }
+}
+window.addEventListener("resize", () => {
+  resizeWatchChart("chart-count", "累计评论计数");
+  resizeWatchChart("chart-rate", "每小时变化率");
 });
 
 /* ---------- 业务导航与 P1 事件绑定 ---------- */

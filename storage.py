@@ -623,34 +623,35 @@ def p1_watchlist(db, moment=None):
             "empty_state": not items}
 
 
+class P1TransactionRequired(RuntimeError):
+    """immediate_write 需要无事务连接才能取写锁；调用方已开启事务时明确拒绝，不退回 SAVEPOINT。"""
+
+
 @contextmanager
 def immediate_write(db):
     """取得 SQLite 写锁后再做 cap 检查，避免跨连接把上限读空后分别插入。
 
     仅 `with db` 不会在前置 SELECT 之前开启写事务，因此重复检查与活跃计数会和插入
     分处不同事务、被并发连接同时读到尚有余量。这里在检查前显式 `BEGIN IMMEDIATE`，
-    成功统一 commit、异常统一 rollback。若调用方已开启事务，则退回 SAVEPOINT，
-    既保留原子门也不提交/回滚调用方事务。
+    成功统一 commit、异常统一 rollback。
+
+    本函数要求连接处于**无事务**状态。若调用方已开启事务（`db.in_transaction`），既有
+    的 SAVEPOINT 既不能重新取得写锁，也不能证明该事务已是 writer transaction，故不再
+    退回 SAVEPOINT，而是**明确拒绝**该调用：抛出 P1TransactionRequired，不进入检查、不
+    插入，也不提交或回滚调用方事务（调用方自行处理其事务）。
     """
     if db.in_transaction:
-        db.execute("SAVEPOINT p1_watch_add")
-        try:
-            yield
-        except BaseException:
-            db.execute("ROLLBACK TO p1_watch_add")
-            db.execute("RELEASE p1_watch_add")
-            raise
-        else:
-            db.execute("RELEASE p1_watch_add")
+        raise P1TransactionRequired(
+            "immediate_write 需要无事务连接以取得 SQLite 写锁；检测到调用方已开启事务，"
+            "无法在既有事务中保证跨连接原子性，已拒绝调用且未提交/回滚调用方事务")
+    db.execute("BEGIN IMMEDIATE")
+    try:
+        yield
+    except BaseException:
+        db.rollback()
+        raise
     else:
-        db.execute("BEGIN IMMEDIATE")
-        try:
-            yield
-        except BaseException:
-            db.rollback()
-            raise
-        else:
-            db.commit()
+        db.commit()
 
 
 def p1_watch_add(db, evidence_id, reason, moment=None):

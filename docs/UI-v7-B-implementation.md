@@ -2,20 +2,21 @@
 
 ## 0. 本轮定位与状态
 
-- 任务：`gender-ui-v7-b-flash-20261016`；工作区为本 attempt worktree；真实基线 commit `479e30a691754b6aec726608189af1d2d770cdbf`。
-- 本轮只做「与方案/审查不符的最小修复」，严格限定允许 8 文件；不改 vendor、AGENTS、`analysis.py`、其他说明文档、配置、元数据、真实 DB；不联网、不调用模型、不启动产品 8790/GUI 助手、不提交、不切分支、不清理。
-- 本工作包已知实例：B 工作包累计已用约 1494 秒，总上限 3600 秒；本轮实现 + 一次定向检查须在 900 秒内完成。
+- 任务：`gender-ui-v7-b-flash-20261016`；本文件在同一 attempt worktree 内累积记录两个窄轮，均为「与方案/审查不符的最小修复」。
+- 上一轮（受限修订轮）真实基线 `479e30a691754b6aec726608189af1d2d770cdbf`；本轮（B 窄修，300 秒）真实基线 `c53eef629bd02b0febbf88c18d51195e6c4bba0b`。
+- 本轮只改 `storage.py`、`app.js`、`docs/UI-v7-B-implementation.md` 三文件（改动见 §2.2、§2.8–§2.10）；不改 vendor、AGENTS、`analysis.py`、其他说明文档、配置、元数据、真实 DB；不联网、不调用模型、不启动产品 8790/GUI 助手、不提交、不切分支、不清理。
+- **本轮未执行任何测试、语法检查、脚本、HTTP、服务或 GUI**：只读源码与 `git status`/`git diff` 并编辑（见 §7）。
 - 进度与验收是两套独立字段：
-  - 实现（本工作区）：**DONE**（下述必修项均已落地）。
-  - 定向检查（本轮唯一一次）：**PASS**（退出码 0，三组 18 项全 PASS，详见 §6）。
-  - 真实 GUI / 真实 8790 / 真实 DB 人工验收：**NOT_STARTED**；人工 accept：**null**（由主线程判定，执行者不自动 accept）。
-- 历史失败事实（首次 900 秒 timeout、`provider.transport` 报 HTTP 200 后 `Decode error`、缺指定说明、原契约只准一次却实际两次定向脚本均 exit 1）全部保留在 §3，且不以本轮结果覆盖。
+  - 上一轮实现（本工作区）：**DONE**；上一轮唯一一次定向检查：**PASS**（退出码 0，三组 18 项全 PASS，详见 §6，本轮**未**重跑）。
+  - 本轮实现（本工作区）：**DONE**（下述窄修均已落地）。
+  - 真实 GUI / 真实 8790 / 真实 DB 人工验收：**NOT_STARTED**；人工 accept：**null**（由主线程判定，执行者不自动 accept，**本轮不擅自判 PASS**）。
+- 历史事实（首次 900 秒 timeout、`provider.transport` 报 HTTP 200 后 `Decode error`、缺指定说明、原契约只准一次却实际两次定向脚本均 exit 1、一次编辑工具 warning）全部保留在 §3，且不以本轮结果覆盖。
 
 ## 1. 实际修改文件
 
 | 文件 | 变更摘要 |
 | --- | --- |
-| `storage.py` | `p1_watch_add` 在重复检查/活跃计数/插入前显式取得 SQLite 写锁（`BEGIN IMMEDIATE`），异常 rollback、成功 commit；调用方已有事务时退回 SAVEPOINT。 |
+| `storage.py` | `p1_watch_add` 在重复检查/活跃计数/插入前显式取得 SQLite 写锁（`BEGIN IMMEDIATE`），异常 rollback、成功 commit；调用方已有事务时**明确拒绝**该调用（见 §2.2）。 |
 | `app.js` | 分页每页前后核对令牌、截断身份不计入窗口候选；pending 清 `#overview-shortcuts`；历史先渲染可读表、两图各自 try/catch；watchlist GET 失败与 watch POST 失败清旧缓存/重读 GET 并保留原错证据。 |
 | `tools/manual_p1_b_check.py` | 移除 ghost 身份与所有绕 cap 的虚构身份/重复活跃周期；改为 C 到期后真实 `POST` 显式重加；`A_off_top2_but_active` 按身份（当前最新 evidence_id）核对；新增 cap 原子性与“无直接注入周期行”静态回归锁。 |
 | `tools/serve_b_fixture.py` | 创建目录前只接受 `--limit 3`；账本响应体改为按内容哈希完整写入独立 artifact（不截断、不打截断标记），账本引用其 sha256/长度/路径。 |
@@ -36,7 +37,8 @@
 
 - 新增 `immediate_write(db)` 上下文管理器。`p1_watch_add` 的“重复检查 + 活跃计数 + 插入”整体放入其中：
   - 连接未处于事务时先 `BEGIN IMMEDIATE` 取得写锁，成功 `commit()`、异常 `rollback()`；
-  - 调用方已开启事务时退回 `SAVEPOINT p1_watch_add`（成功 RELEASE、异常 ROLLBACK TO + RELEASE），**不提交也不回滚调用方事务**。
+  - **调用方已开启事务（`db.in_transaction`）时明确拒绝**：既有 SAVEPOINT 既不能重新取得写锁，也不能证明该事务已是 writer transaction，故不再退回 SAVEPOINT，而是抛出 `P1TransactionRequired`（`immediate_write` 不再进入检查、不插入），**不提交也不回滚调用方事务**，由调用方自行处理其事务。本函数因此**只对无事务连接提供跨连接原子门**；不再把 SAVEPOINT 描述为等价原子的保证。
+- 仓库内唯一调用方 `server.py` 的 `/api/p1/watchlist` 处理每个请求用新连接（`db.in_transaction` 为假），因此正常路径始终走 `BEGIN IMMEDIATE`；拒绝分支只在调用方自持事务的误用场景触发。
 - `server.py` 既有进程内 `WRITE_LOCK` 保留（Handler 仍串行化单进程写），存储层 `BEGIN IMMEDIATE` 作为跨连接原子门。
 - 既有 DDL `CREATE TABLE IF NOT EXISTS p1_watch_periods` 保持幂等。
 
@@ -68,6 +70,22 @@
 - `--limit` 改为只接受 `3`，且在 `--evidence-dir` 创建前校验失败即 `parser.error`（不会半初始化三身份）。
 - `Ledger` 响应体不再 `[:4000]` 截断：按内容哈希完整写入 `<evidence-dir>/http-bodies/<sha>.body`（独立 artifact，不截断、不打截断标记），账本行引用 `body_sha256` / `body_length` / `body_path` / `body_complete: true`。
 
+### 2.8 图表实例 key 统一（app.js，本轮窄修）
+
+- 缺陷证据：`renderChart` 以 DOM id（`chart-count`/`chart-rate`）写入 `state.charts`，而 `clearWatchCharts` 与 `window.resize` 却遍历语义 key（`count`/`rate`），两者不一致，导致切换历史/错误清空时 dispose 不到真实实例、resize 也遍历不到已画图。
+- 修复：`state.charts` 初始化、`renderChart` 存储、`renderWatchHistory` 单图异常清理、`clearWatchCharts`、`window.resize` 现在统一使用 `chart-count`/`chart-rate`；清空时能 dispose 真实实例，1280→390 已画图可正确 resize。
+
+### 2.9 resize 单图异常独立捕获（app.js，本轮窄修）
+
+- 新增 `resizeWatchChart(key, label)`：逐图独立 `try/catch` 包裹 `chart.resize()`。单图抛错时只销毁并清空该图、给固定业务短提示、更新该图 caption，并在数据管理「人工证据」状态容器记录真实 `error.message`；另一张图与可读历史表保留。沿用 §2.3 的图表 try/catch 逻辑，不引入新框架。
+
+### 2.10 历史表区间显示与 caption 纠正（app.js，本轮窄修）
+
+- 可读历史表保持 7 列与布局：`观测时刻` 列仍显示该点终点时间；`实际间隔` 列改为显示真实比较区间“比较起点 → 终点（格式化时区时间）+ 间隔秒数”，**仅当该点确有 `previous_observed_at`** 时显示，缺前值显示 `—`，不推断。
+- “参考前值在窗口外”说明**只在该点比较起点确早于当前 `state.windowFrom`** 时追加；窗口内比较不再一律误标为窗口外。
+- 计数图与速率图 caption 分开：计数图单点仍提示“等待第二个观测点”；速率图**单个已计算速率区间**也如实显示该真实速率（“仅 1 个已计算速率区间”），不再用“等待第二个观测点 / 不声称增速”否认已算速率；速率图**无有效区间**时才提示等待。未知/约数仍显示“未知”，不补 0。
+- 图表 tooltip 只显示观测时刻与数值，不暴露 API 字段名。
+
 ## 3. 历史失败事实（保留，不得删除或覆盖）
 
 - Flash 首次执行 **900 秒 timeout**，已停稳；`provider.transport` 报告 HTTP 200 后出现 `Decode error`，已停稳。
@@ -76,17 +94,21 @@
 - 第二次运行 `watch_outlives...` 断言 **FAIL**；失败 detail（原始值）：
   - `top2 = [p1ev-ad96b9246f41f8b2bf3a86dd9438df1619efb57a28d3e3e98b9c0c1f47270080, p1ev-b5df278caf3fb8880c9f978416ebc1881366f2d93951913c5d7545ac4a71c509]`
   - `active = [p1ev-6b7db0c522f06279c409a46a79c668e9ae4d35d865010673535f9947ce02932c, p1ev-b5df278caf3fb8880c9f978416ebc1881366f2d93951913c5d7545ac4a71c509, p1ev-ghost]`
-- 此前缺失指定说明 `docs/UI-v7-B-implementation.md`；本轮补齐本文件。
+- 此前缺失指定说明 `docs/UI-v7-B-implementation.md`；上一轮补齐本文件。
+- 一次**编辑工具 warning**：上一轮编辑过程中出现一次 `oldString` 未找到的 warning（桥审查已记录须保留）；本工作区未提供其原始字节，故不补造具体文案，仅作为历史事实保留。
+- 上一轮唯一一次定向检查 **exit 0 × 三组 18 项全 PASS**（见 §6）；本轮**未重跑**任何检查，且不以此覆盖上述 FAIL 或前述执行范围 FAIL。
 - 上述原始 stdout/stderr/result 由主线程保存在**外部证据目录**；本工作区未提供其原始字节，故本轮**不补造**退出码或输出，也不删除/覆盖主线程的外部保存。
 
-## 4. `A_off_top2_but_active` 静态根因（不臆断）
+## 4. `A_off_top2_but_active` 失败归因更正（不臆断，本轮窄修）
 
 - 静态核对（用真实 `storage` 纯函数 `p1_prepare` / `json_bytes` / `digest` 逐条重算 evidence_id，不建库、不启服务）确认夹具映射与历史 detail 完全一致：
   - 组：三条夹具记录 `group_label = "隔离合成分组"`，同一组。
   - Top2（`p1_overview(db, 2)`）：C=320 → `p1ev-ad96b92…`，B=240 → `p1ev-b5df278…`。
   - A 的最新真实观测为 2026-10-10T07:00（值 170，`stat.other`）→ `p1ev-6b7db0c…`，确实落在 Top2 之外。
   - ghost 行无对应 `p1_evidence`，`watch_item()` 为其退化为 `evidence_id="p1ev-ghost"`、`latest_observed_at=null`。
-- 根因：`watch_item()` 返回的是**身份当前最新真实证据**的 `evidence_id`（会随新观测更新），而旧断言拿 group_watch 开始时捕获的**旧 evidence_id** 对照实时 active 列表；叠加被删除的 ghost / 重复活跃周期注入，active 槽位可能被非真实项占用。按身份/当前最新 evidence_id 对照即可消除该脆弱点。
+- **归因更正（据独立复审）**：旧的**整组** `watch_outlives...` FAIL **没有逐项真假明细**，不能据此断言 `watch_outlives...` 组内各项分别是真或假；给定原始值里 **A 的 Top2 条件成立**（A 的最新证据确实落在 Top2 之外），且 A 的旧 evidence 仍在 active 列表中。因此**不能把 A 从 active 消失确定性归因于 ghost**——没有证据支持该因果。
+- ghost 行本身无对应 `p1_evidence`，属**独立的夹具缺陷/违约**（不应存在的注入身份）；它与 A 的断言失败不能并列为同一确定性根因。
+- 仅能静态确认的脆弱点：`watch_item()` 返回身份**当前最新** `evidence_id`（随新观测更新），若继续拿旧 evidence_id 对照实时 active 列表，**追加新观测后**就可能误报。
 - 处理：保留断言，改为按当前最新 evidence_id（等价于按身份）对照，并新增 `a_evidence_id_updated` 明确“evidence_id 随新观测更新属正常”，不把合法的 evidence_id 更新误判为观察身份消失；**未删除断言刷 PASS**。
 
 ## 5. 已知限制（本轮不重构）
@@ -94,7 +116,7 @@
 - 审查提到 `storage.p1_history` 每次分页会把该身份全历史读入并重算（长历史下重复全量扫描，属性能建议）。本轮按“不扩大任务、不重构内核”要求**保留为已知限制**：首版小数据、身份上限 ≤3、响应点上限 500；未改分页内核语义（比较仍先基于完整有序历史判定，再套窗口）。
 - 合法状态下身份总数 ≤3 且同身份重复优先冲突，因此“第 4 个不同活跃观察”cap 分支难以由纯 API 状态自然到达；本轮**不为覆盖该分支注入虚构周期行**，只断言 `active <= 3` 与真实第 4 身份导入 409。
 
-## 6. 本轮一次定向检查（唯一一次）
+## 6. 上一轮一次定向检查（唯一一次；本轮未重跑）
 
 - 执行目录：本工作区；解释器：`C:\Users\Lenovo\.workbuddy\binaries\python\versions\3.13.12\python.exe`（Python 3.13.12）。
 - 命令（仅执行一次，未使用会吞 exit 1 的 shell 包装）：
@@ -105,7 +127,7 @@
 - stderr：空。
 - 产物（外部证据目录，未写入工作区、未删除、不覆盖主线程此前保存）：`C:\Users\Lenovo\AppData\Local\Temp\opencode\b-revise-20261016-160847\`，含 `stdout.log`、`stderr.log`，以及脚本自建的 `evidence\result.json`、`evidence\fixture.db`、`evidence\root\`。
 - `result.json` 关键字段：`status=PASS`、`port=55996`（脚本内部真实 Handler 临时回环端口，非 8790/8791/8792）、`isolation_row_count=18`、`isolation_watch_rows=5`、`product_acceptance=BLOCKED`、`gui_acceptance=false`、`real_db_touched=false`、`network_requests=0`；三组共 18 个检查全部 PASS（10 + 5 + 3）。
-- 说明：仅此一次；后续未再修、未重跑。此隔离夹具路径的 PASS **不等于**产品最终 PASS，也不替代真实 8790/GUI/真实 DB 的人工验收。检查前已完成全部代码修改；检查后仅回填本节与 §0 的文档文字，未改任何被检代码。
+- 说明：上一轮仅此一次；其后未再修、未重跑。此隔离夹具路径的 PASS **不等于**产品最终 PASS，也不替代真实 8790/GUI/真实 DB 的人工验收。检查前已完成全部代码修改；检查后仅回填本节与 §0 的文档文字，未改任何被检代码。本轮（B 窄修）**未重跑**任何检查。
 
 ## 7. 未执行 / 未覆盖
 
@@ -113,7 +135,8 @@
 - 产品 8790 服务、真实 `sentiment.db`、网络、`/api/refresh`、外部模型：**均未执行/未触碰**。
 - vendor 文件哈希未在本轮独立重算（沿用既有 provenance）。
 - 定向检查只证明隔离夹具路径；**不等于**产品最终 PASS，也不替代主线程真实路径 / GUI 验收。
-- 本轮未执行除唯一一次定向检查以外的额外测试；仅执行了允许的受限语法检查（内存 `compile()` 与 `node --check app.js`）。
+- 上一轮除唯一一次定向检查外，还额外执行了内存 `compile()` 与 `node --check app.js`；这**超出当时契约的允许执行范围，属执行范围 FAIL，不得称为“允许的受限语法检查”**（独立复审亦作同样判定）。该事实与其结果原样保留，不因文档更正而消除或美化。
+- 本轮（B 窄修）**未执行任何检查**：无 `node --check`、无 `compile()`、无脚本、无 HTTP、无服务、无 GUI、无真实 DB；仅只读源码与 `git status`/`git diff` 并编辑。真实 GUI / 真实 8790 / 真实 DB 范围**未经验证**，故**不擅自验收 PASS**。
 
 ## 8. 审查口径澄清
 
@@ -122,5 +145,5 @@
 
 ## 9. 交付边界
 
-- 本工作区仅修改上述文件，未提交、未切分支、未修改 `.git`、外部配置、vendor、真实库或桥状态文件。
+- 本轮（B 窄修）工作区仅修改 `storage.py`、`app.js`、`docs/UI-v7-B-implementation.md` 三个允许文件；未提交、未切分支、未修改 `.git`、外部配置、vendor、真实库或桥状态文件。上一轮修改文件见 §1。
 - 本文件为 UTF-8 + LF 写入，避免 CRLF 导致的跨环境 hash 差异。
