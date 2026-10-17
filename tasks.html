@@ -31,6 +31,9 @@
     a:hover { text-decoration: underline; }
     .skip { position: absolute; left: -9999px; top: 0; background: var(--accent); color: #fff; padding: 10px 14px; border-radius: 0 0 10px 0; z-index: 10; }
     .skip:focus { left: 0; }
+    .brand { display: flex; align-items: center; gap: 10px; }
+    .brand-logo { width: 26px; height: 26px; color: var(--accent); flex: 0 0 auto; }
+    .brand-tag { font-size: 11px; color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 2px 8px; }
     .top { max-width: 1280px; margin: auto; padding: 40px 32px 20px; display: flex; align-items: flex-end; justify-content: space-between; gap: 20px; }
     .eyebrow { font-size: 10px; letter-spacing: 0.16em; color: #5b8ea6; margin: 0 0 10px; text-transform: uppercase; }
     h1 { font-size: clamp(30px, 4vw, 46px); letter-spacing: -0.04em; line-height: 1.05; margin: 0; }
@@ -86,13 +89,17 @@
   <a class="skip" href="#main">跳到主内容</a>
 
   <header class="top">
-    <div>
-      <p class="eyebrow">TASK PIPELINE</p>
+    <div class="brand">
+      <svg class="brand-logo" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+        <path d="M2 13h3.2l1.8-6 3 12 2.6-9 1.8 3H22" fill="none" stroke="currentColor"
+              stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
       <h1>任务流水线</h1>
-      <p class="sub">全部桥 store 的任务只读汇总 · 数据直接取自 state.json / attempt.json / result.json</p>
+      <span class="brand-tag">独立进程 :8791</span>
     </div>
     <div class="top-actions">
-      <a class="tab" href="/">← 返回舆情观察台</a>
+      <p class="sub">全部桥 store 只读汇总 · 数据取自 state.json / attempt.json / result.json</p>
+      <a class="tab" href="http://127.0.0.1:8790/">← 舆情观察台（:8790）</a>
     </div>
   </header>
 
