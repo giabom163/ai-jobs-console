@@ -227,7 +227,10 @@ def request_once(db, job_id, role, adapter):
 # credential and call evidence; this module only ever holds the environment variable NAME, never a
 # credential value, and nothing here runs unless an explicit caller passes this adapter in.
 
-PRODUCTION_ENDPOINT = "https://opencode.ai/zen/go/v1/chat/completions"
+# Endpoint is overridable so offline fixtures can replay a recorded response WITHOUT network or
+# credentials (templates/fixture.py serves a local endpoint). Default behavior is unchanged.
+PRODUCTION_ENDPOINT_ENV = "OPENCODE_GO_V1_ENDPOINT"
+PRODUCTION_ENDPOINT = os.environ.get(PRODUCTION_ENDPOINT_ENV) or "https://opencode.ai/zen/go/v1/chat/completions"
 # Model id: two different shapes exist and they are NOT interchangeable over raw HTTP.
 #   * "opencode-go/deepseek-v4.1-flash" is only the provider-qualified name used on the local
 #     OpenCode/bridge side (the task contract's `model` field is written in that form). The OpenCode
