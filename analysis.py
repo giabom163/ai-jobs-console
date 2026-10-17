@@ -24,6 +24,9 @@ def init(db):
         job_id TEXT NOT NULL REFERENCES analysis_jobs(id), role TEXT NOT NULL CHECK(role IN ('A','B')),
         status TEXT NOT NULL, output TEXT, error TEXT, usage TEXT,
         PRIMARY KEY(job_id,role));
+      CREATE TABLE IF NOT EXISTS sentiment_model_calls(
+        record_id TEXT PRIMARY KEY, rule_label TEXT NOT NULL, model TEXT NOT NULL, label TEXT NOT NULL,
+        confidence REAL, reason TEXT, usage TEXT, created_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS sentiment_runs(
         id TEXT PRIMARY KEY, rule_version TEXT NOT NULL, scanned INTEGER NOT NULL, labeled INTEGER NOT NULL,
         positive INTEGER NOT NULL, negative INTEGER NOT NULL, neutral INTEGER NOT NULL, created_at TEXT NOT NULL);
@@ -407,6 +410,8 @@ def overview(db):
             "model_adapter": {"model": PRODUCTION_MODEL, "endpoint": PRODUCTION_ENDPOINT,
                               "credential_env": PRODUCTION_KEY_ENV, "credential_present": key_present},
             "sentiment": sentiment_status(db),
+            "sentiment_model": model_sentiment_status(db),
+            "sentiment_credential_source": credential_source()[1],
             "request_budget": 2,
             "cost": None, "rule_version": RULE, "prompt_version": PROMPT,
             "jobs": [job(db, r[0]) for r in db.execute("SELECT id FROM analysis_jobs ORDER BY created_at DESC LIMIT 100")],
@@ -427,6 +432,147 @@ def candidate(db, job_id):
         db.execute("INSERT OR IGNORE INTO alert_candidates VALUES(?,?,?,?,?,?)",
                    (key, current['group_id'], RULE, metrics['level'], storage.json_bytes(metrics).decode(), 'unreviewed'))
     return dict(db.execute("SELECT * FROM alert_candidates WHERE id=?", (key,)).fetchone())
+
+
+# --- 模型情感（小批量、可审计）：规则判不了的那部分交给模型，保留规则原始标签做对照 ----------
+
+MODEL_SENTIMENT_PROMPT = "sentiment-json-v1"
+DSH_CREDENTIALS_ENV = "DSH_CREDENTIALS"
+MODEL_BATCH_LIMIT = 20
+MODEL_LABELS = ("偏正面", "偏负面", "中性")
+
+
+def credential_source():
+    """凭据来源：先环境变量，再 DSH 凭据存储。返回 (credential, source)，绝不记录明文。"""
+    value = os.environ.get(PRODUCTION_KEY_ENV)
+    if value:
+        return value, "env:" + PRODUCTION_KEY_ENV
+    path = os.environ.get(DSH_CREDENTIALS_ENV) or os.path.join(
+        os.path.expanduser("~"), ".dsh", ".credentials.yaml")
+    try:
+        with open(path, encoding="utf-8") as handle:
+            for line in handle:
+                stripped = line.strip()
+                if stripped.startswith(PRODUCTION_KEY_ENV + ":"):
+                    candidate = stripped.split(":", 1)[1].strip()
+                    if candidate:
+                        return candidate, "file:" + path
+    except OSError:
+        pass
+    return None, None
+
+
+def model_sentiment_batch(items, credential):
+    """一次批量调用：items=[{id,text}]；返回 {record_id: (label, confidence, reason)} 与 usage。"""
+    payload = {"task": "sentiment-label", "prompt_version": MODEL_SENTIMENT_PROMPT,
+               "rule": "只输出 JSON，结构必须是 schema 所述；label ∈ 偏正面/偏负面/中性；"
+                       "中性表示确实没有情感倾向；每条都要出现，id 原样回填",
+               "schema": {"labels": [{"id": "原样回填的 item id", "label": "偏正面|偏负面|中性",
+                                      "confidence": "0..1 的小数", "reason": "不超过20字"}]},
+               "items": items}
+    body = json.dumps({
+        "model": os.environ.get(PRODUCTION_MODEL_ENV) or PRODUCTION_MODEL,
+        "reasoning_effort": "none",
+        "stream": False,
+        "messages": [
+            {"role": "system", "content": "你是中文舆情情感标注器，只输出一个 JSON 对象，不要解释。"},
+            {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+        ],
+    }, ensure_ascii=False).encode("utf-8")
+    request = urllib.request.Request(
+        PRODUCTION_ENDPOINT, data=body, method="POST",
+        headers={"User-Agent": PRODUCTION_USER_AGENT, "x-opencode-session": PRODUCTION_SESSION,
+                 "Content-Type": "application/json", "Accept": "application/json",
+                 "Authorization": "Bearer " + credential})
+    try:
+        with urllib.request.build_opener().open(request, timeout=PRODUCTION_TIMEOUT) as response:
+            raw = response.read(PRODUCTION_MAX_RESPONSE)
+    except urllib.error.HTTPError as exc:
+        raise ProductionHTTPError(exc.code, exc.read(PRODUCTION_ERROR_BODY).decode("utf-8", "replace")) from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError("连接失败：%s" % exc.reason) from exc
+    payload_out = json.loads(raw.decode("utf-8"))
+    content = (((payload_out.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
+    if content.startswith("```"):
+        content = content.strip("`")
+        content = content.split("\n", 1)[1] if "\n" in content else content
+    parsed = json.loads(content)
+    labels = {}
+    rows = parsed.get("labels") if isinstance(parsed, dict) else None
+    if isinstance(rows, list):
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            rid, label = row.get("id"), row.get("label")
+            if not isinstance(rid, str) or label not in MODEL_LABELS:
+                continue
+            try:
+                confidence = float(row.get("confidence"))
+            except (TypeError, ValueError):
+                confidence = None
+            labels[rid] = (label, confidence, str(row.get("reason") or "")[:120])
+    elif isinstance(parsed, dict):
+        # 兼容模型自己选的紧凑形状：{"record-xxx": "偏正面", ...}
+        for rid, value in parsed.items():
+            if isinstance(value, str) and value in MODEL_LABELS and rid.startswith("record-"):
+                labels[rid] = (value, None, "")
+            elif isinstance(value, dict) and value.get("label") in MODEL_LABELS and rid.startswith("record-"):
+                try:
+                    confidence = float(value.get("confidence"))
+                except (TypeError, ValueError):
+                    confidence = None
+                labels[rid] = (value["label"], confidence, str(value.get("reason") or "")[:120])
+    if not labels:
+        raise ValueError("模型输出未解析出任何有效标签：%s" % content[:200])
+    return labels, payload_out.get("usage")
+
+
+def run_model_sentiment(db, limit=MODEL_BATCH_LIMIT, source_label="中性"):
+    """对规则判定为 source_label 的记录做一次模型批量标注；保留规则标签用于对照。"""
+    credential, source = credential_source()
+    if not credential:
+        raise RuntimeError("未找到 %s（环境变量或 ~/.dsh/.credentials.yaml）；未发送任何请求" % PRODUCTION_KEY_ENV)
+    rows = db.execute(
+        """SELECT r.id, r.title, r.summary, r.sentiment rule_label FROM records r
+           WHERE r.sentiment = ?
+             AND r.id NOT IN (SELECT record_id FROM sentiment_model_calls)
+           ORDER BY r.id LIMIT ?""", (source_label, int(limit))).fetchall()
+    if not rows:
+        return {"attempted": 0, "labeled": 0, "note": "没有待模型标注的记录", "credential_source": source}
+    items = [{"id": r["id"], "text": ((r["title"] or "") + "｜" + (r["summary"] or ""))[:300]} for r in rows]
+    labels, usage = model_sentiment_batch(items, credential)
+    model_name = "model:" + (os.environ.get(PRODUCTION_MODEL_ENV) or PRODUCTION_MODEL)
+    changed = 0
+    with db:
+        for r in rows:
+            got = labels.get(r["id"])
+            if not got:
+                continue
+            label, confidence, reason = got
+            if label != r["rule_label"]:
+                changed += 1
+                db.execute("UPDATE records SET sentiment=? WHERE id=?", (label, r["id"]))
+            db.execute("""INSERT OR REPLACE INTO sentiment_model_calls
+                          (record_id, rule_label, model, label, confidence, reason, usage, created_at)
+                          VALUES(?,?,?,?,?,?,?,?)""",
+                       (r["id"], r["rule_label"], model_name, label, confidence, reason,
+                        json.dumps(usage, ensure_ascii=False) if usage else None, storage.now()))
+    return {"attempted": len(rows), "labeled": len(labels), "changed_vs_rule": changed,
+            "model": model_name, "credential_source": source, "usage": usage,
+            "labels": {lab: sum(1 for v in labels.values() if v[0] == lab) for lab in MODEL_LABELS},
+            "status": sentiment_status(db)}
+
+
+def model_sentiment_status(db):
+    total = db.execute("SELECT count(*) FROM sentiment_model_calls").fetchone()[0]
+    disagree = db.execute("SELECT count(*) FROM sentiment_model_calls WHERE label <> rule_label").fetchone()[0]
+    last = db.execute("SELECT * FROM sentiment_model_calls ORDER BY created_at DESC, rowid DESC LIMIT 1").fetchone()
+    by = db.execute("""SELECT label, count(*) FROM sentiment_model_calls GROUP BY label
+                       ORDER BY count(*) DESC, label""").fetchall()
+    return {"calls": total, "disagreements": disagree,
+            "labels": [{"label": r[0], "value": r[1]} for r in by],
+            "last": dict(last) if last else None}
+
 
 
 # --- 规则情感（lexicon-zh-v1）：离线、可复现、可回滚；不调用模型 --------------------------------
@@ -479,6 +625,30 @@ def sentiment_score(title, summary):
     else:
         label = "中性"
     return label, score, hits[:12]
+
+
+def topics_overview(db, top_k=10):
+    """话题页数据：分析作业清单 + 按 canonical_id 的条目分组 + 模型情感摘要。只读。"""
+    jobs = []
+    for row in db.execute("""SELECT id, group_id, rule_version, model_version, status, error, created_at
+                             FROM analysis_jobs ORDER BY created_at DESC LIMIT 50"""):
+        item = dict(row)
+        item["requests"] = [dict(r) for r in db.execute(
+            "SELECT role, status, error, usage FROM model_requests WHERE job_id=?", (row["id"],))]
+        jobs.append(item)
+    groups = []
+    for row in db.execute("""SELECT r.canonical_id, min(r.title) title, count(*) records,
+                                    sum(r.sentiment='偏正面') positive, sum(r.sentiment='偏负面') negative,
+                                    sum(r.sentiment='中性') neutral, max(r.fetched_at) last_fetch
+                             FROM records r GROUP BY r.canonical_id
+                             ORDER BY records DESC, title LIMIT ?""", (int(top_k),)):
+        groups.append(dict(row))
+    return {"schema_version": "p1-v1", "generated_at": storage.now(),
+            "jobs": jobs, "groups": groups, "sentiment_model": model_sentiment_status(db),
+            "sentiment": sentiment_status(db),
+            "notes": ["groups 是按 canonical_id 的精确去重分组，不是语义事件聚类",
+                      "jobs 是分析作业清单（规则/模型版本、状态、角色请求）"]}
+
 
 
 def sentiment_status(db):

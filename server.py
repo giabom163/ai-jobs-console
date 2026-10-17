@@ -185,6 +185,13 @@ class Handler(BaseHTTPRequestHandler):
         path = urllib.parse.urlsplit(self.path).path
         if path == "/api/runtime":
             return self.send(200, RUNTIME)
+        if path == "/api/topics":
+            query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query, keep_blank_values=True)
+            raw = query.get("top_k", ["10"])
+            if len(raw) != 1 or not raw[0].isdigit() or not 1 <= int(raw[0]) <= 50:
+                raise ValueError("top_k 必须是 1..50 的整数")
+            with connect() as db:
+                return self.send(200, analysis.topics_overview(db, int(raw[0])))
         if path == "/api/analysis":
             with connect() as db:
                 return self.send(200, analysis.overview(db))
@@ -192,8 +199,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(200, (ROOT / "index.html").read_bytes(), "text/html; charset=utf-8")
         if path == "/app.js":
             return self.send(200, (ROOT / "app.js").read_bytes(), "text/javascript; charset=utf-8")
-        if path == "/overview-charts.js":
-            return self.send(200, (ROOT / "overview-charts.js").read_bytes(), "text/javascript; charset=utf-8")
+        if path == "/topics-panel.js":
+            return self.send(200, (ROOT / "topics-panel.js").read_bytes(), "text/javascript; charset=utf-8")
         if path == "/style.css":
             return self.send(200, (ROOT / "style.css").read_bytes(), "text/css; charset=utf-8")
         if path == "/api/overview-stats":
@@ -315,6 +322,12 @@ class Handler(BaseHTTPRequestHandler):
                     result = analysis.create_job(db, ROOT, value['group_id'], value['record_ids'], LIMIT)
                     analysis.candidate(db, result['id'])
                 return self.send(201, result)
+            if path == "/api/analysis/sentiment-model":
+                limit = value.get("limit", analysis.MODEL_BATCH_LIMIT)
+                if not isinstance(limit, int) or limit <= 0 or limit > 50:
+                    raise ValueError("limit 必须是 1..50 的整数（默认 20）")
+                with connect() as db:
+                    return self.send(200, analysis.run_model_sentiment(db, limit))
             if path == "/api/analysis/sentiment":
                 limit = value.get("limit")
                 if limit is not None and (not isinstance(limit, int) or limit <= 0):
