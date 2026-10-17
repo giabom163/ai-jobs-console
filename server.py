@@ -199,6 +199,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(200, (ROOT / "index.html").read_bytes(), "text/html; charset=utf-8")
         if path == "/app.js":
             return self.send(200, (ROOT / "app.js").read_bytes(), "text/javascript; charset=utf-8")
+        if path == "/overview-charts.js":
+            return self.send(200, (ROOT / "overview-charts.js").read_bytes(), "text/javascript; charset=utf-8")
         if path == "/topics-panel.js":
             return self.send(200, (ROOT / "topics-panel.js").read_bytes(), "text/javascript; charset=utf-8")
         if path == "/style.css":
