@@ -19,6 +19,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 import storage
 import analysis
+import alertcenter
 
 ROOT = Path(__file__).resolve().parent
 DB = ROOT / "sentiment.db"
@@ -46,6 +47,7 @@ def connect():
     db = storage.connect(DB)
     try:
         analysis.init(db)
+        alertcenter.init(db)          # 与 analysis.init 同处：每次连接/启动都保证预警表存在（IF NOT EXISTS）
         with db:
             yield db
     finally:
@@ -195,6 +197,16 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/analysis":
             with connect() as db:
                 return self.send(200, analysis.overview(db))
+        if path == "/api/alert-rules":
+            with connect() as db:
+                return self.send(200, alertcenter.rules(db))
+        if path == "/api/alerts":
+            query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query, keep_blank_values=True)
+            raw = query.get("limit", ["100"])
+            if len(raw) != 1 or not raw[0].isdigit() or not 1 <= int(raw[0]) <= 500:
+                raise ValueError("limit 必须是 1..500 的整数")
+            with connect() as db:
+                return self.send(200, alertcenter.alerts(db, int(raw[0])))
         if path == "/":
             return self.send(200, (ROOT / "index.html").read_bytes(), "text/html; charset=utf-8")
         if path == "/app.js":
@@ -203,6 +215,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(200, (ROOT / "overview-charts.js").read_bytes(), "text/javascript; charset=utf-8")
         if path == "/topics-panel.js":
             return self.send(200, (ROOT / "topics-panel.js").read_bytes(), "text/javascript; charset=utf-8")
+        if path == "/alert-panel.js":
+            return self.send(200, (ROOT / "alert-panel.js").read_bytes(), "text/javascript; charset=utf-8")
         if path == "/style.css":
             return self.send(200, (ROOT / "style.css").read_bytes(), "text/css; charset=utf-8")
         if path == "/api/overview-stats":
@@ -342,6 +356,16 @@ class Handler(BaseHTTPRequestHandler):
                 with connect() as db:
                     result = analysis.decide(db, value['job_id'], value['decision'], value['reason'])
                 return self.send(200, result)
+            if path == "/api/alert-rules":
+                with connect() as db:
+                    return self.send(201, alertcenter.create_rule(db, value))
+            if path == "/api/alerts/run":
+                with connect() as db:
+                    return self.send(200, alertcenter.evaluate(db))
+            if path.startswith("/api/alerts/") and path.endswith("/ack"):
+                alert_id = path[len("/api/alerts/"):-len("/ack")]
+                with connect() as db:
+                    return self.send(200, alertcenter.ack(db, alert_id))
             if path == "/api/feeds":
                 name = clean(str(value.get("name", "")))[:100]
                 url = safe_url(str(value.get("url", "")).strip())
@@ -461,6 +485,8 @@ if __name__ == "__main__":
         with connect() as db:
             storage.recover_runs(db)
             analysis.recover(db)
+        # 启动期调度：alertcenter.init 已由 connect() 内的调用完成；此处只启动 60 秒 daemon 线程。
+        alertcenter.start_scheduler(DB)
         print(f"本地舆情面板：http://{HOST}:{PORT}（手动批次上限 {LIMIT}；Ctrl+C 停止）", flush=True)
         server.serve_forever()
     except KeyboardInterrupt:
