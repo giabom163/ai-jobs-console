@@ -4,6 +4,7 @@ import argparse
 from contextlib import contextmanager
 from html import unescape
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import hashlib
 import json
 import os
 import ipaddress
@@ -40,6 +41,8 @@ TASK_SCHEMA_VERSION = 1
 TASK_STORES_ENV = "SENTIMENT_TASK_STORES"
 TASK_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]+$")
 DEFAULT_TASK_STORES = (
+    {"key": "_p0", "label": "P0",
+     "path": r"D:/DSH/output/2026-10-16/2026-10-16-18-03-28/_p0/store"},
     {"key": "_s1", "label": "S1 · 多源采集",
      "path": r"D:\DSH\output\2026-10-16\2026-10-16-18-03-28\_s1\store"},
     {"key": "_s3", "label": "S3 · 相关性标注",
@@ -204,6 +207,32 @@ def read_json(path):
         return None, f"{path.name} 不是合法 JSON：{exc}"
 
 
+def task_detail_version(task_dir, attempt_id):
+    """由 state/attempt/result 的实际字节 SHA 派生稳定版本号。
+
+    只读取真实文件字节，不用 mtime/size；内容不变则版本不变。缺失的文件用固定占位，
+    因此“未执行/未收尾”的任务也有稳定版本。"""
+    paths = [task_dir / "state.json"]
+    if isinstance(attempt_id, str) and TASK_ID_PATTERN.match(attempt_id) and ".." not in attempt_id:
+        attempt_dir = task_dir / "attempts" / attempt_id
+        paths.extend([attempt_dir / "attempt.json", attempt_dir / "result.json"])
+    digest = hashlib.sha256()
+    for path in paths:
+        digest.update(path.name.encode("utf-8"))
+        digest.update(b"\x00")
+        try:
+            data = path.read_bytes() if path.is_file() else None
+        except OSError:
+            data = None
+        if data is None:
+            digest.update(b"\x00missing\x00")
+        else:
+            digest.update(len(data).to_bytes(8, "big"))
+            digest.update(data)
+        digest.update(b"\x01")
+    return digest.hexdigest()
+
+
 def task_summary(task_dir):
     """汇总一个任务的 state.json 与当前 attempt 的 attempt.json / result.json。"""
     state, problem = read_json(task_dir / "state.json")
@@ -231,10 +260,12 @@ def task_summary(task_dir):
         "revision": state.get("revision"),
         "product_review": review.get("verdict") if isinstance(review, dict) else None,
         "human": human.get("decision") if isinstance(human, dict) else None,
+        "human_dismissed": bool(human.get("dismissed")) if isinstance(human, dict) else False,
         "attempt": attempt_id,
         "started": (attempt or {}).get("started_at") or state.get("started_at"),
         "finished": state.get("finished_at") or (result or {}).get("finished_at"),
         "cost": (result or {}).get("native_cost"),
+        "detail_version": task_detail_version(task_dir, attempt_id),
     }, problem
 
 
@@ -299,7 +330,8 @@ def task_detail(store_key, task_id):
         errors = "；".join(x for x in (attempt_error, result_error) if x)
         if errors:
             return {"error": errors, "store": store_key, "task_id": task_id}, 500
-    return {"state": state, "attempt": attempt, "result": result}, 200
+    return {"state": state, "attempt": attempt, "result": result,
+            "detail_version": task_detail_version(task_dir, attempt_id)}, 200
 
 
 class Handler(BaseHTTPRequestHandler):

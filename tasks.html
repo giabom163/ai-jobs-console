@@ -112,6 +112,7 @@
         <article><span>读取失败的 store</span><strong id="stat-errors">—</strong></article>
       </div>
       <p class="chips" id="stat-statuses"></p>
+      <p class="hint" id="scope">正在读取已注册范围…</p>
       <p class="hint">每 20 秒自动刷新；点击任意行展开该任务的 attempt / result 摘要。本页只读，不写 store、不写数据库、不触发采集。</p>
     </section>
 
@@ -124,9 +125,11 @@
     "use strict";
     const REFRESH_MS = 20000;
     const DETAIL_LIMIT = 40000;
+    // 详情缓存：key -> { version, data?, error?, pending, token }，绑定 task + attempt + detail_version。
     const detailCache = new Map();
     const expanded = new Set();
-    let lastPayload = "";
+    let lastContent = null;
+    let requestSeq = 0;
     let busy = false;
 
     const $ = (selector) => document.querySelector(selector);
@@ -173,6 +176,38 @@
       return null;
     }
 
+    // 忽略 updated_at：服务端每次请求都会刷新该字段，不能据此判定内容变化。
+    // 是否重绘只由任务真实内容（含 detail_version）决定。
+    function contentSignature(data) {
+      const stores = Array.isArray(data.stores) ? data.stores : [];
+      return JSON.stringify(stores.map((store) => ({
+        key: store.key,
+        label: store.label,
+        path: store.path,
+        error: store.error || null,
+        tasks: (Array.isArray(store.tasks) ? store.tasks : []).map((task) => ({
+          id: task.id,
+          status: task.status,
+          acceptance: task.acceptance,
+          revision: task.revision,
+          product_review: task.product_review,
+          human: task.human,
+          human_dismissed: !!task.human_dismissed,
+          attempt: task.attempt,
+          started: task.started,
+          finished: task.finished,
+          cost: task.cost,
+          detail_version: task.detail_version || null
+        }))
+      })));
+    }
+
+    // 撤销打回：dismissed 不是有效 reject，按 已撤销/待接收 展示。
+    function humanLabel(task) {
+      if (task.human_dismissed) return "已撤销/待接收";
+      return task.human || "—";
+    }
+
     function clear(node) {
       while (node.firstChild) node.removeChild(node.firstChild);
     }
@@ -189,28 +224,36 @@
       return tr;
     }
 
-    function fillDetail(tr, key) {
+    function fillDetail(tr, key, version) {
       const td = tr.firstElementChild;
       clear(td);
       const cached = detailCache.get(key);
-      if (!cached) {
+      if (!cached || cached.version !== version || cached.pending) {
         td.append(el("p", "hint", "正在读取任务详情…"));
         return;
       }
       if (cached.error) {
         td.append(el("p", "error-text", "任务详情读取失败：" + cached.error));
+        const retry = el("button", "secondary", "重试读取详情");
+        retry.type = "button";
+        retry.addEventListener("click", () => fetchDetail(key, version, true));
+        td.append(retry);
         return;
       }
       const body = cached.data || {};
       const attempt = body.attempt || {};
       const result = body.result || {};
       const state = body.state || {};
+      const human = state.human_accept || {};
       const cost = result.native_cost;
       const summary = [
         "attempt " + (attempt.attempt_id || state.current_attempt || "—"),
         "executor " + (attempt.executor || "—"),
         "exit_code " + (result.exit_code === undefined || result.exit_code === null ? "—" : result.exit_code),
-        "acceptance " + (result.acceptance || state.acceptance || "—"),
+        // 当前验收以 state 为准；result 里的值只是执行结束时的历史记录。
+        "acceptance(state) " + (state.acceptance || "—"),
+        "执行结束时记录 result.acceptance " + (result.acceptance || "—"),
+        "human_accept " + (human.decision ? (human.dismissed ? human.decision + "（已撤销/待接收）" : human.decision) : "—"),
         "native_cost " + (cost === undefined || cost === null ? "null" : "已记录")
       ];
       td.append(el("p", "hint", summary.join(" · ")));
@@ -224,27 +267,39 @@
       td.append(el("pre", "json", text));
     }
 
-    async function fetchDetail(key) {
+    // 详情请求绑定 key + version：同版本不重复并发；旧响应不覆盖新版本；
+    // 失败项不在自动路径重试（retry 只能由用户手动触发），避免无限重试。
+    async function fetchDetail(key, version, retry) {
+      const cached = detailCache.get(key);
+      if (cached && cached.pending && cached.version === version) return;
+      if (!retry && cached && cached.version === version && (cached.data || cached.error)) return;
+      const token = ++requestSeq;
+      detailCache.set(key, { version: version, pending: true, token: token });
       const parts = key.split("/");
       const url = "/api/tasks/" + parts.map(encodeURIComponent).join("/");
+      let record;
       try {
         const response = await fetch(url, { cache: "no-store" });
         const body = await response.json();
         if (!response.ok) throw new Error((body && body.error) || ("HTTP " + response.status));
-        detailCache.set(key, { data: body });
+        record = { version: version, data: body };
       } catch (err) {
-        detailCache.set(key, { error: (err && err.message) || String(err) });
+        record = { version: version, error: (err && err.message) || String(err) };
       }
+      const current = detailCache.get(key);
+      if (!current || current.token !== token) return;
+      detailCache.set(key, record);
       if (!expanded.has(key)) return;
       const row = findRow(key);
-      if (!row) return;
+      if (!row || (row.dataset.version || "") !== version) return;
       const tr = detailRowFor(row, true);
       tr.hidden = false;
-      fillDetail(tr, key);
+      fillDetail(tr, key, version);
     }
 
     function toggleRow(row) {
       const key = keyOf(row);
+      const version = row.dataset.version || "";
       if (expanded.has(key)) {
         expanded.delete(key);
         row.setAttribute("aria-expanded", "false");
@@ -256,10 +311,21 @@
       row.setAttribute("aria-expanded", "true");
       const tr = detailRowFor(row, true);
       tr.hidden = false;
-      if (detailCache.has(key)) fillDetail(tr, key);
-      else {
-        fillDetail(tr, key);
-        fetchDetail(key);
+      const cached = detailCache.get(key);
+      // 命中当前版本的成功缓存直接渲染；否则先占位再请求。失败的详情只能手动刷新/点重试。
+      if (cached && cached.version === version && cached.data) {
+        fillDetail(tr, key, version);
+      } else {
+        fillDetail(tr, key, version);
+        fetchDetail(key, version, false);
+      }
+    }
+
+    // 手动刷新时清掉失败项，让展开项重新读取；成功项与版本不变项继续复用。
+    function retryFailedDetails() {
+      for (const key of [...detailCache.keys()]) {
+        const cached = detailCache.get(key);
+        if (cached && cached.error) detailCache.delete(key);
       }
     }
 
@@ -278,6 +344,7 @@
         const row = el("tr", "task-row");
         row.dataset.key = store.key;
         row.dataset.id = task.id;
+        row.dataset.version = task.detail_version || "";
         row.tabIndex = 0;
         row.setAttribute("role", "button");
         row.setAttribute("aria-expanded", expanded.has(key) ? "true" : "false");
@@ -292,7 +359,7 @@
 
         row.append(el("td", null, task.acceptance || "—"));
         row.append(el("td", null, task.product_review || "—"));
-        row.append(el("td", null, task.human || "—"));
+        row.append(el("td", null, humanLabel(task)));
         row.append(el("td", "num", fmt(task.started)));
         row.append(el("td", "num", fmt(task.finished)));
 
@@ -311,10 +378,13 @@
         tr.append(td);
         tr.hidden = !expanded.has(key);
         if (expanded.has(key)) {
-          if (detailCache.has(key)) fillDetail(tr, key);
-          else {
-            fillDetail(tr, key);
-            fetchDetail(key);
+          const version = task.detail_version || "";
+          const cached = detailCache.get(key);
+          if (cached && cached.version === version && cached.data) {
+            fillDetail(tr, key, version);
+          } else {
+            fillDetail(tr, key, version);
+            fetchDetail(key, version, false);
           }
         }
         body.append(tr);
@@ -342,6 +412,11 @@
 
     function render(data) {
       const stores = Array.isArray(data.stores) ? data.stores : [];
+      // 重绘前记录当前任务焦点与滚动位置，重绘后原样恢复。
+      const active = document.activeElement;
+      const focusKey = active && active.classList && active.classList.contains("task-row") ? keyOf(active) : null;
+      const scrollY = window.scrollY || window.pageYOffset || 0;
+
       let total = 0;
       let failed = 0;
       const counts = new Map();
@@ -359,6 +434,13 @@
       $("#stat-errors").textContent = failed;
       $("#stats").hidden = false;
 
+      // 说明只反映已注册范围；计数全部取自本次响应，不硬编码。
+      const scope = $("#scope");
+      if (scope) {
+        scope.textContent = "已注册范围（" + stores.length + " 个 store）：" +
+          (stores.map((store) => store.key).join(" · ") || "无");
+      }
+
       const chips = $("#stat-statuses");
       clear(chips);
       const ordered = [...counts.entries()].sort((a, b) => b[1] - a[1] || String(a[0]).localeCompare(String(b[0])));
@@ -368,6 +450,12 @@
       const host = $("#stores");
       clear(host);
       for (const store of stores) host.append(storeSection(store));
+
+      if (focusKey) {
+        const row = findRow(focusKey);
+        if (row) row.focus();
+      }
+      window.scrollTo(0, scrollY);
     }
 
     async function load(manual) {
@@ -379,9 +467,11 @@
         const response = await fetch("/api/tasks", { cache: "no-store" });
         const body = await response.json();
         if (!response.ok) throw new Error((body && body.error) || ("HTTP " + response.status));
-        const payload = JSON.stringify(body);
-        if (manual || payload !== lastPayload) {
-          lastPayload = payload;
+        // 只在任务真实内容变化时重绘；updated_at 变化不算。未变只更新时间戳。
+        const signature = contentSignature(body);
+        if (manual || signature !== lastContent) {
+          lastContent = signature;
+          if (manual) retryFailedDetails();
           render(body);
         }
         const total = (body.stores || []).reduce((sum, store) => sum + (store.tasks || []).length, 0);
