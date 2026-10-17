@@ -297,8 +297,13 @@ def production_adapter(role, packet, a_output=None):
     if role not in ("A", "B"):
         raise ValueError("角色无效")
     credential = os.environ.get(PRODUCTION_KEY_ENV)
-    if not credential:
-        raise RuntimeError(f"缺少环境变量 {PRODUCTION_KEY_ENV}；未发送任何请求")
+    # Fixture mode is EXPLICIT and off by default: it exists only so an offline fixture server can
+    # replay a recorded response without a credential. It must never silently weaken the real path.
+    fixture_mode = os.environ.get("OPENCODE_GO_V1_FIXTURE") == "1"
+    if not credential and not fixture_mode:
+        raise RuntimeError(
+            f"缺少环境变量 {PRODUCTION_KEY_ENV}；未发送任何请求"
+            "（离线回放请显式设置 OPENCODE_GO_V1_FIXTURE=1 并把端点指向本地夹具）")
     body = json.dumps({
         # Bare id, resolved at call time so OPENCODE_GO_V1_MODEL can override it; never prefixed here.
         "model": os.environ.get(PRODUCTION_MODEL_ENV) or PRODUCTION_MODEL,
@@ -308,13 +313,16 @@ def production_adapter(role, packet, a_output=None):
         "stream": False,
         "messages": production_messages(role, packet, a_output),
     }, ensure_ascii=False).encode("utf-8")
-    request = urllib.request.Request(PRODUCTION_ENDPOINT, data=body, method="POST", headers={
-        "Authorization": f"Bearer {credential}",
+    request_headers = {
         "User-Agent": PRODUCTION_USER_AGENT,
-        "x-opencode-session": PRODUCTION_SESSION,
+        "x-opencode-session": "fixture-replay" if fixture_mode else PRODUCTION_SESSION,
         "Content-Type": "application/json",
         "Accept": "application/json",
-    })
+    }
+    if credential:
+        request_headers["Authorization"] = f"Bearer {credential}"
+    request = urllib.request.Request(PRODUCTION_ENDPOINT, data=body, method="POST",
+                                     headers=request_headers)
     # A plain opener, no redirect handler: a 3xx must not silently forward the credential elsewhere.
     # urllib does not retry, so at most one connection attempt reaches the endpoint.
     try:
