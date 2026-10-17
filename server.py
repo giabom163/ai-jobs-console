@@ -295,6 +295,19 @@ def run_collection(trigger="manual", lock_held=False):
             "returned": returned, "error": error}
 
 
+def seconds_since_last_collect():
+    """距最近一轮采集结束的秒数；没有历史或解析失败返回 None。"""
+    try:
+        with connect() as db:
+            row = db.execute("SELECT finished_at FROM collector_logs ORDER BY id DESC LIMIT 1").fetchone()
+        if not row or not row[0]:
+            return None
+        last = datetime.fromisoformat(row[0])
+        return (datetime.now(timezone.utc) - last).total_seconds()
+    except (ValueError, TypeError, sqlite3.Error, OSError):
+        return None
+
+
 def start_collection_scheduler():
     if COLLECT_INTERVAL_MIN <= 0:
         return None
@@ -302,6 +315,11 @@ def start_collection_scheduler():
     def loop():
         time.sleep(min(120, COLLECT_INTERVAL_MIN * 60))
         while True:
+            # 刚手动采过就先等过冷却，避免启动后的第一轮必然全被 throttle
+            elapsed = seconds_since_last_collect()
+            target = collect_cooldown_seconds() + 60
+            if elapsed is not None and elapsed < target:
+                time.sleep(target - elapsed)
             try:
                 run_collection("scheduler")
             except Exception:
