@@ -155,7 +155,7 @@
     var grid = el('div', 'chart-grid');
     var a = card('每日采集趋势', '口径：published_at ?: fetched_at，窗口 ' + (stats.window_days ? stats.window_days + ' 天' : '全量'));
     trendChart(stats.trend, a.body);
-    var b = card('情感分布', '记录表 sentiment 字段原始分布，含“中性/待判”');
+    var b = card('情感分布', '规则情感判定（lexicon-zh-v1）；中性含“无情感词”记录');
     donut(stats.sentiment, b.body);
     var c = card('平台分布', '按采集源名称聚合');
     bars(stats.platforms, c.body);

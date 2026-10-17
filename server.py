@@ -315,6 +315,12 @@ class Handler(BaseHTTPRequestHandler):
                     result = analysis.create_job(db, ROOT, value['group_id'], value['record_ids'], LIMIT)
                     analysis.candidate(db, result['id'])
                 return self.send(201, result)
+            if path == "/api/analysis/sentiment":
+                limit = value.get("limit")
+                if limit is not None and (not isinstance(limit, int) or limit <= 0):
+                    raise ValueError("limit 必须是正整数或缺省")
+                with connect() as db:
+                    return self.send(200, analysis.run_rule_sentiment(db, limit))
             if path == "/api/analysis/decision":
                 if set(value) != {'job_id', 'decision', 'reason'}:
                     raise ValueError("决定字段不符合契约")
@@ -434,7 +440,7 @@ if __name__ == "__main__":
                "snapshot_root": str(ROOT / "snapshots"), "manual_limit": LIMIT,
                "loaded_sha256": {name: storage.digest((ROOT / name).read_bytes())
                                  for name in ("server.py", "storage.py", "analysis.py")},
-               "analysis_module": str(Path(analysis.__file__).resolve()), "production_adapter": "not_configured"}
+               "analysis_module": str(Path(analysis.__file__).resolve()), "production_adapter": ("rule:" + analysis.SENTIMENT_RULE) if not os.environ.get(analysis.PRODUCTION_KEY_ENV) else ("model:" + analysis.PRODUCTION_MODEL)}
     server = ThreadingHTTPServer((HOST, PORT), Handler)
     try:
         with connect() as db:

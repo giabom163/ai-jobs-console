@@ -24,6 +24,9 @@ def init(db):
         job_id TEXT NOT NULL REFERENCES analysis_jobs(id), role TEXT NOT NULL CHECK(role IN ('A','B')),
         status TEXT NOT NULL, output TEXT, error TEXT, usage TEXT,
         PRIMARY KEY(job_id,role));
+      CREATE TABLE IF NOT EXISTS sentiment_runs(
+        id TEXT PRIMARY KEY, rule_version TEXT NOT NULL, scanned INTEGER NOT NULL, labeled INTEGER NOT NULL,
+        positive INTEGER NOT NULL, negative INTEGER NOT NULL, neutral INTEGER NOT NULL, created_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS alert_candidates(
         id TEXT PRIMARY KEY, group_id TEXT NOT NULL, rule_version TEXT NOT NULL,
         level TEXT NOT NULL, metrics TEXT NOT NULL, status TEXT NOT NULL,
@@ -397,7 +400,14 @@ def heat_candidate(history, current, unknown_ratio):
 
 
 def overview(db):
-    return {"adapter": "not_configured", "production_status": "BLOCKED", "request_budget": 2,
+    key_present = bool(os.environ.get(PRODUCTION_KEY_ENV))
+    return {"adapter": "rule:" + SENTIMENT_RULE,
+            # 规则适配器随时可用；模型适配器只在环境变量提供凭据时才可用，不假装就绪。
+            "production_status": "READY" if key_present else "BLOCKED(key_missing)",
+            "model_adapter": {"model": PRODUCTION_MODEL, "endpoint": PRODUCTION_ENDPOINT,
+                              "credential_env": PRODUCTION_KEY_ENV, "credential_present": key_present},
+            "sentiment": sentiment_status(db),
+            "request_budget": 2,
             "cost": None, "rule_version": RULE, "prompt_version": PROMPT,
             "jobs": [job(db, r[0]) for r in db.execute("SELECT id FROM analysis_jobs ORDER BY created_at DESC LIMIT 100")],
             "alerts": [dict(r) for r in db.execute("SELECT * FROM alert_candidates ORDER BY rowid DESC LIMIT 100")],
@@ -417,3 +427,94 @@ def candidate(db, job_id):
         db.execute("INSERT OR IGNORE INTO alert_candidates VALUES(?,?,?,?,?,?)",
                    (key, current['group_id'], RULE, metrics['level'], storage.json_bytes(metrics).decode(), 'unreviewed'))
     return dict(db.execute("SELECT * FROM alert_candidates WHERE id=?", (key,)).fetchone())
+
+
+# --- 规则情感（lexicon-zh-v1）：离线、可复现、可回滚；不调用模型 --------------------------------
+
+SENTIMENT_RULE = "lexicon-zh-v1"
+
+POSITIVE_WORDS = (
+    "利好 增长 上涨 大涨 涨停 新高 突破 成功 获奖 夺冠 逆转 回暖 改善 提升 支持 点赞 满意 顺利 达成 "
+    "签约 中标 获批 通过 上线 开源 免费 优惠 降价 恢复 复苏 创新 领先 获奖 表彰 感谢 致敬 好评"
+).split()
+NEGATIVE_WORDS = (
+    "下跌 暴跌 跌停 亏损 事故 死亡 遇难 受伤 失联 违法 犯罪 判刑 被捕 刑拘 造假 欺诈 泄露 谴责 "
+    "质疑 争议 投诉 举报 崩溃 失控 裁员 罚款 处罚 停职 封禁 纠纷 起诉 索赔 召回 停产 危机 拒绝 取消 "
+    "延误 出错 故障 曝出 塌房 翻车 恶评 差评 抵制 道歉"
+).split()
+NEGATION_WORDS = ("不", "没", "无", "非", "未", "别", "莫")
+
+
+def sentiment_score(title, summary):
+    """返回 (label, score, hits)。label ∈ 偏正面 / 偏负面 / 中性。"""
+    text = (title or "") + " " + (summary or "")
+    score = 0
+    hits = []
+    for word in POSITIVE_WORDS:
+        start = 0
+        while True:
+            index = text.find(word, start)
+            if index < 0:
+                break
+            window = text[max(0, index - 4):index]
+            negated = any(neg in window for neg in NEGATION_WORDS)
+            score += -1 if negated else 1
+            hits.append(("-" if negated else "+") + word)
+            start = index + len(word)
+    for word in NEGATIVE_WORDS:
+        start = 0
+        while True:
+            index = text.find(word, start)
+            if index < 0:
+                break
+            window = text[max(0, index - 4):index]
+            negated = any(neg in window for neg in NEGATION_WORDS)
+            score += 1 if negated else -1
+            hits.append(("+" if negated else "-") + word)
+            start = index + len(word)
+    if score > 0:
+        label = "偏正面"
+    elif score < 0:
+        label = "偏负面"
+    else:
+        label = "中性"
+    return label, score, hits[:12]
+
+
+def sentiment_status(db):
+    """当前情感标注分布与最近一次规则运行记录。只读。"""
+    rows = db.execute("""SELECT coalesce(nullif(sentiment,''),'未标注') label, count(*) c
+                         FROM records GROUP BY label ORDER BY c DESC, label""").fetchall()
+    pending = db.execute("""SELECT count(*) FROM records
+                            WHERE sentiment IS NULL OR sentiment='' OR sentiment LIKE '%待判%'""").fetchone()[0]
+    last = db.execute("SELECT * FROM sentiment_runs ORDER BY created_at DESC, rowid DESC LIMIT 1").fetchone()
+    return {"rule_version": SENTIMENT_RULE,
+            "labels": [{"label": r[0], "value": r[1]} for r in rows],
+            "pending": pending,
+            "last_run": dict(last) if last else None}
+
+
+def run_rule_sentiment(db, limit=None):
+    """给未判定的记录打规则标签；只动 sentiment 仍为待判/NULL/空的记录，可重复执行（幂等）。"""
+    sql = """SELECT id, title, summary FROM records
+             WHERE sentiment IS NULL OR sentiment='' OR sentiment LIKE '%待判%'
+             ORDER BY id"""
+    if limit:
+        sql += " LIMIT %d" % int(limit)
+    pending = db.execute(sql).fetchall()
+    counts = {"偏正面": 0, "偏负面": 0, "中性": 0}
+    labeled = 0
+    with db:
+        for row in pending:
+            label, _score, _hits = sentiment_score(row["title"], row["summary"])
+            db.execute("UPDATE records SET sentiment=? WHERE id=?", (label, row["id"]))
+            counts[label] += 1
+            labeled += 1
+        run_id = storage.digest(storage.json_bytes([SENTIMENT_RULE, labeled, storage.now()]))
+        db.execute("INSERT INTO sentiment_runs(id,rule_version,scanned,labeled,positive,negative,neutral,created_at)"
+                   " VALUES(?,?,?,?,?,?,?,?)",
+                   (run_id, SENTIMENT_RULE, len(pending), labeled, counts["偏正面"], counts["偏负面"],
+                    counts["中性"], storage.now()))
+    return {"run_id": run_id, "rule_version": SENTIMENT_RULE, "scanned": len(pending), "labeled": labeled,
+            "labels": counts, "status": sentiment_status(db)}
+
