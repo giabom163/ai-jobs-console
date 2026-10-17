@@ -26,7 +26,8 @@
     <button class="tab" role="tab" id="tab-search" aria-controls="view-search" aria-selected="false" data-view="search" tabindex="-1">原帖检索</button>
     <button class="tab" role="tab" id="tab-watch" aria-controls="view-watch" aria-selected="false" data-view="watch" tabindex="-1">观察清单</button>
     <button class="tab weak" role="tab" id="tab-admin" aria-controls="view-admin" aria-selected="false" data-view="admin" tabindex="-1">数据管理</button>
-    <a class="tab weak" href="/tasks">任务流水线</a>
+    <!-- 跨页链接：刻意不用 class="tab"（app.js 会把 .tab 纳入键盘 roving focus，且它没有 data-view） -->
+    <a class="navlink" href="/tasks" aria-label="任务流水线（独立页面）">任务流水线</a>
   </nav>
 
   <main id="main">

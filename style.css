@@ -146,6 +146,19 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
   border-color: var(--accent-line);
   color: var(--accent-strong);
 }
+/* 跨页链接（任务流水线）：不参与 .tab 的键盘 roving focus，视觉上沿用弱入口样式 */
+.navlink {
+  border: 1px solid var(--line-soft);
+  background: transparent;
+  border-radius: 999px;
+  padding: 9px 16px;
+  font: 500 13px inherit;
+  font-family: inherit;
+  color: var(--muted);
+  cursor: pointer;
+  text-decoration: none;
+}
+.navlink:hover { border-color: var(--accent-line); color: var(--accent-strong); }
 
 /* 通知 */
 .notice {
