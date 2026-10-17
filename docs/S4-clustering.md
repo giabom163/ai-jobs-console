@@ -159,7 +159,7 @@ python -B tools/cluster_events.py [--limit N] [--threshold F] [--similarity dice
 }
 ```
 
-summary 侧：`event_count = 117`、`max_event_size = 4`、`singleton_events = 88`、`event_size_distribution = {"1":88,"2":26,"3":2,"4":1}`。
+summary 侧：`event_count = 117`、`max_event_size = 4`、`singleton_events = 88`、`event_size_distribution = {"1":88,"2":28,"4":1}`（88 + 2×28 + 4×1 = 148 条记录，与 `record_count` 自洽）。
 
 事件 JSONL 首 2 行（真实落盘字节，`outs.jsonl_sha256` 与文件字节回读一致）：
 

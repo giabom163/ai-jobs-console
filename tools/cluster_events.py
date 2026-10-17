@@ -439,11 +439,11 @@ def build_summary(events, records, stats, model_meta, tokens, args, stamp, acces
         "params": {
             "limit": args.limit, "threshold": args.threshold, "similarity": args.similarity,
             "boundary_width": BOUNDARY_WIDTH, "max_model_pairs": args.max_model_pairs,
-            "model": not args.no_model, "model_batch": args.model_batch,
+            "model": (not args.no_model and args.max_model_pairs > 0), "model_batch": args.model_batch,
             "min_interval_seconds": args.min_interval,
         },
         "model": {
-            "enabled": not args.no_model,
+            "enabled": (not args.no_model and args.max_model_pairs > 0),
             "model_id": os.environ.get(analysis.PRODUCTION_MODEL_ENV) or analysis.PRODUCTION_MODEL,
             "endpoint": analysis.PRODUCTION_ENDPOINT,
             "reasoning_effort": "none",
