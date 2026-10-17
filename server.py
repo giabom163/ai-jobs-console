@@ -1,5 +1,5 @@
 """Local, manual-refresh RSS sentiment monitor; Python standard library only."""
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import argparse
 from contextlib import contextmanager
 from html import unescape
@@ -11,7 +11,10 @@ import ipaddress
 import re
 import sqlite3
 import socket
+import subprocess
+import sys
 import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -38,6 +41,15 @@ HISTORY_QUERY_KEYS = {"evidence_id", "from", "to", "limit", "offset"}
 WRITE_LOCK = threading.Lock()
 REFRESH_LOCK = threading.Lock()
 RUNTIME = {}
+
+# 采集调度：默认 20 分钟一轮，轮转 6 个已验证平台；冷却账与熔断仍由采集器本体负责。
+COLLECT_LOCK = threading.Lock()
+COLLECT_STATE = {"running": False, "started_at": None, "trigger": None}
+COLLECT_INTERVAL_MIN = 20
+COLLECT_LIMIT = 20
+COLLECT_TIMEOUT = 900
+COLLECT_ENDPOINTS = ["hot", "weibo-hot", "zhihu-hot", "tieba-hot", "36kr-hot", "xiaohongshu-feed"]
+OPENCLI_MAIN = ""
 POSITIVE = {"增长", "上涨", "利好", "成功", "创新", "支持", "改善", "满意", "合作", "突破", "good", "growth", "success", "positive", "support", "improve", "win"}
 NEGATIVE = {"下跌", "亏损", "投诉", "事故", "风险", "处罚", "下滑", "失败", "争议", "危机", "bad", "loss", "complaint", "risk", "fine", "decline", "failure", "crisis"}
 
@@ -152,6 +164,183 @@ def fetch_feed(feed, limit):
     return rows
 
 
+# ---------- 采集调度（P1） ----------
+
+def port_in_use(host, port):
+    """启动前探测端口：已被占用就不启动，避免两个实例同时服务。"""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.settimeout(0.6)
+        return probe.connect_ex((host, port)) == 0
+
+
+def default_opencli_main():
+    """OpenCLI 目前装在独立目录（不进 profile，避免 pnpm install 剪掉）；多路径兜底。"""
+    candidates = []
+    env = os.environ.get("OPENCLI_MAIN")
+    if env:
+        candidates.append(Path(env))
+    candidates.extend([
+        Path("D:/DSH/tools/opencli-1.8.8/node_modules/@jackwener/opencli/dist/src/main.js"),
+        Path.home() / "node_modules/@jackwener/opencli/dist/src/main.js",
+        Path(os.environ.get("APPDATA", "")) / "npm/node_modules/@jackwener/opencli/dist/src/main.js",
+    ])
+    for candidate in candidates:
+        if candidate and candidate.is_file():
+            return str(candidate)
+    return ""
+
+
+def today_start_iso():
+    """Asia/Shanghai 当天 00:00 对应的 UTC ISO 时间。"""
+    local = datetime.now(timezone(timedelta(hours=8)))
+    start = local.replace(hour=0, minute=0, second=0, microsecond=0)
+    return start.astimezone(timezone.utc).isoformat()
+
+
+def insert_collect_log(trigger, endpoints, status, started_at, finished_at,
+                       added, duplicates, returned, error, report):
+    """采集日志单独开连接写，失败不影响主流程。"""
+    try:
+        db = storage.connect(DB)
+        try:
+            with db:
+                db.execute(
+                    "INSERT INTO collector_logs(trigger,endpoints,status,started_at,finished_at,"
+                    "added,duplicates,returned,error,report) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    (trigger, ",".join(endpoints), status, started_at, finished_at,
+                     int(added), int(duplicates), int(returned), error,
+                     json.dumps(report, ensure_ascii=False)[:200000]))
+                # 只保留最近 200 条日志（20 分钟一轮约 72 行/天）
+                db.execute("DELETE FROM collector_logs WHERE id NOT IN "
+                           "(SELECT id FROM collector_logs ORDER BY id DESC LIMIT 200)")
+        finally:
+            db.close()
+    except (OSError, sqlite3.Error):
+        pass
+
+
+def collect_status():
+    with connect() as db:
+        rows = [dict(r) for r in db.execute(
+            "SELECT id,trigger,endpoints,status,started_at,finished_at,added,duplicates,returned,error "
+            "FROM collector_logs ORDER BY id DESC LIMIT 10")]
+    return {"running": COLLECT_STATE["running"], "started_at": COLLECT_STATE["started_at"],
+            "trigger": COLLECT_STATE["trigger"], "interval_minutes": COLLECT_INTERVAL_MIN,
+            "endpoints": COLLECT_ENDPOINTS, "logs": rows}
+
+
+def run_collection(trigger="manual", lock_held=False):
+    """跑一轮采集；同一时间只允许一个实例。lock_held=True 表示调用方已持有锁。"""
+    if not lock_held and not COLLECT_LOCK.acquire(blocking=False):
+        return {"status": "busy", "message": "已有采集在运行"}
+    started_at = storage.now()
+    COLLECT_STATE.update(running=True, started_at=started_at, trigger=trigger)
+    status, added, duplicates, returned, error, report = "failed", 0, 0, 0, None, {}
+    finished_at = started_at
+    try:
+        main_js = OPENCLI_MAIN or default_opencli_main()
+        if not main_js or not Path(main_js).is_file():
+            raise RuntimeError("未找到 OpenCLI 的 dist/src/main.js；用 --opencli 指定")
+        cmd = [sys.executable, "-B", str(ROOT / "tools" / "collect_opencli.py")]
+        for endpoint in COLLECT_ENDPOINTS:
+            cmd += ["--endpoint", endpoint]
+        cmd += ["--limit", str(COLLECT_LIMIT),
+                # 一轮必须容得下所有端点，否则后几个端点会永远被 max_per_run 截断
+                "--max-per-run", str(COLLECT_LIMIT * len(COLLECT_ENDPOINTS)),
+                "--gap-seconds", "25",
+                "--min-interval", str(max(COLLECT_INTERVAL_MIN, 1) * 60),
+                "--opencli", str(main_js)]
+        proc = subprocess.run(cmd, cwd=str(ROOT), capture_output=True, text=True,
+                              encoding="utf-8", errors="replace", timeout=COLLECT_TIMEOUT)
+        raw = (proc.stdout or "").strip().lstrip("\ufeff")
+        if "{" not in raw:
+            raise RuntimeError(f"采集器未返回 JSON（退出码 {proc.returncode}）：{(proc.stderr or '')[:300]}")
+        report = json.loads(raw[raw.index("{"):])
+        reported = report.get("status")
+        status = reported if reported in ("ok", "throttled", "skipped") else "failed"
+        for item in report.get("results") or []:
+            run = item.get("run") or {}
+            added += int(run.get("added") or 0)
+            duplicates += int(run.get("duplicates") or 0)
+            returned += int(item.get("returned_count") or 0)
+        if status == "failed":
+            messages = [(i.get("error") or {}).get("message") for i in report.get("results") or []
+                        if i.get("status") == "failed"]
+            error = "; ".join(m for m in messages if m)[:1000] or f"采集器退出码 {proc.returncode}"
+    except subprocess.TimeoutExpired:
+        status, error = "timeout", f"采集超时（>{COLLECT_TIMEOUT}s），进程已终止"
+    except Exception as exc:  # 环境/解析/磁盘
+        status, error = "failed", f"{type(exc).__name__}: {exc}"[:1000]
+    finally:
+        finished_at = storage.now()
+        try:
+            insert_collect_log(trigger, COLLECT_ENDPOINTS, status, started_at, finished_at,
+                               added, duplicates, returned, error, report)
+        except Exception:
+            pass  # 日志写入失败也必须释放锁，否则后续采集全部被拒
+        COLLECT_STATE.update(running=False, started_at=None, trigger=None)
+        COLLECT_LOCK.release()
+    return {"status": status, "trigger": trigger, "started_at": started_at,
+            "finished_at": finished_at, "added": added, "duplicates": duplicates,
+            "returned": returned, "error": error}
+
+
+def start_collection_scheduler():
+    if COLLECT_INTERVAL_MIN <= 0:
+        return None
+
+    def loop():
+        time.sleep(min(120, COLLECT_INTERVAL_MIN * 60))
+        while True:
+            try:
+                run_collection("scheduler")
+            except Exception:
+                pass
+            time.sleep(COLLECT_INTERVAL_MIN * 60)
+
+    thread = threading.Thread(target=loop, daemon=True, name="collector-scheduler")
+    thread.start()
+    return thread
+
+
+# ---------- 全库检索（P1） ----------
+
+def search_records(db, query, sentiment, feed_id, date_from, date_to, limit, offset):
+    where, params = [], []
+    if query:
+        escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        like = f"%{escaped}%"
+        where.append("(r.title LIKE ? ESCAPE '\\' OR r.summary LIKE ? ESCAPE '\\' OR r.url LIKE ? ESCAPE '\\')")
+        params += [like, like, like]
+    if sentiment:
+        where.append("r.sentiment = ?")
+        params.append(sentiment)
+    if feed_id:
+        where.append("r.feed_id = ?")
+        params.append(feed_id)
+    if date_from:
+        where.append("date(r.fetched_at,'+8 hours') >= ?")
+        params.append(date_from)
+    if date_to:
+        where.append("date(r.fetched_at,'+8 hours') <= ?")
+        params.append(date_to)
+    clause = (" WHERE " + " AND ".join(where)) if where else ""
+    total = db.execute("SELECT count(*) FROM records r" + clause, params).fetchone()[0]
+    rows = db.execute(
+        "SELECT r.id,r.feed_id,f.name AS source,r.title,r.summary,r.url,r.fetched_at,"
+        "r.sentiment,r.canonical_id FROM records r JOIN feeds f ON f.id=r.feed_id"
+        + clause + " ORDER BY r.fetched_at DESC, r.id LIMIT ? OFFSET ?",
+        params + [limit, offset]).fetchall()
+    return {"total": total, "limit": limit, "offset": offset, "items": [dict(x) for x in rows]}
+
+
+class SingleInstanceHTTPServer(ThreadingHTTPServer):
+    """禁止端口复用：同一端口只能有一个实例，避免新旧进程同时服务。"""
+    allow_reuse_address = False
+    daemon_threads = True
+
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *_):
         pass
@@ -187,6 +376,34 @@ class Handler(BaseHTTPRequestHandler):
         path = urllib.parse.urlsplit(self.path).path
         if path == "/api/runtime":
             return self.send(200, RUNTIME)
+        if path == "/api/collect/status":
+            return self.send(200, collect_status())
+        if path == "/api/search":
+            query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query, keep_blank_values=True)
+            text = (query.get("q", [""])[0] or "").strip()[:200]
+            sentiment = (query.get("sentiment", [""])[0] or "").strip()[:40]
+            feed_raw = (query.get("feed_id", [""])[0] or "").strip()
+            if feed_raw and not feed_raw.isdigit():
+                raise ValueError("feed_id 必须是正整数")
+            feed_id = int(feed_raw) if feed_raw else None
+            date_from = (query.get("from", [""])[0] or "").strip()
+            date_to = (query.get("to", [""])[0] or "").strip()
+            for value in (date_from, date_to):
+                if value:
+                    try:
+                        datetime.strptime(value, "%Y-%m-%d")
+                    except ValueError:
+                        raise ValueError("from / to 必须是有效的 YYYY-MM-DD") from None
+            limit_raw = (query.get("limit", ["20"])[0] or "").strip()
+            offset_raw = (query.get("offset", ["0"])[0] or "").strip()
+            if not limit_raw.isdigit() or not 1 <= int(limit_raw) <= 100:
+                raise ValueError("limit 必须是 1..100 的整数")
+            if not offset_raw.isdigit():
+                raise ValueError("offset 必须是非负整数")
+            with connect() as db:
+                return self.send(200, search_records(db, text, sentiment, feed_id,
+                                                     date_from or None, date_to or None,
+                                                     int(limit_raw), int(offset_raw)))
         if path == "/api/topics":
             query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query, keep_blank_values=True)
             raw = query.get("top_k", ["10"])
@@ -217,6 +434,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(200, (ROOT / "topics-panel.js").read_bytes(), "text/javascript; charset=utf-8")
         if path == "/alert-panel.js":
             return self.send(200, (ROOT / "alert-panel.js").read_bytes(), "text/javascript; charset=utf-8")
+        if path == "/corpus-search.js":
+            return self.send(200, (ROOT / "corpus-search.js").read_bytes(), "text/javascript; charset=utf-8")
         if path == "/style.css":
             return self.send(200, (ROOT / "style.css").read_bytes(), "text/css; charset=utf-8")
         if path == "/api/overview-stats":
@@ -232,7 +451,15 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 raise ValueError("window 只接受 all 或形如 7d / 14d / 30d 的值")
             with connect() as db:
-                return self.send(200, storage.overview_stats(db, days))
+                stats = storage.overview_stats(db, days)
+                stats["kpi"]["today_added"] = db.execute(
+                    "SELECT count(*) FROM records WHERE fetched_at >= ?",
+                    (today_start_iso(),)).fetchone()[0]
+                stats["kpi"]["negative"] = db.execute(
+                    "SELECT count(*) FROM records WHERE sentiment='偏负面'").fetchone()[0]
+                stats["kpi"]["open_alerts"] = db.execute(
+                    "SELECT count(*) FROM alerts WHERE status='open'").fetchone()[0]
+            return self.send(200, stats)
         if path == "/api/data":
             with connect() as db:
                 result = storage.data(db)
@@ -441,6 +668,16 @@ class Handler(BaseHTTPRequestHandler):
                     except (OSError, sqlite3.Error) as exc:
                         return self.send(500, {"error": str(exc), "status": "failed"})
                 return self.send(200, {"watch": watch})
+            if path == "/api/collect":
+                # 先抢锁再起线程，避免两个请求同时看到 running=False 而各起一轮。
+                if not COLLECT_LOCK.acquire(blocking=False):
+                    return self.send(409, {"error": "已有采集在运行", "status": "busy"})
+                threading.Thread(target=run_collection, args=("manual",),
+                                 kwargs={"lock_held": True}, daemon=True,
+                                 name="collect-manual").start()
+                return self.send(202, {"started": True, "endpoints": COLLECT_ENDPOINTS,
+                                       "limit": COLLECT_LIMIT,
+                                       "interval_minutes": COLLECT_INTERVAL_MIN})
             if path == "/api/refresh":
                 with connect() as db:
                     feeds = [dict(x) for x in db.execute("SELECT * FROM feeds ORDER BY id LIMIT ?", (LIMIT,))]
@@ -470,24 +707,54 @@ class Handler(BaseHTTPRequestHandler):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--limit", type=int, required=True)
+    parser.add_argument("--collect-interval", type=int, default=20,
+                        help="自动采集间隔（分钟，0=关闭；默认 20）")
+    parser.add_argument("--collect-limit", type=int, default=20,
+                        help="每个端点每轮条数 1–50（默认 20）")
+    parser.add_argument("--opencli", default=None,
+                        help="OpenCLI 的 dist/src/main.js 路径；默认查 D:\\DSH\\tools\\opencli-1.8.8")
     args = parser.parse_args()
     if not 1 <= args.limit <= 100:
         parser.error("--limit 必须为 1–100；首次使用 --limit 3")
+    if not 0 <= args.collect_interval <= 1440:
+        parser.error("--collect-interval 必须为 0–1440 分钟（0=关闭自动采集）")
+    if not 1 <= args.collect_limit <= 50:
+        parser.error("--collect-limit 必须为 1–50")
     LIMIT = args.limit
+    COLLECT_INTERVAL_MIN = args.collect_interval
+    COLLECT_LIMIT = args.collect_limit
+    OPENCLI_MAIN = args.opencli or default_opencli_main()
+    if args.collect_interval > 0 and not (OPENCLI_MAIN and Path(OPENCLI_MAIN).is_file()):
+        print("警告：未找到 OpenCLI，自动采集会记失败；可用 --opencli 指定，或用 --collect-interval 0 关闭。",
+              file=sys.stderr, flush=True)
     RUNTIME = {"pid": os.getpid(), "started_at": storage.now(), "entry": str(Path(__file__).resolve()),
                "storage_module": str(Path(storage.__file__).resolve()), "database": str(DB),
                "snapshot_root": str(ROOT / "snapshots"), "manual_limit": LIMIT,
+               "collect_interval_minutes": COLLECT_INTERVAL_MIN,
+               "collect_limit": COLLECT_LIMIT,
+               "collect_endpoints": COLLECT_ENDPOINTS,
+               "opencli_main": OPENCLI_MAIN,
                "loaded_sha256": {name: storage.digest((ROOT / name).read_bytes())
                                  for name in ("server.py", "storage.py", "analysis.py")},
                "analysis_module": str(Path(analysis.__file__).resolve()), "production_adapter": ("rule:" + analysis.SENTIMENT_RULE) if not os.environ.get(analysis.PRODUCTION_KEY_ENV) else ("model:" + analysis.PRODUCTION_MODEL)}
-    server = ThreadingHTTPServer((HOST, PORT), Handler)
+    if port_in_use(HOST, PORT):
+        print(f"端口 {HOST}:{PORT} 已被占用：已有实例在运行。请先停止旧进程再启动。",
+              file=sys.stderr, flush=True)
+        raise SystemExit(3)
+    try:
+        server = SingleInstanceHTTPServer((HOST, PORT), Handler)
+    except OSError as exc:
+        print(f"无法绑定 {HOST}:{PORT}：{exc}", file=sys.stderr, flush=True)
+        raise SystemExit(3)
     try:
         with connect() as db:
             storage.recover_runs(db)
             analysis.recover(db)
         # 启动期调度：alertcenter.init 已由 connect() 内的调用完成；此处只启动 60 秒 daemon 线程。
         alertcenter.start_scheduler(DB)
-        print(f"本地舆情面板：http://{HOST}:{PORT}（手动批次上限 {LIMIT}；Ctrl+C 停止）", flush=True)
+        start_collection_scheduler()
+        print(f"本地舆情面板：http://{HOST}:{PORT}（手动批次上限 {LIMIT}；"
+              f"自动采集 {COLLECT_INTERVAL_MIN} 分钟/轮，0=关闭；Ctrl+C 停止）", flush=True)
         server.serve_forever()
     except KeyboardInterrupt:
         pass

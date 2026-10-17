@@ -2169,6 +2169,52 @@ $("#runtime-load").addEventListener("click", async () => {
 });
 
 $("#reload-data").addEventListener("click", () => { load(); loadP1(); loadWatchlist(); });
+
+/* 采集：手动触发 + 轮询结果；服务端同一时间只允许一个采集实例。 */
+const collectBtn = $("#collect-run");
+async function pollCollect(button) {
+  for (let i = 0; i < 450; i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+    try {
+      const status = await api("/api/collect/status");
+      if (!status.running) {
+        const last = (status.logs || [])[0];
+        load({ keepNotice: true });
+        window.dispatchEvent(new Event("overview:refresh"));
+        window.dispatchEvent(new Event("corpus:refresh-feeds"));
+        show(last
+          ? `采集完成：${last.status}，新增 ${last.added} 条，重复 ${last.duplicates} 条。`
+          : "采集完成。");
+        button.disabled = false;
+        return;
+      }
+    } catch (err) { /* 轮询失败继续等，不打断采集 */ }
+  }
+  button.disabled = false;
+  show("采集仍在进行，请稍后查看采集状态。", true);
+}
+if (collectBtn) {
+  collectBtn.addEventListener("click", async () => {
+    collectBtn.disabled = true;
+    try {
+      const res = await api("/api/collect", { method: "POST", body: {} });
+      show(`采集已开始：${res.endpoints.length} 个端点 × ${res.limit} 条，自动间隔 ${res.interval_minutes} 分钟。`);
+      pollCollect(collectBtn);
+    } catch (err) {
+      collectBtn.disabled = false;
+      show(err.message, true);
+    }
+  });
+}
+
+/* 总览每 30 秒重读本地数据（只读，不触发采集）。 */
+setInterval(() => {
+  if (document.hidden) return;
+  const active = document.querySelector('.tab[aria-selected="true"]');
+  if (!active || active.dataset.view !== "overview") return;
+  load({ keepNotice: true });
+  window.dispatchEvent(new Event("overview:refresh"));
+}, 30000);
 for (const id of ["#overview-reload", "#topics-reload", "#search-reload"]) {
   $(id).addEventListener("click", () => { load(); loadP1(); });
 }

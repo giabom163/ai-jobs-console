@@ -39,6 +39,9 @@
       ['记录数', kpi.records],
       ['去重条目', kpi.canonical],
       ['来源', kpi.feeds],
+      ['今日新增', kpi.today_added === undefined ? '—' : kpi.today_added],
+      ['负面舆情（全量）', kpi.negative === undefined ? '—' : kpi.negative],
+      ['未处理预警（全量）', kpi.open_alerts === undefined ? '—' : kpi.open_alerts],
       ['时间缺失', pct(kpi.unknown_time_ratio)],
       ['情感待判', pct(kpi.sentiment_pending_ratio)],
       ['最近成功采集', fmtTime(kpi.last_success_at)]
@@ -180,6 +183,10 @@
         host.hidden = false;
       });
   }
+
+  window.addEventListener('overview:refresh', function () {
+    load(host.getAttribute('data-window') || '14d');
+  });
 
   load(host.getAttribute('data-window') || '14d');
 })();

@@ -147,6 +147,13 @@ def connect(path):
         entered_at TEXT NOT NULL, expires_at TEXT NOT NULL, entry_reason TEXT NOT NULL,
         exited_at TEXT, exit_reason TEXT);
       CREATE INDEX IF NOT EXISTS p1_watch_identity ON p1_watch_periods(identity_key);
+      CREATE TABLE IF NOT EXISTS collector_logs(
+        id INTEGER PRIMARY KEY AUTOINCREMENT, trigger TEXT NOT NULL,
+        endpoints TEXT NOT NULL, status TEXT NOT NULL,
+        started_at TEXT NOT NULL, finished_at TEXT,
+        added INTEGER NOT NULL DEFAULT 0, duplicates INTEGER NOT NULL DEFAULT 0,
+        returned INTEGER NOT NULL DEFAULT 0, error TEXT, report TEXT);
+      CREATE INDEX IF NOT EXISTS collector_logs_started ON collector_logs(started_at);
     """)
     return db
 

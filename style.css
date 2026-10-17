@@ -446,6 +446,12 @@ footer {
 }
 
 .p1-cards { display: grid; gap: 12px; margin-top: 12px; }
+/* 检索结果的情感标签 */
+.pill { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px;
+  border: 1px solid var(--line); color: #6b7280; background: #f6f7f8; white-space: nowrap; }
+.pill.ok { color: #2c6b45; border-color: #bfe3cd; background: #f0faf4; }
+.pill.danger { color: #a13a3a; border-color: #f0c9c9; background: #fdf2f2; }
+.pill.muted { color: #6b7280; border-color: var(--line); background: #f6f7f8; }
 .p1-entry { background: #fdfdfb; }
 .p1-entry h3 { margin-top: 8px; }
 .p1-heat {
@@ -485,6 +491,13 @@ footer {
   margin-bottom: 0;
 }
 .inline-field select, .inline-field input { width: auto; margin-top: 0; }
+/* 全库检索：标签独立一行，避免中文标签被输入框挤成竖排 */
+#corpus-search-form .inline-field {
+  display: flex; flex-direction: column; align-items: stretch;
+  gap: 4px; white-space: nowrap;
+}
+#corpus-search-form .inline-field input,
+#corpus-search-form .inline-field select { width: 100%; }
 #p1-import-panel > summary {
   cursor: pointer;
   font-size: 15px;

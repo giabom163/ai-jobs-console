@@ -39,6 +39,7 @@
         <div class="section-title">
           <div><p class="eyebrow">COLLECTED CORPUS</p><h2>采集语料</h2></div>
           <div class="card-actions">
+            <button id="collect-run" class="primary" type="button">采集 + 分析</button>
             <button id="overview-reload" class="secondary" type="button">重新读取本地数据</button>
           </div>
         </div>
@@ -141,6 +142,44 @@
 
     <!-- 业务三：原帖检索 -->
     <section id="view-search" class="view" role="tabpanel" aria-labelledby="tab-search" tabindex="0" hidden>
+      <section class="panel" id="corpus-search-panel">
+        <div class="section-title">
+          <div><p class="eyebrow">CORPUS SEARCH</p><h2>全库检索</h2></div>
+          <div class="card-actions"><span id="corpus-search-meta" class="hint"></span></div>
+        </div>
+        <p class="hint">
+          范围：采集库全部记录（records），可按关键词 / 情感 / 来源 / 抓取日期过滤，按抓取时间倒序分页。
+          与下方 P1「原帖检索」不同，这里检索的是采集语料，不是人工导入的 3 条候选。
+        </p>
+        <form id="corpus-search-form" class="biz-filters" style="align-items:flex-end">
+          <label class="inline-field">关键词
+            <input id="corpus-q" type="search" placeholder="标题 / 摘要 / 链接" autocomplete="off">
+          </label>
+          <label class="inline-field">情感
+            <select id="corpus-sentiment">
+              <option value="">全部情感</option>
+              <option value="偏正面">偏正面</option>
+              <option value="偏负面">偏负面</option>
+              <option value="中性">中性</option>
+              <option value="中性/待判">中性/待判</option>
+            </select>
+          </label>
+          <label class="inline-field">来源
+            <select id="corpus-feed"><option value="">全部来源</option></select>
+          </label>
+          <label class="inline-field">抓取日从
+            <input id="corpus-from" type="date">
+          </label>
+          <label class="inline-field">到
+            <input id="corpus-to" type="date">
+          </label>
+          <button class="primary" type="submit">搜索</button>
+        </form>
+        <div id="corpus-search-status" class="biz-status" role="status" aria-live="polite">输入条件后搜索，或直接搜索查看全库最新记录。</div>
+        <div id="corpus-results" class="p1-cards"></div>
+        <div id="corpus-pager" class="card-actions" style="margin-top:10px"></div>
+      </section>
+
       <section class="panel">
         <div class="section-title">
           <div><p class="eyebrow">LOCAL SEARCH</p><h2>原帖检索</h2></div>
@@ -517,5 +556,6 @@
 <script src="/overview-charts.js" defer></script>
 <script src="/topics-panel.js" defer></script>
 <script src="/alert-panel.js" defer></script>
+<script src="/corpus-search.js" defer></script>
 </body>
 </html>
