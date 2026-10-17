@@ -637,6 +637,19 @@ footer {
 
 /* --- P1 总览图表 --- */
 .charts { margin: 18px 0 8px; }
+
+/* P1 人工证据：手工导入，折叠放角落（辅助口径，不占主视野） */
+.p1-corner { padding: 0; }
+.p1-corner > summary {
+  list-style: none; cursor: pointer; padding: 13px 18px;
+  font-size: 13px; font-weight: 600; color: #3f4a45;
+  display: flex; align-items: center; gap: 8px;
+}
+.p1-corner > summary::-webkit-details-marker { display: none; }
+.p1-corner > summary::before { content: "▸"; color: #7c8b86; }
+.p1-corner[open] > summary::before { content: "▾"; }
+.p1-corner[open] > summary { border-bottom: 1px solid var(--line); }
+.p1-corner-body { padding: 14px 20px 18px; }
 .kpi-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-bottom: 14px; }
 .kpi { background: var(--panel, #fff); border: 1px solid var(--line, #e5e7eb); border-radius: 10px; padding: 10px 12px; display: flex; flex-direction: column; gap: 4px; }
 .kpi-label { font-size: 12px; color: var(--muted, #6b7280); }

@@ -35,16 +35,26 @@
 
     <!-- 业务一（默认）：总览 -->
     <section id="view-overview" class="view" role="tabpanel" aria-labelledby="tab-overview" tabindex="0">
-      <section class="panel">
+      <section class="panel corpus-panel">
         <div class="section-title">
-          <div><p class="eyebrow">OVERVIEW</p><h2>总览</h2></div>
+          <div><p class="eyebrow">COLLECTED CORPUS</p><h2>采集语料</h2></div>
           <div class="card-actions">
             <button id="overview-reload" class="secondary" type="button">重新读取本地数据</button>
           </div>
         </div>
         <p class="hint">
-          本页只读取本机已有材料，不抓取、不刷新来源、不生成结论。
-          总览只保留少量原帖捷径，完整分组排名在「议题与表达线索」，筛选浏览在「原帖检索」。
+          本区汇总采集库（records / collection_runs / snapshots）的只读指标，由采集器或手动批次写入；
+          页面不会自动采集，点「重新读取本地数据」只重读本机数据库。
+        </p>
+        <section class="charts" id="overview-charts" data-window="14d" aria-label="采集语料图表" hidden></section>
+      </section>
+
+      <details class="panel p1-corner">
+        <summary>P1 人工证据 · 手工导入（辅助）</summary>
+        <div class="p1-corner-body">
+        <p class="hint">
+          P1 区只统计人工导入的候选证据（每次 ≤3 帖），不随采集更新；
+          「最近观测」是 P1 观测时间，不是采集时间。完整分组在「议题与表达线索」，筛选在「原帖检索」。
         </p>
         <div id="overview-status" class="biz-status" role="status" aria-live="polite">尚未读取本地数据。</div>
 
@@ -70,12 +80,11 @@
 
         <h3 class="col-title">原帖证据捷径</h3>
         <div id="overview-shortcuts" class="p1-cards"></div>
-      </section>
+        </div>
+      </details>
     </section>
 
     <!-- 业务二：议题与表达线索（固定标题） -->
-    <!-- P1 总览聚合图表（只读 /api/overview-stats） -->
-  <section class="charts" id="overview-charts" data-window="14d" aria-label="总览图表" hidden></section>
 
   <section id="view-topics" class="view" role="tabpanel" aria-labelledby="tab-topics" tabindex="0" hidden>
       <section class="panel">
