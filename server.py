@@ -190,6 +190,13 @@ def default_opencli_main():
     return ""
 
 
+def collect_cooldown_seconds():
+    """平台冷却取调度间隔的 60%，给串行采完留余量；关闭调度时退化为 60 秒。"""
+    if COLLECT_INTERVAL_MIN <= 0:
+        return 60
+    return max(60, int(COLLECT_INTERVAL_MIN * 60 * 0.6))
+
+
 def today_start_iso():
     """Asia/Shanghai 当天 00:00 对应的 UTC ISO 时间。"""
     local = datetime.now(timezone(timedelta(hours=8)))
@@ -226,6 +233,7 @@ def collect_status():
             "FROM collector_logs ORDER BY id DESC LIMIT 10")]
     return {"running": COLLECT_STATE["running"], "started_at": COLLECT_STATE["started_at"],
             "trigger": COLLECT_STATE["trigger"], "interval_minutes": COLLECT_INTERVAL_MIN,
+            "cooldown_seconds": collect_cooldown_seconds(),
             "endpoints": COLLECT_ENDPOINTS, "logs": rows}
 
 
@@ -248,7 +256,9 @@ def run_collection(trigger="manual", lock_held=False):
                 # 一轮必须容得下所有端点，否则后几个端点会永远被 max_per_run 截断
                 "--max-per-run", str(COLLECT_LIMIT * len(COLLECT_ENDPOINTS)),
                 "--gap-seconds", "25",
-                "--min-interval", str(max(COLLECT_INTERVAL_MIN, 1) * 60),
+                # 冷却必须短于调度间隔：一轮串行采完本身要 2 分钟左右，若冷却=间隔，
+                # 最后采的平台到下一轮还没解冻，会被整轮 throttle（实测 0 条）。
+                "--min-interval", str(collect_cooldown_seconds()),
                 "--opencli", str(main_js)]
         proc = subprocess.run(cmd, cwd=str(ROOT), capture_output=True, text=True,
                               encoding="utf-8", errors="replace", timeout=COLLECT_TIMEOUT)

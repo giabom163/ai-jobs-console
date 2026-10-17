@@ -2182,9 +2182,14 @@ async function pollCollect(button) {
         load({ keepNotice: true });
         window.dispatchEvent(new Event("overview:refresh"));
         window.dispatchEvent(new Event("corpus:refresh-feeds"));
-        show(last
-          ? `采集完成：${last.status}，新增 ${last.added} 条，重复 ${last.duplicates} 条。`
-          : "采集完成。");
+        const cd = status.cooldown_seconds ? Math.round(status.cooldown_seconds / 60) : null;
+        if (last && last.status === "throttled") {
+          show(`本轮平台都在冷却中，未发起请求${cd ? `（冷却 ${cd} 分钟/平台）` : ""}。`);
+        } else {
+          show(last
+            ? `采集完成：${last.status}，新增 ${last.added} 条，重复 ${last.duplicates} 条。`
+            : "采集完成。");
+        }
         button.disabled = false;
         return;
       }
