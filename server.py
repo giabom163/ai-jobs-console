@@ -192,8 +192,24 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(200, (ROOT / "index.html").read_bytes(), "text/html; charset=utf-8")
         if path == "/app.js":
             return self.send(200, (ROOT / "app.js").read_bytes(), "text/javascript; charset=utf-8")
+        if path == "/overview-charts.js":
+            return self.send(200, (ROOT / "overview-charts.js").read_bytes(), "text/javascript; charset=utf-8")
         if path == "/style.css":
             return self.send(200, (ROOT / "style.css").read_bytes(), "text/css; charset=utf-8")
+        if path == "/api/overview-stats":
+            query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query, keep_blank_values=True)
+            raw = query.get("window", ["14d"])
+            if len(raw) != 1:
+                raise ValueError("window 只接受一个值")
+            value = raw[0].strip()
+            if value == "all":
+                days = None
+            elif re.fullmatch(r"\d{1,3}d", value):
+                days = int(value[:-1])
+            else:
+                raise ValueError("window 只接受 all 或形如 7d / 14d / 30d 的值")
+            with connect() as db:
+                return self.send(200, storage.overview_stats(db, days))
         if path == "/api/data":
             with connect() as db:
                 result = storage.data(db)

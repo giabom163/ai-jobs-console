@@ -633,3 +633,28 @@ footer {
   .topbar { flex-wrap: wrap; gap: 10px 20px; padding: 10px 16px; }
   .topbar .tabs { order: 3; width: 100%; gap: 16px; }
 }
+
+
+/* --- P1 总览图表 --- */
+.charts { margin: 18px 0 8px; }
+.kpi-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-bottom: 14px; }
+.kpi { background: var(--panel, #fff); border: 1px solid var(--line, #e5e7eb); border-radius: 10px; padding: 10px 12px; display: flex; flex-direction: column; gap: 4px; }
+.kpi-label { font-size: 12px; color: var(--muted, #6b7280); }
+.kpi-value { font-size: 18px; line-height: 1.2; }
+.chart-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 14px; }
+.chart-card { border: 1px solid var(--line, #e5e7eb); border-radius: 12px; padding: 12px 14px; background: var(--panel, #fff); }
+.chart-head h3 { margin: 0 0 2px; font-size: 14px; }
+.chart-note { margin: 0 0 8px; font-size: 12px; color: var(--muted, #6b7280); }
+.chart-svg { width: 100%; height: auto; display: block; }
+.chart-axis { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted, #6b7280); margin-top: 4px; }
+.donut-wrap { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; }
+.donut-svg { width: 150px; height: 150px; flex: 0 0 auto; }
+.donut-legend { list-style: none; margin: 0; padding: 0; font-size: 12px; display: flex; flex-direction: column; gap: 4px; }
+.donut-legend .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; }
+.bar-row { display: grid; grid-template-columns: 110px 1fr 52px; gap: 8px; align-items: center; font-size: 12px; margin: 4px 0; }
+.bar-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bar-track { background: var(--line, #eef2f7); border-radius: 6px; height: 10px; overflow: hidden; }
+.bar-fill { background: #3b82f6; height: 100%; border-radius: 6px; }
+.bar-value { text-align: right; color: var(--muted, #6b7280); }
+.chart-empty { font-size: 12px; color: var(--muted, #6b7280); margin: 8px 0; }
+.chart-foot { font-size: 11px; color: var(--muted, #6b7280); margin-top: 10px; }

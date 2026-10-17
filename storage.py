@@ -283,6 +283,78 @@ def data(db):
 
 # --- P1-A: bounded manual gender-topic evidence store (no network, no model) --------------------
 
+
+# --- P1 总览聚合（只读，无网络、无模型） -------------------------------------------------------
+
+def overview_stats(db, window_days=None):
+    """总览大屏聚合：KPI + 每日趋势 + 平台分布 + 情感分布 + TOP 条目分组。
+
+    时间口径：published_at 优先，缺失时退回 fetched_at（time_quality=missing 的记录）；
+    窗口按该口径过滤，window_days=None 表示全量。不补零、不外推。
+    """
+    from datetime import datetime, timedelta, timezone
+
+    since = None
+    if window_days:
+        since = (datetime.now(timezone.utc) - timedelta(days=int(window_days))).strftime('%Y-%m-%dT%H:%M:%S')
+
+    def clause(alias=''):
+        if since is None:
+            return '', ()
+        col = (lambda n: alias + n) if alias else (lambda n: n)
+        return (' WHERE coalesce(%s, %s) >= ?' % (col('published_at'), col('fetched_at')), (since,))
+
+    where, args = clause()
+    row = db.execute(
+        """SELECT count(*) records, count(DISTINCT canonical_id) canonical,
+                  coalesce(sum(published_at IS NULL),0) unknown_time,
+                  coalesce(sum(sentiment IS NULL OR sentiment='' OR sentiment LIKE '%待判%'),0) sentiment_pending
+           FROM records""" + where, args).fetchone()
+    kpi = dict(row)
+    kpi['unknown_time_ratio'] = round(kpi['unknown_time'] / kpi['records'], 4) if kpi['records'] else None
+    kpi['sentiment_pending_ratio'] = round(kpi['sentiment_pending'] / kpi['records'], 4) if kpi['records'] else None
+    kpi['feeds'] = db.execute("SELECT count(*) FROM feeds").fetchone()[0]
+    last = db.execute("SELECT finished_at FROM collection_runs WHERE status='succeeded' "
+                      "ORDER BY finished_at DESC LIMIT 1").fetchone()
+    kpi['last_success_at'] = last[0] if last else None
+
+    trend = [dict(day=r[0], records=r[1], canonical=r[2]) for r in db.execute(
+        """SELECT substr(coalesce(published_at, fetched_at),1,10) day,
+                  count(*) records, count(DISTINCT canonical_id) canonical
+           FROM records""" + where + " GROUP BY day ORDER BY day", args)]
+
+    pw, pa = clause('r.')
+    platforms = [dict(label=r[0], value=r[1]) for r in db.execute(
+        """SELECT f.name, count(*) c FROM records r JOIN feeds f ON f.id=r.feed_id""" + pw +
+        " GROUP BY f.name ORDER BY c DESC, f.name", pa)]
+
+    sentiment = [dict(label=r[0] or '未标注', value=r[1]) for r in db.execute(
+        """SELECT coalesce(nullif(sentiment,''),'未标注') label, count(*) c
+           FROM records""" + where + " GROUP BY label ORDER BY c DESC, label", args)]
+
+    groups = [dict(label=(r[0] or '(无标题)'), value=r[1], canonical_id=r[2]) for r in db.execute(
+        """SELECT min(title) label, count(*) c, canonical_id FROM records""" + where +
+        " GROUP BY canonical_id ORDER BY c DESC, label LIMIT 10", args)]
+
+    return {
+        'schema_version': 'p1-v1',
+        'generated_at': datetime.now(timezone.utc).isoformat(timespec='seconds'),
+        'window_days': window_days,
+        'window_since': since,
+        'kpi': kpi,
+        'trend': trend,
+        'platforms': platforms,
+        'sentiment': sentiment,
+        'top_groups': groups,
+        'coverage': 'sample_only',
+        'time_basis': 'published_at ?: fetched_at',
+        'notes': [
+            'top_groups 是按 canonical_id 的条目去重分组，不是语义事件聚类',
+            '时间缺失占比高时，trend 的日分布会偏向抓取日',
+        ],
+    }
+
+
 class P1LimitExceeded(ValueError):
     """Whole-database P1 candidate identity cap would be exceeded; the batch is rejected."""
 

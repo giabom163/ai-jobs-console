@@ -74,7 +74,10 @@
     </section>
 
     <!-- 业务二：议题与表达线索（固定标题） -->
-    <section id="view-topics" class="view" role="tabpanel" aria-labelledby="tab-topics" tabindex="0" hidden>
+    <!-- P1 总览聚合图表（只读 /api/overview-stats） -->
+  <section class="charts" id="overview-charts" data-window="14d" aria-label="总览图表" hidden></section>
+
+  <section id="view-topics" class="view" role="tabpanel" aria-labelledby="tab-topics" tabindex="0" hidden>
       <section class="panel">
         <div class="section-title">
           <div><p class="eyebrow">TOPICS</p><h2>议题与表达线索</h2></div>
@@ -493,5 +496,6 @@
 
   <script src="/vendor/echarts/echarts.min.js" defer></script>
   <script src="/app.js" defer></script>
+<script src="/overview-charts.js" defer></script>
 </body>
 </html>
