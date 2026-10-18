@@ -367,6 +367,19 @@ def topic_analysis(db, window_days=7):
             trend = 0 if last == 0 else 100.0
         else:
             trend = round((last - prev) / prev * 100, 1)
+        baseline = series[:-1]
+        if len(baseline) >= 2 and last > 0:
+            mean = sum(baseline) / len(baseline)
+            variance = sum((v - mean) ** 2 for v in baseline) / len(baseline)
+            std = variance ** 0.5
+            if std > 0:
+                zscore = round((last - mean) / std, 2)
+            else:
+                # 基线全 0 的“从零起量”只在量级足够大时才判异常，避免每个新话题都报警
+                zscore = 99.0 if last >= 5 else 0.0
+        else:
+            zscore = 0.0
+        anomaly = bool(last >= 2 and zscore >= 2.0)
         label = ev["label"] or "(无标题)"
         all_topics.append({
             "name": label[:18] + ("…" if len(label) > 18 else ""),
@@ -375,6 +388,8 @@ def topic_analysis(db, window_days=7):
             "platforms": platforms,
             "count": int(ev["records"] or 0),
             "trend": trend,
+            "zscore": zscore,
+            "anomaly": anomaly,
             "series": series,
             "index": index,
         })

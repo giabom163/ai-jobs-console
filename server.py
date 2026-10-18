@@ -735,7 +735,7 @@ class Handler(BaseHTTPRequestHandler):
                     "SELECT count(*) FROM records WHERE fetched_at >= ?",
                     (today_start_iso(),)).fetchone()[0]
                 stats["kpi"]["negative"] = db.execute(
-                    "SELECT count(*) FROM records WHERE sentiment='偏负面'").fetchone()[0]
+                    "SELECT count(*) FROM records WHERE sentiment IN ('偏负面','强负面')").fetchone()[0]
                 stats["kpi"]["open_alerts"] = db.execute(
                     "SELECT count(*) FROM alerts WHERE status='open'").fetchone()[0]
                 stats["kpi"]["active_topics"] = admin_features.active_topics(db)

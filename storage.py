@@ -72,6 +72,30 @@ def assess_quality(title, summary=""):
     return True, "ok"
 
 
+def simhash64(text):
+    """64 位 SimHash：CJK 二元组 + 英文/数字 token，用于跨来源近重复。"""
+    text = re.sub(r"\s+", "", normalized_text(text or "").lower())
+    chars = re.findall(r"[\u4e00-\u9fff]", text)
+    tokens = list(chars) + [chars[i] + chars[i + 1] for i in range(len(chars) - 1)]
+    tokens += re.findall(r"[a-z0-9]+", text)
+    if not tokens:
+        tokens = ["empty:" + text]
+    vector = [0] * 64
+    for token in tokens:
+        digest = int.from_bytes(hashlib.blake2b(token.encode("utf-8"), digest_size=8).digest(), "big")
+        for bit in range(64):
+            vector[bit] += 1 if (digest >> bit) & 1 else -1
+    value = 0
+    for bit in range(64):
+        if vector[bit] > 0:
+            value |= 1 << bit
+    return value
+
+
+def hamming64(a, b):
+    return (a ^ b).bit_count()
+
+
 def normalized_text(value):
     return re.sub(r"\s+", " ", unescape(re.sub(r"<[^>]*>", " ", value))).strip()
 
@@ -148,6 +172,7 @@ def connect(path):
       CREATE INDEX IF NOT EXISTS records_url ON records(canonical_url);
       CREATE INDEX IF NOT EXISTS records_content ON records(content_sha256);
       CREATE INDEX IF NOT EXISTS records_published ON records(published_at);
+      CREATE INDEX IF NOT EXISTS records_fetched ON records(fetched_at);
       CREATE TABLE IF NOT EXISTS schema_meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS p1_evidence(
         id TEXT PRIMARY KEY, identity_key TEXT NOT NULL, platform TEXT NOT NULL, platform_id TEXT,
@@ -178,13 +203,25 @@ def connect(path):
       CREATE INDEX IF NOT EXISTS collector_logs_started ON collector_logs(started_at);
     """)
     for column, ddl in (("quality", "TEXT NOT NULL DEFAULT 'ok'"),
-                        ("quality_reason", "TEXT")):
+                        ("quality_reason", "TEXT"),
+                        ("simhash", "TEXT")):
         cols = [row[1] for row in db.execute("PRAGMA table_info(records)")]
         if column not in cols:
-            db.execute(f"ALTER TABLE records ADD COLUMN {column} {ddl}")
+            try:
+                db.execute(f"ALTER TABLE records ADD COLUMN {column} {ddl}")
+            except sqlite3.OperationalError:
+                pass  # 另一进程已加列
     run_cols = [row[1] for row in db.execute("PRAGMA table_info(collection_runs)")]
     if "rejected" not in run_cols:
-        db.execute("ALTER TABLE collection_runs ADD COLUMN rejected INTEGER NOT NULL DEFAULT 0")
+        try:
+            db.execute("ALTER TABLE collection_runs ADD COLUMN rejected INTEGER NOT NULL DEFAULT 0")
+        except sqlite3.OperationalError:
+            pass
+    if "near_duplicates" not in run_cols:
+        try:
+            db.execute("ALTER TABLE collection_runs ADD COLUMN near_duplicates INTEGER NOT NULL DEFAULT 0")
+        except sqlite3.OperationalError:
+            pass
     _init_fts(db)
     return db
 
@@ -321,13 +358,19 @@ def import_batch(db, root, run_id, rows, classify):
                 rejected += 1
                 continue
             content_hash = digest(json_bytes([title, summary]))
-            prepared.append((row, title, summary, url, content_hash, published_at, quality, source_id))
+            prepared.append((row, title, summary, url, content_hash, published_at, quality,
+                             source_id, simhash64(title + " " + summary)))
         input_hash = digest(json_bytes(rows))
-        added = duplicates = 0
+        added = duplicates = near_duplicates = 0
         # Snapshots are immutable content-addressed evidence. A failed transaction may leave
         # an unreferenced snapshot; no destructive cleanup or partial record commit occurs.
+        recent = [(int(r["simhash"], 16), r["id"]) for r in db.execute(
+            "SELECT simhash,id FROM records WHERE simhash IS NOT NULL ORDER BY fetched_at DESC LIMIT 500")]
         with db:
-            for row, title, summary, url, content_hash, published_at, quality, source_id in prepared:
+            for row, title, summary, url, content_hash, published_at, quality, source_id, sh in prepared:
+                if any(hamming64(sh, other) <= 4 for other, _ in recent):
+                    near_duplicates += 1
+                    continue
                 raw_hash, raw_path = save_snapshot(root, row)
                 if db.execute("SELECT id FROM records WHERE feed_id=? AND raw_sha256=?",
                               (run["feed_id"], raw_hash)).fetchone():
@@ -346,16 +389,17 @@ def import_batch(db, root, run_id, rows, classify):
                 record_id = "record-" + uuid.uuid4().hex
                 db.execute("""INSERT INTO records(id,feed_id,source_id,title,summary,url,canonical_url,
                     content_sha256,raw_sha256,raw_path,published_at,published_raw,fetched_at,time_quality,
-                    canonical_id,dedup_reason,run_id,sentiment,quality,quality_reason)
-                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    canonical_id,dedup_reason,run_id,sentiment,quality,quality_reason,simhash)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                            (record_id, run["feed_id"], source_id, title, summary, row["url"], url,
                             content_hash, raw_hash, raw_path, published_at, row.get("published_at"), now(),
                             quality, canonical_id, reason, run_id, classify(title + " " + summary),
-                            "ok", "ok"))
+                            "ok", "ok", f"{sh:016x}"))
+                recent.append((sh, record_id))
                 added += 1
             db.execute("""UPDATE collection_runs SET status='succeeded',finished_at=?,input_count=?,
-                added=?,duplicates=?,rejected=?,input_sha256=? WHERE id=? AND status='running'""",
-                       (now(), len(rows), added, duplicates, rejected, input_hash, run_id))
+                added=?,duplicates=?,near_duplicates=?,rejected=?,input_sha256=? WHERE id=? AND status='running'""",
+                       (now(), len(rows), added, duplicates, near_duplicates, rejected, input_hash, run_id))
         return dict(db.execute("SELECT * FROM collection_runs WHERE id=?", (run_id,)).fetchone())
     except Exception as exc:
         db.rollback()

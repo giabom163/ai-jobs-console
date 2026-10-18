@@ -63,6 +63,10 @@ def match_clause(kind, value):
     if kind == "source":
         return "f.name = ?", (value,)
     if kind == "sentiment":
+        if value == "偏负面":
+            return "r.sentiment IN ('偏负面','强负面')", ()
+        if value == "偏正面":
+            return "r.sentiment IN ('偏正面','强正面')", ()
         return "r.sentiment = ?", (value,)
     return None, ()
 

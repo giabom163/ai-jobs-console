@@ -638,8 +638,9 @@ def topics_overview(db, top_k=10):
         jobs.append(item)
     groups = []
     for row in db.execute("""SELECT r.canonical_id, min(r.title) title, count(*) records,
-                                    sum(r.sentiment='偏正面') positive, sum(r.sentiment='偏负面') negative,
-                                    sum(r.sentiment='中性') neutral, max(r.fetched_at) last_fetch
+                                    sum(r.sentiment IN ('偏正面','强正面')) positive,
+                                    sum(r.sentiment IN ('偏负面','强负面')) negative,
+                                    sum(r.sentiment IN ('中性','中性/待判')) neutral, max(r.fetched_at) last_fetch
                              FROM records r GROUP BY r.canonical_id
                              ORDER BY records DESC, title LIMIT ?""", (int(top_k),)):
         groups.append(dict(row))
@@ -656,7 +657,7 @@ def sentiment_status(db):
     rows = db.execute("""SELECT coalesce(nullif(sentiment,''),'未标注') label, count(*) c
                          FROM records GROUP BY label ORDER BY c DESC, label""").fetchall()
     pending = db.execute("""SELECT count(*) FROM records
-                            WHERE sentiment IS NULL OR sentiment='' OR sentiment LIKE '%待判%'""").fetchone()[0]
+                            WHERE sentiment IS NULL OR sentiment='' OR sentiment='待判'""").fetchone()[0]
     last = db.execute("SELECT * FROM sentiment_runs ORDER BY created_at DESC, rowid DESC LIMIT 1").fetchone()
     return {"rule_version": SENTIMENT_RULE,
             "labels": [{"label": r[0], "value": r[1]} for r in rows],
@@ -667,7 +668,7 @@ def sentiment_status(db):
 def run_rule_sentiment(db, limit=None):
     """给未判定的记录打规则标签；只动 sentiment 仍为待判/NULL/空的记录，可重复执行（幂等）。"""
     sql = """SELECT id, title, summary FROM records
-             WHERE sentiment IS NULL OR sentiment='' OR sentiment LIKE '%待判%'
+             WHERE sentiment IS NULL OR sentiment='' OR sentiment='待判'
              ORDER BY id"""
     if limit:
         sql += " LIMIT %d" % int(limit)

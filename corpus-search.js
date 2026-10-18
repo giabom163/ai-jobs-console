@@ -33,8 +33,8 @@
   }
 
   function sentimentClass(value) {
-    if (value === '偏负面') return 'pill danger';
-    if (value === '偏正面') return 'pill ok';
+    if (value === '强负面' || value === '偏负面') return 'pill danger';
+    if (value === '强正面' || value === '偏正面') return 'pill ok';
     return 'pill muted';
   }
 
