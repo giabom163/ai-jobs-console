@@ -79,7 +79,8 @@ usage_totals = _relevance.usage_totals              # 复用 usage 汇总（缺�
 
 DEFAULT_LIMIT = 200
 MAX_LIMIT = 200            # 自设上限，避免单次运行产生不可控规模
-DEFAULT_THRESHOLD = 0.42   # 标题相似度阈值（规则阶段判同的硬门）
+DEFAULT_THRESHOLD = 0.38   # 标题相似度阈值（规则阶段判同的硬门）
+MIN_SHARED_TOKENS = 2     # 相似度达标还不够，至少共享 2 个实词才判同事件
 BOUNDARY_WIDTH = 0.15      # 边界带宽度：[threshold-0.15, threshold) 才交给模型
 DEFAULT_MAX_MODEL_PAIRS = 20
 MAX_MODEL_PAIRS = 50       # 契约硬上限
@@ -365,7 +366,7 @@ def rule_pass(records, similarity, threshold):
     lower = max(0.0, threshold - BOUNDARY_WIDTH)
     uf = UnionFind(len(records))
     stats = {"total_pairs": 0, "canonical_same": 0, "similarity_same": 0,
-             "boundary": 0, "different": 0}
+             "shared_blocked": 0, "boundary": 0, "different": 0}
     boundary = []
     for i in range(len(records)):
         for j in range(i + 1, len(records)):
@@ -376,6 +377,9 @@ def rule_pass(records, similarity, threshold):
                 continue
             score = similarity(records[i]["_norm"], records[j]["_norm"])
             if score >= threshold:
+                if len(records[i]["_tokens"] & records[j]["_tokens"]) < MIN_SHARED_TOKENS:
+                    stats["shared_blocked"] += 1
+                    continue
                 uf.union(i, j)
                 stats["similarity_same"] += 1
             elif score >= lower:
@@ -605,6 +609,7 @@ def main(argv=None):
         records = load_records(db_handle, args.limit)
         for record in records:
             record["_norm"] = normalize_title(record["title"])
+            record["_tokens"] = set(_tokens(record["title"]))
         similarity = SIMILARITY_FUNCS[args.similarity]
 
         # 规则阶段（零模型调用）。先留存规则分量根，供 method 归属判断。
