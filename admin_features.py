@@ -148,17 +148,23 @@ def _fmt_local(value):
 
 
 def generate_report(db, kind, trace_id=None, task_id=None):
-    if kind not in ("daily", "weekly"):
-        raise ValueError("kind 必须是 daily 或 weekly")
+    if kind not in ("daily", "weekly", "monthly"):
+        raise ValueError("kind 必须是 daily / weekly / monthly")
     now = datetime.now(timezone(timedelta(hours=8)))
     if kind == "daily":
         start = now.replace(hour=0, minute=0, second=0, microsecond=0)
         title = f"舆情日报 · {start.strftime('%Y-%m-%d')}"
-    else:
+        window = 1
+    elif kind == "weekly":
         start = (now - timedelta(days=7)).replace(hour=0, minute=0, second=0, microsecond=0)
         title = f"舆情周报 · {start.strftime('%Y-%m-%d')} ~ {now.strftime('%Y-%m-%d')}"
+        window = 7
+    else:
+        start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        title = f"舆情月报 · {start.strftime('%Y-%m')}"
+        window = 30
 
-    stats = storage.overview_stats(db, 1 if kind == "daily" else 7)
+    stats = storage.overview_stats(db, window)
     window_days = 1 if kind == "daily" else 7
     kpi = stats["kpi"]
     platforms = stats["platforms"][:8]

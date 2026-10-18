@@ -8,7 +8,7 @@
   var online = document.getElementById('agent-online');
   var windowSelect = document.getElementById('dash-window');
   var updated = document.getElementById('dash-updated');
-  var currentWindow = '7d';
+  var currentWindow = '24h';
 
   var COLORS = ['#3b82f6', '#22c55e', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4', '#84cc16', '#f97316'];
 
@@ -115,7 +115,7 @@
     body.appendChild(svg);
     var axis = el('div', 'chart-axis');
     axis.appendChild(el('span', null, rows[0].day));
-    axis.appendChild(el('span', null, '峰值 ' + max + ' 条/日'));
+    axis.appendChild(el('span', null, '峰值 ' + max + ' 条/' + (currentWindow === '24h' ? '时' : '日')));
     axis.appendChild(el('span', null, rows[rows.length - 1].day));
     body.appendChild(axis);
   }
@@ -170,10 +170,16 @@
       row.appendChild(el('span', 'bar-label', r.label));
       var track = el('span', 'bar-track');
       var fill = el('span', 'bar-fill');
-      fill.style.width = (r.value / max * 100) + '%';
+      var ratio = r.value / max;
+      fill.style.width = (ratio * 100) + '%';
+      // 数量越大越偏红：低值蓝、高值红，一眼看出量级
+      fill.style.background = 'hsl(' + Math.round(210 * (1 - ratio)) + ', 80%, 50%)';
       track.appendChild(fill);
       row.appendChild(track);
-      row.appendChild(el('span', 'bar-value', String(r.value) + (unit || '')));
+      var valueEl = el('span', 'bar-value', String(r.value) + (unit || ''));
+      valueEl.style.color = 'hsl(' + Math.round(210 * (1 - ratio)) + ', 75%, 38%)';
+      valueEl.style.fontWeight = '600';
+      row.appendChild(valueEl);
       body.appendChild(row);
     });
   }
@@ -200,6 +206,11 @@
 
     var two = el('div', 'chart-two');
     var trendBox = card('近7天舆情热度趋势', '按日统计，口径 published_at ?: fetched_at');
+    var trendTitle = currentWindow === '24h' ? '近24小时舆情热度趋势' :
+      (currentWindow === 'all' ? '全量舆情热度趋势' : '近' + currentWindow.replace('d', '') + '天舆情热度趋势');
+    trendBox.box.querySelector('h3').textContent = trendTitle;
+    trendBox.box.querySelector('.chart-note').textContent = currentWindow === '24h'
+      ? '按小时统计，口径 published_at ?: fetched_at' : '按日统计，口径 published_at ?: fetched_at';
     var trendPanel = el('section', 'panel');
     trendPanel.appendChild(trendBox.box);
     trendChart(stats.trend, trendBox.body);

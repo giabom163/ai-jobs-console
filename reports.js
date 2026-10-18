@@ -6,6 +6,7 @@
   var kpiHost = document.getElementById('report-kpis');
   var dailyBtn = document.getElementById('report-daily');
   var weeklyBtn = document.getElementById('report-weekly');
+  var monthlyBtn = document.getElementById('report-monthly');
 
   function el(tag, cls, text) {
     var n = document.createElement(tag);
@@ -74,7 +75,7 @@
     reports.forEach(function (r) {
       var row = el('tr');
       row.appendChild(el('td', null, r.title));
-      row.appendChild(el('td', null, r.kind === 'weekly' ? '周报' : '日报'));
+      row.appendChild(el('td', null, r.kind === 'weekly' ? '周报' : (r.kind === 'monthly' ? '月报' : '日报')));
       row.appendChild(el('td', null,
         r.kind === 'weekly'
           ? fmt(r.period_start).slice(0, 10) + ' ~ ' + fmt(r.period_end).slice(0, 10)
@@ -131,6 +132,7 @@
 
   if (dailyBtn) dailyBtn.addEventListener('click', function () { generate('daily', dailyBtn); });
   if (weeklyBtn) weeklyBtn.addEventListener('click', function () { generate('weekly', weeklyBtn); });
+  if (monthlyBtn) monthlyBtn.addEventListener('click', function () { generate('monthly', monthlyBtn); });
 
   load();
 })();

@@ -445,7 +445,7 @@ def data(db):
 
 # --- P1 总览聚合（只读，无网络、无模型） -------------------------------------------------------
 
-def overview_stats(db, window_days=None):
+def overview_stats(db, window_days=None, window_hours=None):
     """总览大屏聚合：KPI + 每日趋势 + 平台分布 + 情感分布 + TOP 条目分组。
 
     时间口径：published_at 优先，缺失时退回 fetched_at（time_quality=missing 的记录）；
@@ -454,7 +454,9 @@ def overview_stats(db, window_days=None):
     from datetime import datetime, timedelta, timezone
 
     since = None
-    if window_days:
+    if window_hours:
+        since = (datetime.now(timezone.utc) - timedelta(hours=int(window_hours))).strftime('%Y-%m-%dT%H:%M:%S')
+    elif window_days:
         since = (datetime.now(timezone.utc) - timedelta(days=int(window_days))).strftime('%Y-%m-%dT%H:%M:%S')
 
     def clause(alias=''):
@@ -477,10 +479,13 @@ def overview_stats(db, window_days=None):
                       "ORDER BY finished_at DESC LIMIT 1").fetchone()
     kpi['last_success_at'] = last[0] if last else None
 
+    if window_hours:
+        bucket = "strftime('%H:00', datetime(coalesce(published_at, fetched_at), '+8 hours'))"
+    else:
+        bucket = "date(coalesce(published_at, fetched_at), '+8 hours')"
     trend = [dict(day=r[0], records=r[1], canonical=r[2]) for r in db.execute(
-        """SELECT date(coalesce(published_at, fetched_at), '+8 hours') day,
-                  count(*) records, count(DISTINCT canonical_id) canonical
-           FROM records""" + where + " GROUP BY day ORDER BY day", args)]
+        "SELECT " + bucket + " day, count(*) records, count(DISTINCT canonical_id) canonical "
+        "FROM records" + where + " GROUP BY day ORDER BY day", args)]
 
     pw, pa = clause('r.')
     platforms = [dict(label=r[0], value=r[1]) for r in db.execute(

@@ -843,14 +843,18 @@ class Handler(BaseHTTPRequestHandler):
             if len(raw) != 1:
                 raise ValueError("window 只接受一个值")
             value = raw[0].strip()
+            hours = None
             if value == "all":
                 days = None
+            elif value == "24h":
+                days = None
+                hours = 24
             elif re.fullmatch(r"\d{1,3}d", value):
                 days = int(value[:-1])
             else:
-                raise ValueError("window 只接受 all 或形如 7d / 14d / 30d 的值")
+                raise ValueError("window 只接受 all / 24h / 7d / 14d / 30d")
             with connect() as db:
-                stats = storage.overview_stats(db, days)
+                stats = storage.overview_stats(db, days, hours)
                 stats["kpi"]["today_added"] = db.execute(
                     "SELECT count(*) FROM records WHERE fetched_at >= ?",
                     (today_start_iso(),)).fetchone()[0]
