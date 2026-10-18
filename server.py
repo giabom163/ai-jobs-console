@@ -545,7 +545,10 @@ def search_records(db, query, sentiment, feed_id, date_from, date_to, limit, off
     total = db.execute("SELECT count(*) FROM records r" + join + clause, params).fetchone()[0]
     rows = db.execute(
         "SELECT r.id,r.feed_id,f.name AS source,r.title,r.summary,r.url,r.fetched_at,"
-        "r.sentiment,r.canonical_id,r.entities FROM records r JOIN feeds f ON f.id=r.feed_id" + join
+        "r.sentiment,r.canonical_id,r.entities,m.sentiment AS model_sentiment,"
+        "m.topic AS model_topic,m.gender_related AS model_gender_related,"
+        "m.opposition AS model_opposition FROM records r JOIN feeds f ON f.id=r.feed_id"
+        " LEFT JOIN model_annotations m ON m.record_id=r.id" + join
         + clause + " ORDER BY r.fetched_at DESC, r.id LIMIT ? OFFSET ?",
         params + [limit, offset]).fetchall()
     return {"total": total, "limit": limit, "offset": offset, "fts": bool(fts_ready),

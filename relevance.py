@@ -1,7 +1,9 @@
 """性别对立相关度粗筛（本地规则，无模型）。
 
-口径：标题/摘要里同时出现「性别主体词」与「冲突/对立词」，或命中强特征短语，
-才算与性别对立相关。宁可漏报，不把普通女性议题当成对立内容。
+两个口径：
+- gender_related：性别/生育/婚恋议题（宽），用于采集保留；
+- opposition：同时出现性别主体词与冲突词，或命中强特征（严），用于预警。
+采集宽进严出，分类与预警再用 opposition。
 """
 from __future__ import annotations
 
@@ -10,12 +12,13 @@ GENDER_TERMS = (
     "女性主义", "性别歧视", "性别对立", "男女对立", "厌女", "媚男", "彩礼",
     "婚恋", "生育", "堕胎", "怀孕", "备孕", "家务", "重男轻女", "女子", "妇女", "女童",
     "宝妈", "剩女", "雌竞", "女博主", "女乘客", "女员工", "女学生", "男女",
+    "男子", "男友", "女友", "丈夫", "妻子",
 )
 
 CONFLICT_TERMS = (
     "对立", "冲突", "骂战", "互撕", "打拳", "拳师", "女拳", "男拳", "撕裂",
     "争议", "大战", "开战", "嘲讽", "双标", "仇女", "仇男", "歧视", "攻击",
-    "互喷", "对骂", "性别战争", "性别矛盾", "性别议题", "厌女", "媚男",
+    "互喷", "对骂", "性别战争", "性别矛盾", "厌女", "媚男",
     "家暴", "性骚扰", "性侵", "殴打", "尾随", "骚扰", "羞辱", "物化", "规训",
     "重男轻女", "催婚", "逼婚", "荡妇", "受害者有罪",
 )
@@ -23,14 +26,15 @@ CONFLICT_TERMS = (
 # 强特征：不依赖共现也能判定；「打拳/拳师」故意不放这里（拳击/健身会误放）
 # 生理科普/两性技巧/医学常识：即使出现性别词，也不属于性别对立
 EXCLUDE_TERMS = (
-    "生理科普", "生理知识", "两性知识", "性教育", "性技巧", "情趣", "避孕",
-    "妇科", "男科", "医学科普", "健康科普", "怀孕", "备孕", "月经", "前列腺",
+    "生理科普", "生理知识", "两性知识", "性教育", "性技巧", "情趣",
+    "妇科", "男科", "医学科普", "健康科普", "月经", "前列腺",
     "勃起", "高潮", "性生活", "性行为", "生殖", "私处",
 )
 
 STRONG_TERMS = (
     "性别对立", "男女对立", "性别战争", "性别矛盾", "女拳", "男拳",
     "厌女", "媚男", "仇女", "仇男", "重男轻女", "家暴", "性骚扰", "性侵",
+    "极端女权", "极端男权",
 )
 
 
@@ -68,5 +72,28 @@ def explain(title, summary=""):
     return False, 0, "unrelated"
 
 
+def classify(title, summary=""):
+    """返回 gender_related / opposition 两个独立口径。
+
+    gender_related：性别/生育/婚恋议题（宽），用于采集保留；
+    opposition：性别对立/冲突（严），用于预警和展示。
+    """
+    text = _normalize(title or "") + "\n" + _normalize(summary or "")
+    if not text.strip():
+        return {"gender_related": False, "opposition": False, "reason": "empty"}
+    excluded = [t for t in EXCLUDE_TERMS if t in text]
+    strong = [t for t in STRONG_TERMS if t in text]
+    gender = [t for t in GENDER_TERMS if t in text]
+    conflict = [t for t in CONFLICT_TERMS if t in text]
+    if excluded and not strong and not conflict:
+        return {"gender_related": False, "opposition": False,
+                "reason": "excluded:" + ",".join(excluded[:3])}
+    gender_related = bool(strong or gender)
+    opposition, _, reason = explain(title, summary)
+    return {"gender_related": gender_related, "opposition": opposition,
+            "reason": reason}
+
+
 def is_relevant(title, summary=""):
-    return explain(title, summary)[0]
+    """采集保留口径：性别/生育议题即保留，不再要求冲突词。"""
+    return classify(title, summary)["gender_related"]

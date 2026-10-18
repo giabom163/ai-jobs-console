@@ -79,7 +79,7 @@ usage_totals = _relevance.usage_totals              # 复用 usage 汇总（缺�
 
 DEFAULT_LIMIT = 200
 MAX_LIMIT = 200            # 自设上限，避免单次运行产生不可控规模
-DEFAULT_THRESHOLD = 0.6    # 标题相似度阈值（规则阶段判同的硬门）
+DEFAULT_THRESHOLD = 0.42   # 标题相似度阈值（规则阶段判同的硬门）
 BOUNDARY_WIDTH = 0.15      # 边界带宽度：[threshold-0.15, threshold) 才交给模型
 DEFAULT_MAX_MODEL_PAIRS = 20
 MAX_MODEL_PAIRS = 50       # 契约硬上限
@@ -482,7 +482,7 @@ def build_summary(events, records, stats, model_meta, tokens, args, stamp, acces
         "db": {"path": str(args.db), "read_only": True, "access": access_mode},
         "params": {
             "limit": args.limit,
-        "threshold": args.threshold if args.threshold is not None else (0.35 if args.similarity == "tfidf" else DEFAULT_THRESHOLD),
+        "threshold": args.threshold if args.threshold is not None else DEFAULT_THRESHOLD,
         "similarity": args.similarity,
             "boundary_width": BOUNDARY_WIDTH, "max_model_pairs": args.max_model_pairs,
             "model": (not args.no_model and args.max_model_pairs > 0), "model_batch": args.model_batch,
@@ -584,7 +584,7 @@ def emit_error(exc, context=None):
 def main(argv=None):
     _relevance._utf8_stdout()
     args = build_parser().parse_args(argv)
-    threshold = args.threshold if args.threshold is not None else (0.35 if args.similarity == "tfidf" else DEFAULT_THRESHOLD)
+    threshold = args.threshold if args.threshold is not None else DEFAULT_THRESHOLD
     context = {"limit": args.limit, "threshold": threshold, "similarity": args.similarity,
                "max_model_pairs": args.max_model_pairs, "no_model": args.no_model,
                "dry_run": args.dry_run, "db": str(args.db), "out_dir": str(args.out_dir)}
@@ -624,7 +624,7 @@ def main(argv=None):
             "tool": TOOL, "mode": "dry-run" if args.dry_run else "live",
             "db": {"path": str(args.db), "present": True, "access": access_mode, "touched": False},
             "limit": args.limit,
-        "threshold": args.threshold if args.threshold is not None else (0.35 if args.similarity == "tfidf" else DEFAULT_THRESHOLD),
+        "threshold": args.threshold if args.threshold is not None else DEFAULT_THRESHOLD,
         "similarity": args.similarity,
             "boundary_width": BOUNDARY_WIDTH,
             "record_count": len(records), "event_count_if_rule_only": len({uf.find(i) for i in range(len(records))}),

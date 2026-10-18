@@ -147,6 +147,18 @@ def canonical_url(value):
     return urlunsplit((parts.scheme.lower(), host, parts.path or "/", parts.query, ""))
 
 
+def save_model_annotation(db, record_id, model, sentiment, topic, gender_related,
+                          opposition, relevant, raw_json=""):
+    db.execute("""INSERT INTO model_annotations(record_id,model,sentiment,topic,gender_related,
+                  opposition,relevant,created_at,raw_json) VALUES(?,?,?,?,?,?,?,?,?)
+                  ON CONFLICT(record_id) DO UPDATE SET model=excluded.model,
+                  sentiment=excluded.sentiment,topic=excluded.topic,
+                  gender_related=excluded.gender_related,opposition=excluded.opposition,
+                  relevant=excluded.relevant,created_at=excluded.created_at,raw_json=excluded.raw_json""",
+               (record_id, model, sentiment, topic, int(bool(gender_related)),
+                int(bool(opposition)), int(bool(relevant)), now(), raw_json))
+
+
 def connect(path):
     db = sqlite3.connect(path, timeout=10)
     db.row_factory = sqlite3.Row
@@ -206,6 +218,11 @@ def connect(path):
         near_duplicates INTEGER NOT NULL DEFAULT 0, noise_rejected INTEGER NOT NULL DEFAULT 0,
         error TEXT, report TEXT);
       CREATE INDEX IF NOT EXISTS collector_logs_started ON collector_logs(started_at);
+      CREATE TABLE IF NOT EXISTS model_annotations(
+        record_id TEXT PRIMARY KEY REFERENCES records(id),
+        model TEXT NOT NULL, sentiment TEXT, topic TEXT,
+        gender_related INTEGER, opposition INTEGER, relevant INTEGER,
+        created_at TEXT NOT NULL, raw_json TEXT);
     """)
     for column, ddl in (("quality", "TEXT NOT NULL DEFAULT 'ok'"),
                         ("quality_reason", "TEXT"),
