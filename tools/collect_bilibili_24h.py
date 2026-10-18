@@ -65,18 +65,27 @@ def search(keyword, page, mixin):
 
 
 def main(argv=None):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
     parser = argparse.ArgumentParser()
     parser.add_argument("--hours", type=int, default=24)
     parser.add_argument("--pages", type=int, default=3)
     parser.add_argument("--keywords", default="性别,女权,彩礼,家暴,性别对立,厌女,性别歧视,男女")
     parser.add_argument("--per-category-limit", type=int, default=30,
                         help="每个类别最多保留多少条（默认 30）")
+    parser.add_argument("--max-total", type=int, default=100,
+                        help="本次最多新增多少条（默认 100）")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--db", type=Path, default=ROOT / "sentiment.db")
     args = parser.parse_args(argv)
 
     if not 1 <= args.per_category_limit <= 200:
         parser.error("--per-category-limit 必须在 1..200")
+    if not 1 <= args.max_total <= 100:
+        parser.error("--max-total 必须在 1..100")
     mixin = _mixin_key()
     cutoff = datetime.now(timezone.utc) - timedelta(hours=args.hours)
     found = {}
@@ -99,6 +108,8 @@ def main(argv=None):
                 print(f"search fail {keyword} p{page}: {exc}", file=sys.stderr)
                 break
             for item in items:
+                if len(found) >= args.max_total:
+                    break
                 bvid, pub = item.get("bvid"), item.get("pubdate")
                 if not bvid or not pub:
                     continue
@@ -120,6 +131,8 @@ def main(argv=None):
                     category_counts[label] = category_counts.get(label, 0) + 1
                 found[bvid] = {"title": title, "url": f"https://www.bilibili.com/video/{bvid}",
                                "published_at": published.isoformat()}
+            if len(found) >= args.max_total:
+                break
             time.sleep(0.4)
 
     result = {"hours": args.hours, "pages": args.pages, "strict": True,
@@ -142,7 +155,7 @@ def main(argv=None):
         feed_id = cursor.lastrowid
     else:
         feed_id = feed["id"]
-    run_id = storage.start_run(db, feed_id, "bilibili-search", len(found))
+    run_id = storage.start_run(db, feed_id, "bilibili-search", max(1, min(len(found), 100)))
     rows = [{"title": item["title"], "summary": "", "url": item["url"],
              "source_id": bvid, "published_at": item["published_at"]}
             for bvid, item in found.items()]
