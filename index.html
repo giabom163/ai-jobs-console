@@ -416,6 +416,7 @@
           <button class="admin-tab" role="tab" id="atab-p1" aria-controls="admin-p1" aria-selected="false" data-admin="p1" tabindex="-1">人工证据</button>
           <button class="admin-tab" role="tab" id="atab-report" aria-controls="admin-report" aria-selected="false" data-admin="report" tabindex="-1">报告模板</button>
           <button class="admin-tab" role="tab" id="atab-runs" aria-controls="admin-runs" aria-selected="false" data-admin="runs" tabindex="-1">运行状态</button>
+          <button class="admin-tab" role="tab" id="atab-pipeline" aria-controls="admin-pipeline" aria-selected="false" data-admin="pipeline" tabindex="-1">流水线</button>
         </nav>
       </section>
 
@@ -602,6 +603,18 @@
         </section>
       </div>
 
+      <!-- 数据管理 · 流水线任务 -->
+      <div class="admin-view" id="admin-pipeline" role="tabpanel" aria-labelledby="atab-pipeline" hidden>
+        <section class="panel">
+          <div class="section-title">
+            <div><p class="eyebrow">PIPELINE</p><h2>流水线任务（pipeline_tasks）</h2></div>
+            <button id="pipeline-refresh" class="secondary" type="button">刷新</button>
+          </div>
+          <p class="hint">采集 / 聚类 / 报告三个阶段共用 trace_id；失败累计 3 次进入 dead，不再自动重试。</p>
+          <div id="pipeline-list" class="table-wrap"></div>
+        </section>
+      </div>
+
       <!-- 数据管理 · 运行状态 -->
       <div class="admin-view" id="admin-runs" role="tabpanel" aria-labelledby="atab-runs" hidden>
         <section class="panel">
@@ -683,5 +696,6 @@
 <script src="/settings.js" defer></script>
 <script src="/events.js" defer></script>
 <script src="/topic-analysis.js" defer></script>
+<script src="/pipeline-panel.js" defer></script>
 </body>
 </html>

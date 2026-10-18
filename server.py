@@ -569,6 +569,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(200, (ROOT / "events.js").read_bytes(), "text/javascript; charset=utf-8")
         if path == "/topic-analysis.js":
             return self.send(200, (ROOT / "topic-analysis.js").read_bytes(), "text/javascript; charset=utf-8")
+        if path == "/pipeline-panel.js":
+            return self.send(200, (ROOT / "pipeline-panel.js").read_bytes(), "text/javascript; charset=utf-8")
         if path == "/style.css":
             return self.send(200, (ROOT / "style.css").read_bytes(), "text/css; charset=utf-8")
         if path == "/api/overview-stats":
