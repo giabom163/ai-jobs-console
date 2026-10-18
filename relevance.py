@@ -11,14 +11,14 @@ GENDER_TERMS = (
     "女性", "男性", "女生", "男生", "女人", "男人", "性别", "女权", "男权",
     "女性主义", "性别歧视", "性别对立", "男女对立", "厌女", "媚男", "彩礼",
     "婚恋", "生育", "堕胎", "怀孕", "备孕", "家务", "重男轻女", "女子", "妇女", "女童",
-    "宝妈", "剩女", "雌竞", "女博主", "女乘客", "女员工", "女学生", "男女", "闺蜜", "师兄", "师姐", "姐妹", "室友", "女领导", "男领导", "女同事", "男同事", "前男友", "前女友", "渣男", "小三", "绿茶", "普信男", "小仙女", "龟男", "捞女", "凤凰男", "扶弟魔", "妈宝男", "女主",
+    "宝妈", "剩女", "雌竞", "男方", "女方", "女博主", "女乘客", "女员工", "女学生", "男女", "闺蜜", "师兄", "师姐", "姐妹", "室友", "女领导", "男领导", "女同事", "男同事", "前男友", "前女友", "渣男", "小三", "绿茶", "普信男", "小仙女", "龟男", "捞女", "凤凰男", "扶弟魔", "妈宝男", "女主",
     "婚姻", "结婚", "离婚", "择偶", "老公", "老婆", "婆婆", "岳母",
 )
 
 CONFLICT_TERMS = (
     "对立", "冲突", "骂战", "互撕", "打拳", "拳师", "女拳", "男拳", "撕裂",
     "大战", "开战", "嘲讽", "双标", "仇女", "仇男", "歧视", "攻击",
-    "互喷", "对骂", "性别战争", "性别矛盾", "厌女", "媚男",
+    "互喷", "对骂", "性别战争", "性别矛盾", "厌女", "媚男", "纠纷", "起诉", "退还",
     "家暴", "性骚扰", "性侵", "殴打", "尾随", "骚扰", "羞辱", "物化", "规训",
     "重男轻女", "催婚", "逼婚", "荡妇", "受害者有罪",
 )
@@ -29,6 +29,12 @@ EXCLUDE_TERMS = (
     "生理科普", "生理知识", "两性知识", "性教育", "性技巧", "情趣",
     "妇科", "男科", "医学科普", "健康科普", "月经", "前列腺",
     "勃起", "高潮", "性生活", "性行为", "生殖", "私处",
+)
+
+CONTEXT_TERMS = (
+    "婚姻", "结婚", "离婚", "择偶", "老公", "老婆", "婆婆", "岳母", "相亲",
+    "生育", "怀孕", "备孕", "婚恋", "彩礼", "嫁妆", "婚房", "分手", "出轨",
+    "小三", "恋爱", "同居", "领证", "催婚", "逼婚", "前任",
 )
 
 STRONG_TERMS = (
@@ -70,6 +76,36 @@ def explain(title, summary=""):
     if gender:
         return False, 0, "gender-only"
     return False, 0, "unrelated"
+
+
+def classify_tier(title, summary=""):
+    """conflict / issue / unrelated：冲突库只收主体词+冲突词。"""
+    text = _normalize(title or "") + "\n" + _normalize(summary or "")
+    if not text.strip():
+        return "unrelated"
+    subject = any(t in text for t in GENDER_TERMS)
+    conflict = any(t in text for t in CONFLICT_TERMS) or any(t in text for t in STRONG_TERMS)
+    context = any(t in text for t in CONTEXT_TERMS)
+    if subject and conflict:
+        return "conflict"
+    if subject and context:
+        return "issue"
+    if subject:
+        return "issue"
+    return "unrelated"
+
+
+def conflict_score(title, summary="", views=0):
+    """冲突库排序分：冲突词命中 + 播放量归一化；非冲突为 0。"""
+    if classify_tier(title, summary) != "conflict":
+        return 0.0
+    text = _normalize(title or "") + "\n" + _normalize(summary or "")
+    hits = sum(1 for t in CONFLICT_TERMS if t in text) + sum(1 for t in STRONG_TERMS if t in text)
+    try:
+        views = max(0, int(views or 0))
+    except (TypeError, ValueError):
+        views = 0
+    return round(hits * 10 + min(views / 10000.0, 30.0), 2)
 
 
 def classify(title, summary=""):
