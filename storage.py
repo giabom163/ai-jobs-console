@@ -326,7 +326,7 @@ def overview_stats(db, window_days=None):
     kpi['last_success_at'] = last[0] if last else None
 
     trend = [dict(day=r[0], records=r[1], canonical=r[2]) for r in db.execute(
-        """SELECT substr(coalesce(published_at, fetched_at),1,10) day,
+        """SELECT date(coalesce(published_at, fetched_at), '+8 hours') day,
                   count(*) records, count(DISTINCT canonical_id) canonical
            FROM records""" + where + " GROUP BY day ORDER BY day", args)]
 
