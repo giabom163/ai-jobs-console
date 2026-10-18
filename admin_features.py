@@ -39,6 +39,22 @@ def init(db):
         created_at TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS events_size ON events(records);
     """)
+    cols = [row[1] for row in db.execute("PRAGMA table_info(events)")]
+    if "keywords" not in cols:
+        db.execute("ALTER TABLE events ADD COLUMN keywords TEXT")
+
+
+def extract_keywords(titles, topk=5):
+    """jieba TF-IDF 关键词；不可用时返回空列表（UI 回退为来源）。"""
+    try:
+        import jieba.analyse
+    except Exception:
+        return []
+    try:
+        text = "。".join([t for t in titles[:20] if t])
+        return [w for w in jieba.analyse.extract_tags(text, topK=topk) if len(w) > 1][:topk]
+    except Exception:
+        return []
 
 
 # ---------- 设置 ----------
@@ -268,11 +284,12 @@ def rebuild_events(limit=200, trace_id=None, task_id=None):
                     event = json.loads(line)
                     titles = event.get("titles") or []
                     db.execute(
-                        "INSERT OR REPLACE INTO events(id,label,records,platforms,titles,first_seen,created_at) "
-                        "VALUES(?,?,?,?,?,?,?)",
+                        "INSERT OR REPLACE INTO events(id,label,records,platforms,titles,first_seen,created_at,keywords) "
+                        "VALUES(?,?,?,?,?,?,?,?)",
                         (event["event_id"], titles[0] if titles else "(无标题)", int(event.get("size") or 0),
                          json.dumps(event.get("feeds") or [], ensure_ascii=False),
-                         json.dumps(titles[:20], ensure_ascii=False), event.get("first_seen"), stamp))
+                         json.dumps(titles[:20], ensure_ascii=False), event.get("first_seen"), stamp,
+                         json.dumps(extract_keywords(titles), ensure_ascii=False)))
                     counts += 1
         finally:
             db.close()
@@ -324,7 +341,7 @@ def topic_analysis(db, window_days=7):
         day_of.setdefault(row["title"], []).append(day)
 
     events = db.execute(
-        "SELECT label, records, platforms, titles FROM events WHERE records >= 2 "
+        "SELECT label, records, platforms, titles, keywords FROM events WHERE records >= 2 "
         "ORDER BY records DESC, label").fetchall()
     analyzed = db.execute("SELECT coalesce(sum(records),0) FROM events").fetchone()[0] or 0
     all_topics = []
@@ -334,6 +351,11 @@ def topic_analysis(db, window_days=7):
             platforms = json.loads(ev["platforms"] or "[]")
         except ValueError:
             titles, platforms = [], []
+        try:
+            keywords = json.loads(ev["keywords"] or "[]")
+        except ValueError:
+            keywords = []
+        keywords = [k for k in keywords if isinstance(k, str)]
         series = [0] * len(days)
         for title in titles:
             for day in day_of.get(title, []):
@@ -349,7 +371,8 @@ def topic_analysis(db, window_days=7):
         all_topics.append({
             "name": label[:18] + ("…" if len(label) > 18 else ""),
             "full": label,
-            "keywords": platforms,
+            "keywords": keywords,
+            "platforms": platforms,
             "count": int(ev["records"] or 0),
             "trend": trend,
             "series": series,
@@ -365,7 +388,7 @@ def topic_analysis(db, window_days=7):
     edges = []
     for i in range(len(topics)):
         for j in range(i + 1, len(topics)):
-            shared = set(topics[i]["keywords"]) & set(topics[j]["keywords"])
+            shared = set(topics[i]["platforms"]) & set(topics[j]["platforms"])
             if shared:
                 edges.append({"a": i, "b": j, "weight": len(shared)})
 

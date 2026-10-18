@@ -1013,7 +1013,7 @@ function p1Reset() {
     const el = $("#" + id);
     if (el) el.textContent = "—";
   }
-  for (const id of ["overview-topics", "overview-heat", "overview-shortcuts", "topic-list",
+  for (const id of ["overview-topics", "overview-heat", "overview-shortcuts", "p1-topic-list",
                     "topic-summary", "topic-topk", "search-results",
                     "overview-filters", "topics-filters", "search-filters"]) {
     const el = $("#" + id);
@@ -1033,13 +1033,13 @@ function renderBusinessEmpty() {
     const el = $("#" + id);
     if (el) el.textContent = "—";
   }
-  for (const id of ["overview-topics", "overview-heat", "overview-shortcuts", "topic-list",
+  for (const id of ["overview-topics", "overview-heat", "overview-shortcuts", "p1-topic-list",
                     "topic-summary", "topic-topk", "search-results"]) {
     const el = $("#" + id);
     if (el) clear(el);
   }
   const emptyText = "暂无可展示的原帖材料：请到「数据管理 → 人工证据」由人工粘贴已取证记录后提交（本页不预填、不自动导入、不抓取）。";
-  for (const id of ["overview-topics", "topic-list", "search-results", "topic-topk"]) {
+  for (const id of ["overview-topics", "p1-topic-list", "search-results", "topic-topk"]) {
     const el = $("#" + id);
     if (el) el.append(h("p", { class: "empty" }, emptyText));
   }
@@ -1097,7 +1097,7 @@ function renderOverview(overview, filtered) {
 
 function renderTopics(filtered) {
   const groups = groupFilteredEntries(filtered);
-  const list = $("#topic-list");
+  const list = $("#p1-topic-list");
   clear(list);
   const topkHost = $("#topic-topk");
   const summary = $("#topic-summary");
@@ -1288,7 +1288,7 @@ function setWindowInputs(fromValue, toValue) {
 
 function renderWindowPending() {
   state.groupMeta = {};
-  for (const id of ["overview-topics", "topic-list", "search-results", "topic-topk", "overview-shortcuts"]) {
+  for (const id of ["overview-topics", "p1-topic-list", "search-results", "topic-topk", "overview-shortcuts"]) {
     const el = $("#" + id);
     if (!el) continue;
     clear(el);

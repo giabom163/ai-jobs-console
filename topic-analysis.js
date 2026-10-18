@@ -43,8 +43,9 @@
       var row = el('div', 'topic-row');
       var left = el('div');
       left.appendChild(el('div', 'topic-name', t.name || '其他话题'));
-      var kw = (t.keywords || []).length ? t.keywords.join('、') : '未匹配到来源';
-      left.appendChild(el('div', 'topic-kw', '来源：' + kw));
+      var kw = (t.keywords || []).length ? '关键词：' + t.keywords.join('、') : '';
+      var src = (t.platforms || []).join('、') || '未匹配到来源';
+      left.appendChild(el('div', 'topic-kw', kw || '来源：' + src));
       row.appendChild(left);
       var right = el('div', 'topic-stat');
       var trend = Number(t.trend || 0);
@@ -126,9 +127,9 @@
     trendHost.appendChild(legend);
   }
 
-  function network(data) {
-    netHost.textContent = '';
-    if (!data.topics.length) { netHost.appendChild(el('p', 'chart-empty', '暂无话题')); return; }
+  var netChart = null;
+
+  function networkSvg(data) {
     var W = 760, H = 420, cx = W / 2, cy = H / 2, R = 150;
     var pos = data.topics.map(function (t, i) {
       var angle = (Math.PI * 2 * i) / data.topics.length - Math.PI / 2;
@@ -166,6 +167,56 @@
       root.appendChild(text);
     });
     netHost.appendChild(root);
+  }
+
+  function network(data) {
+    netHost.textContent = '';
+    if (!data.topics.length) { netHost.appendChild(el('p', 'chart-empty', '暂无话题')); return; }
+    if (!window.echarts) { networkSvg(data); return; }   // 库未加载时回退手绘
+    if (netChart) { netChart.dispose(); netChart = null; }
+    var box = el('div');
+    box.style.width = '100%';
+    box.style.height = '420px';
+    netHost.appendChild(box);
+    var maxCount = Math.max.apply(null, data.topics.map(function (t) { return t.count; }).concat([1]));
+    var nodes = data.topics.map(function (t, i) {
+      return {
+        id: String(i),
+        name: t.name,
+        value: t.count,
+        symbolSize: 16 + 30 * (t.count / maxCount),
+        itemStyle: { color: COLORS[i % COLORS.length] },
+        label: { show: true, fontSize: 11, color: '#41505f' }
+      };
+    });
+    var links = data.edges.map(function (e) {
+      return { source: String(e.a), target: String(e.b), value: e.weight,
+               lineStyle: { width: 0.6 + e.weight * 0.8, color: '#c9dff3', curveness: 0.08 } };
+    });
+    netChart = window.echarts.init(box, null, { renderer: 'canvas' });
+    if (window.ResizeObserver) {   // 视图从隐藏切到可见时容器宽度会变，图表要跟着 resize
+      var ro = new ResizeObserver(function () { if (netChart) netChart.resize(); });
+      ro.observe(netHost);
+    }
+    netChart.setOption({
+      tooltip: {
+        formatter: function (p) {
+          if (p.dataType === 'edge') return p.data.value + ' 个共同来源';
+          return p.data.name + '：' + p.data.value + ' 条';
+        }
+      },
+      series: [{
+        type: 'graph',
+        layout: 'circular',
+        circular: { rotateLabel: false },
+        roam: true,
+        draggable: true,
+        data: nodes,
+        links: links,
+        label: { show: true, position: 'right', fontSize: 11, color: '#41505f' },
+        emphasis: { focus: 'adjacency', lineStyle: { width: 2.5 } }
+      }]
+    });
   }
 
   function render(data) {
@@ -209,6 +260,8 @@
       });
     });
   }
+
+  window.addEventListener('resize', function () { if (netChart) netChart.resize(); });
 
   load();
 })();
