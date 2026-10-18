@@ -87,10 +87,16 @@
       preview.target = '_blank';
       preview.rel = 'noreferrer';
       preview.style.marginRight = '10px';
+      var pdf = el('a', null, 'PDF');
+      pdf.href = '/api/reports/' + encodeURIComponent(r.id) + '/pdf';
+      pdf.target = '_blank';
+      pdf.rel = 'noreferrer';
+      pdf.style.marginRight = '10px';
       var download = el('a', null, '下载');
       download.href = '/api/reports/' + encodeURIComponent(r.id) + '/download';
       download.setAttribute('download', r.id + '.md');
       ops.appendChild(preview);
+      ops.appendChild(pdf);
       ops.appendChild(download);
       row.appendChild(ops);
       tbody.appendChild(row);

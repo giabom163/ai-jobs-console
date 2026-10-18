@@ -21,6 +21,13 @@ CONFLICT_TERMS = (
 )
 
 # 强特征：不依赖共现也能判定；「打拳/拳师」故意不放这里（拳击/健身会误放）
+# 生理科普/两性技巧/医学常识：即使出现性别词，也不属于性别对立
+EXCLUDE_TERMS = (
+    "生理科普", "生理知识", "两性知识", "性教育", "性技巧", "情趣", "避孕",
+    "妇科", "男科", "医学科普", "健康科普", "怀孕", "备孕", "月经", "前列腺",
+    "勃起", "高潮", "性生活", "性行为", "生殖", "私处",
+)
+
 STRONG_TERMS = (
     "性别对立", "男女对立", "性别战争", "性别矛盾", "女拳", "男拳",
     "厌女", "媚男", "仇女", "仇男", "重男轻女", "家暴", "性骚扰", "性侵",
@@ -43,7 +50,12 @@ def explain(title, summary=""):
     text = _normalize(f"{title or ''} {summary or ''}")
     if not text.strip():
         return False, 0, "empty"
+    excluded = [t for t in EXCLUDE_TERMS if t in text]
     strong = [t for t in STRONG_TERMS if t in text]
+    if excluded and not strong:
+        # 出现“对立/争议/家暴/歧视”等冲突词时仍保留（如“家暴科普”）
+        if not any(t in text for t in ("对立", "争议", "家暴", "性骚扰", "歧视", "打拳", "女权", "男权")):
+            return False, 0, "excluded:" + ",".join(excluded[:3])
     if strong:
         return True, 2 + len(strong), "strong:" + ",".join(strong[:3])
     gender = [t for t in GENDER_TERMS if t in text]

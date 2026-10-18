@@ -12,6 +12,8 @@ import threading
 from urllib.parse import urlsplit, urlunsplit
 import uuid
 
+from entities import extract_entities
+
 RULE = "exact-text-v1"
 SCHEMA = "m1-v1"
 P1_SCHEMA = "p1-v1"
@@ -204,7 +206,8 @@ def connect(path):
     """)
     for column, ddl in (("quality", "TEXT NOT NULL DEFAULT 'ok'"),
                         ("quality_reason", "TEXT"),
-                        ("simhash", "TEXT")):
+                        ("simhash", "TEXT"),
+                        ("entities", "TEXT")):
         cols = [row[1] for row in db.execute("PRAGMA table_info(records)")]
         if column not in cols:
             try:
@@ -359,7 +362,8 @@ def import_batch(db, root, run_id, rows, classify):
                 continue
             content_hash = digest(json_bytes([title, summary]))
             prepared.append((row, title, summary, url, content_hash, published_at, quality,
-                             source_id, simhash64(title + " " + summary)))
+                             source_id, simhash64(title + " " + summary),
+                             json.dumps(extract_entities(title + " " + summary), ensure_ascii=False)))
         input_hash = digest(json_bytes(rows))
         added = duplicates = near_duplicates = 0
         # Snapshots are immutable content-addressed evidence. A failed transaction may leave
@@ -367,7 +371,7 @@ def import_batch(db, root, run_id, rows, classify):
         recent = [(int(r["simhash"], 16), r["id"]) for r in db.execute(
             "SELECT simhash,id FROM records WHERE simhash IS NOT NULL ORDER BY fetched_at DESC LIMIT 500")]
         with db:
-            for row, title, summary, url, content_hash, published_at, quality, source_id, sh in prepared:
+            for row, title, summary, url, content_hash, published_at, quality, source_id, sh, ents in prepared:
                 if any(hamming64(sh, other) <= 4 for other, _ in recent):
                     near_duplicates += 1
                     continue
@@ -389,12 +393,12 @@ def import_batch(db, root, run_id, rows, classify):
                 record_id = "record-" + uuid.uuid4().hex
                 db.execute("""INSERT INTO records(id,feed_id,source_id,title,summary,url,canonical_url,
                     content_sha256,raw_sha256,raw_path,published_at,published_raw,fetched_at,time_quality,
-                    canonical_id,dedup_reason,run_id,sentiment,quality,quality_reason,simhash)
-                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    canonical_id,dedup_reason,run_id,sentiment,quality,quality_reason,simhash,entities)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                            (record_id, run["feed_id"], source_id, title, summary, row["url"], url,
                             content_hash, raw_hash, raw_path, published_at, row.get("published_at"), now(),
                             quality, canonical_id, reason, run_id, classify(title + " " + summary),
-                            "ok", "ok", f"{sh:016x}"))
+                            "ok", "ok", f"{sh:016x}", ents))
                 recent.append((sh, record_id))
                 added += 1
             db.execute("""UPDATE collection_runs SET status='succeeded',finished_at=?,input_count=?,
