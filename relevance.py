@@ -8,18 +8,22 @@ from __future__ import annotations
 GENDER_TERMS = (
     "女性", "男性", "女生", "男生", "女人", "男人", "性别", "女权", "男权",
     "女性主义", "性别歧视", "性别对立", "男女对立", "厌女", "媚男", "彩礼",
-    "婚恋", "生育", "堕胎", "家务", "性骚扰", "metoo", "家暴", "重男轻女",
+    "婚恋", "生育", "堕胎", "家务", "重男轻女", "女子", "妇女", "女童",
+    "宝妈", "剩女", "雌竞", "女博主", "女乘客", "女员工", "女学生", "男女",
 )
 
 CONFLICT_TERMS = (
     "对立", "冲突", "骂战", "互撕", "打拳", "拳师", "女拳", "男拳", "撕裂",
     "争议", "大战", "开战", "嘲讽", "双标", "仇女", "仇男", "歧视", "攻击",
     "互喷", "对骂", "性别战争", "性别矛盾", "性别议题", "厌女", "媚男",
+    "家暴", "性骚扰", "性侵", "殴打", "尾随", "骚扰", "羞辱", "物化", "规训",
+    "重男轻女", "催婚", "逼婚", "荡妇", "受害者有罪",
 )
 
+# 强特征：不依赖共现也能判定；「打拳/拳师」故意不放这里（拳击/健身会误放）
 STRONG_TERMS = (
-    "性别对立", "男女对立", "性别战争", "性别矛盾", "打拳", "拳师", "女拳",
-    "男拳", "厌女", "媚男", "仇女", "仇男",
+    "性别对立", "男女对立", "性别战争", "性别矛盾", "女拳", "男拳",
+    "厌女", "媚男", "仇女", "仇男", "重男轻女", "家暴", "性骚扰", "性侵",
 )
 
 
@@ -27,9 +31,16 @@ def _hit(text, terms):
     return any(term in text for term in terms)
 
 
+def _normalize(text):
+    import re
+    import unicodedata
+    text = unicodedata.normalize("NFKC", text or "").lower()
+    return re.sub(r"[\s\u200b-\u200d\ufeff]+", "", text)
+
+
 def explain(title, summary=""):
     """返回 (relevant, score, reason)；reason 用于审计，不做展示。"""
-    text = f"{title or ''} {summary or ''}".lower()
+    text = _normalize(f"{title or ''} {summary or ''}")
     if not text.strip():
         return False, 0, "empty"
     strong = [t for t in STRONG_TERMS if t in text]

@@ -47,6 +47,7 @@ def init(db):
         returned INTEGER NOT NULL DEFAULT 0,
         added INTEGER NOT NULL DEFAULT 0,
         duplicates INTEGER NOT NULL DEFAULT 0,
+        filtered INTEGER NOT NULL DEFAULT 0,
         last_error TEXT,
         run_id TEXT,
         next_retry_at TEXT,
@@ -59,6 +60,8 @@ def init(db):
     cols = [row[1] for row in db.execute("PRAGMA table_info(crawl_jobs)")]
     if "run_id" not in cols:
         db.execute("ALTER TABLE crawl_jobs ADD COLUMN run_id TEXT")
+    if "filtered" not in cols:
+        db.execute("ALTER TABLE crawl_jobs ADD COLUMN filtered INTEGER NOT NULL DEFAULT 0")
 
 
 def enqueue(db, keywords, platforms=None, limit=5, trace_id=None):
@@ -141,9 +144,10 @@ def finish(db, job_id, report):
     run = result.get("run") or {}
     with db:
         db.execute("UPDATE crawl_jobs SET status='ok', returned=?, added=?, duplicates=?, "
-                   "last_error=NULL, run_id=?, updated_at=? WHERE id=?",
+                   "filtered=?, last_error=NULL, run_id=?, updated_at=? WHERE id=?",
                    (result.get("returned_count") or 0, run.get("added") or 0,
-                    run.get("duplicates") or 0, run.get("id"), storage.now(), job_id))
+                    run.get("duplicates") or 0, result.get("filtered_out") or 0,
+                    run.get("id"), storage.now(), job_id))
 
 
 def fail(db, job_id, message):
