@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 import re
 import sqlite3
+import threading
 from urllib.parse import urlsplit, urlunsplit
 import uuid
 
@@ -160,48 +161,69 @@ def connect(path):
 
 
 FTS_VERSION = "2"   # 2 = title/summary/url + trigram；版本不符时重建一次并记入 schema_meta
+_FTS_LOCK = threading.Lock()
+
+
+def fts_version(db):
+    try:
+        row = db.execute("SELECT value FROM schema_meta WHERE key='fts_version'").fetchone()
+        return row[0] if row else None
+    except sqlite3.Error:
+        return None
 
 
 def _init_fts(db):
-    """FTS5 trigram 全文索引：只在版本不符时建表/重建，避免每请求全量校验。"""
-    try:
-        row = db.execute("SELECT value FROM schema_meta WHERE key='fts_version'").fetchone()
-        version = row[0] if row else None
-    except sqlite3.Error:
-        version = None
+    """FTS5 trigram：只在版本不符时重建；DDL+回填+版本写入同一事务，启动时由 reset_fts 重试。"""
+    version = fts_version(db)
     if version in (FTS_VERSION, "unavailable"):
         return
+    with _FTS_LOCK:
+        version = fts_version(db)
+        if version in (FTS_VERSION, "unavailable"):
+            return
+        try:
+            with db:
+                db.execute("DROP TRIGGER IF EXISTS records_fts_ai")
+                db.execute("DROP TRIGGER IF EXISTS records_fts_ad")
+                db.execute("DROP TRIGGER IF EXISTS records_fts_au")
+                db.execute("DROP TABLE IF EXISTS records_fts")
+                db.execute("CREATE VIRTUAL TABLE records_fts "
+                           "USING fts5(title, summary, url, tokenize='trigram')")
+                db.execute("CREATE TRIGGER records_fts_ai AFTER INSERT ON records BEGIN "
+                           "INSERT INTO records_fts(rowid,title,summary,url) "
+                           "VALUES (new.rowid,new.title,new.summary,new.url); END")
+                db.execute("CREATE TRIGGER records_fts_ad AFTER DELETE ON records BEGIN "
+                           "DELETE FROM records_fts WHERE rowid=old.rowid; END")
+                db.execute("CREATE TRIGGER records_fts_au AFTER UPDATE OF title,summary,url ON records BEGIN "
+                           "DELETE FROM records_fts WHERE rowid=old.rowid; "
+                           "INSERT INTO records_fts(rowid,title,summary,url) "
+                           "VALUES (new.rowid,new.title,new.summary,new.url); END")
+                db.execute("DELETE FROM records_fts")
+                db.execute("INSERT INTO records_fts(rowid,title,summary,url) "
+                           "SELECT rowid,title,summary,url FROM records")
+                indexed = db.execute("SELECT count(*) FROM records_fts").fetchone()[0]
+                total = db.execute("SELECT count(*) FROM records").fetchone()[0]
+                if indexed != total:
+                    raise sqlite3.OperationalError("fts count mismatch after rebuild")
+                db.execute("INSERT OR REPLACE INTO schema_meta(key,value) VALUES('fts_version',?)",
+                           (FTS_VERSION,))
+        except sqlite3.Error:
+            try:
+                with db:
+                    db.execute("INSERT OR REPLACE INTO schema_meta(key,value) "
+                               "VALUES('fts_version','unavailable')")
+            except sqlite3.Error:
+                pass
+
+
+def reset_fts(db):
+    """启动时允许对 'unavailable' 再试一次（瞬时错误不该永久降级）。"""
     try:
-        db.executescript("""
-          DROP TRIGGER IF EXISTS records_fts_ai;
-          DROP TRIGGER IF EXISTS records_fts_ad;
-          DROP TRIGGER IF EXISTS records_fts_au;
-          DROP TABLE IF EXISTS records_fts;
-          CREATE VIRTUAL TABLE records_fts USING fts5(title, summary, url, tokenize='trigram');
-          CREATE TRIGGER records_fts_ai AFTER INSERT ON records BEGIN
-            INSERT INTO records_fts(rowid,title,summary,url) VALUES (new.rowid,new.title,new.summary,new.url);
-          END;
-          CREATE TRIGGER records_fts_ad AFTER DELETE ON records BEGIN
-            DELETE FROM records_fts WHERE rowid=old.rowid;
-          END;
-          CREATE TRIGGER records_fts_au AFTER UPDATE OF title,summary,url ON records BEGIN
-            DELETE FROM records_fts WHERE rowid=old.rowid;
-            INSERT INTO records_fts(rowid,title,summary,url) VALUES (new.rowid,new.title,new.summary,new.url);
-          END;
-        """)
         with db:
-            db.execute("DELETE FROM records_fts")
-            db.execute("INSERT INTO records_fts(rowid,title,summary,url) "
-                       "SELECT rowid,title,summary,url FROM records")
-            indexed = db.execute("SELECT count(*) FROM records_fts").fetchone()[0]
-            total = db.execute("SELECT count(*) FROM records").fetchone()[0]
-            if indexed != total:   # 重建后仍不一致：宁可不标版本，退回 LIKE
-                raise sqlite3.OperationalError("fts count mismatch after rebuild")
-            db.execute("INSERT OR REPLACE INTO schema_meta(key,value) VALUES('fts_version',?)",
-                       (FTS_VERSION,))
-    except sqlite3.OperationalError:
-        with db:
-            db.execute("INSERT OR REPLACE INTO schema_meta(key,value) VALUES('fts_version','unavailable')")
+            db.execute("DELETE FROM schema_meta WHERE key='fts_version' AND value='unavailable'")
+    except sqlite3.Error:
+        pass
+    _init_fts(db)
 
 
 def start_run(db, feed_id, kind, limit):

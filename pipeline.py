@@ -11,7 +11,14 @@ DB = None
 
 
 def init(db):
+    try:
+        row = db.execute("SELECT value FROM schema_meta WHERE key='pipeline_version'").fetchone()
+    except sqlite3.Error:
+        row = None
+    if row and row[0] == "1":
+        return
     db.executescript("""
+      CREATE TABLE IF NOT EXISTS schema_meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS pipeline_tasks(
         id TEXT PRIMARY KEY, trace_id TEXT NOT NULL, stage TEXT NOT NULL,
         status TEXT NOT NULL CHECK(status IN ('running','ok','failed','dead')),
@@ -20,6 +27,8 @@ def init(db):
       CREATE INDEX IF NOT EXISTS pipeline_trace ON pipeline_tasks(trace_id);
       CREATE INDEX IF NOT EXISTS pipeline_created ON pipeline_tasks(created_at);
     """)
+    with db:
+        db.execute("INSERT OR REPLACE INTO schema_meta(key,value) VALUES('pipeline_version','1')")
 
 
 def _connect(db_path):
@@ -37,13 +46,17 @@ def start(db_path, stage, payload=None, trace_id=None, task_id=None):
     db = _connect(db_path)
     try:
         with db:
-            db.execute(
+            cursor = db.execute(
                 "INSERT INTO pipeline_tasks(id,trace_id,stage,status,payload,attempts,created_at,started_at) "
                 "VALUES(?,?,?,'running',?,0,?,?) "
-                "ON CONFLICT(id) DO UPDATE SET status='running', attempts=attempts+1, "
-                "started_at=excluded.started_at, finished_at=NULL, last_error=NULL",
+                "ON CONFLICT(id) DO UPDATE SET trace_id=excluded.trace_id, stage=excluded.stage, "
+                "payload=excluded.payload, status='running', started_at=excluded.started_at, "
+                "finished_at=NULL, last_error=NULL "
+                "WHERE pipeline_tasks.status <> 'dead'",
                 (task_id, trace_id, stage,
                  json.dumps(payload or {}, ensure_ascii=False)[:20000], stamp, stamp))
+        if cursor.rowcount == 0:
+            raise RuntimeError("任务已进入 dead，不能复用；请新建任务")
     finally:
         db.close()
     return {"id": task_id, "trace_id": trace_id, "stage": stage, "status": "running"}
