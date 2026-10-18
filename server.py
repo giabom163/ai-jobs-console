@@ -775,8 +775,12 @@ class Handler(BaseHTTPRequestHandler):
                 enabled = value.get("enabled")
                 if not isinstance(enabled, bool):
                     raise ValueError("enabled 必须是布尔值")
-                with connect() as db, db:
-                    db.execute("UPDATE alert_rules SET enabled=? WHERE id=?", (1 if enabled else 0, rule_id))
+                with connect() as db:
+                    with db:
+                        cursor = db.execute("UPDATE alert_rules SET enabled=? WHERE id=?",
+                                            (1 if enabled else 0, rule_id))
+                if cursor.rowcount == 0:
+                    return self.send(404, {"error": "规则不存在"})
                 return self.send(200, {"id": rule_id, "enabled": enabled})
             if path == "/api/collect":
                 # 先抢锁再起线程，避免两个请求同时看到 running=False 而各起一轮。
