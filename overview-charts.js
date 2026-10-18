@@ -115,7 +115,7 @@
     body.appendChild(svg);
     var axis = el('div', 'chart-axis');
     axis.appendChild(el('span', null, rows[0].day));
-    axis.appendChild(el('span', null, '峰值 ' + max + ' 条/' + (currentWindow === '24h' ? '时' : '日')));
+    axis.appendChild(el('span', null, '峰值 ' + max + ' 条/' + ((currentWindow === '24h' || currentWindow === '48h') ? '时' : '日')));
     axis.appendChild(el('span', null, rows[rows.length - 1].day));
     body.appendChild(axis);
   }
@@ -208,10 +208,10 @@
 
     var two = el('div', 'chart-two');
     var trendBox = card('近7天舆情热度趋势', '按日统计，口径 published_at ?: fetched_at');
-    var trendTitle = currentWindow === '24h' ? '近24小时舆情热度趋势' :
+    var trendTitle = currentWindow === '24h' ? '近24小时舆情热度趋势' : currentWindow === '48h' ? '近48小时舆情热度趋势' :
       (currentWindow === 'all' ? '全量舆情热度趋势' : '近' + currentWindow.replace('d', '') + '天舆情热度趋势');
     trendBox.box.querySelector('h3').textContent = trendTitle;
-    trendBox.box.querySelector('.chart-note').textContent = currentWindow === '24h'
+    trendBox.box.querySelector('.chart-note').textContent = (currentWindow === '24h' || currentWindow === '48h')
       ? '按小时统计，口径 published_at ?: fetched_at' : '按日统计，口径 published_at ?: fetched_at';
     var trendPanel = el('section', 'panel');
     trendPanel.appendChild(trendBox.box);

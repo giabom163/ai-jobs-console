@@ -26,10 +26,17 @@ def main():
     parser.add_argument("--db", default=os.path.join(ROOT, "sentiment.db"))
     parser.add_argument("--limit", type=int, default=300)
     parser.add_argument("--title", default="舆情标注-全量-20261018")
+    parser.add_argument("--missing", action="store_true", help="只标注还没有模型记录的条目")
     args = parser.parse_args()
     db = storage.connect(args.db)
-    rows = [dict(r) for r in db.execute(
-        "SELECT id,title FROM records ORDER BY fetched_at DESC, id LIMIT ?", (args.limit,))]
+    if args.missing:
+        rows = [dict(r) for r in db.execute(
+            "SELECT r.id,r.title FROM records r WHERE NOT EXISTS "
+            "(SELECT 1 FROM model_annotations m WHERE m.record_id=r.id) "
+            "ORDER BY r.fetched_at DESC, r.id LIMIT ?", (args.limit,))]
+    else:
+        rows = [dict(r) for r in db.execute(
+            "SELECT id,title FROM records ORDER BY fetched_at DESC, id LIMIT ?", (args.limit,))]
     items = [{"i": i, "t": r["title"][:120]} for i, r in enumerate(rows)]
     prompt = (
         "你是中文舆情分类器。对每条标题输出：sentiment ∈ 强正面/偏正面/中性/偏负面/强负面；"
