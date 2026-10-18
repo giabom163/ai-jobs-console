@@ -55,7 +55,7 @@
       var up = trend > 0 ? '↑ ' + trend.toFixed(1) + '%' : (trend < 0 ? '↓ ' + Math.abs(trend).toFixed(1) + '%' : '↑ 0%');
       var badge = el('span', up.indexOf('↓') === 0 ? 'trend down' : 'trend', up);
       right.appendChild(badge);
-      if (t.anomaly) right.appendChild(el('span', 'trend', '异常升温 z=' + t.zscore.toFixed(1)));
+      if (t.anomaly) right.appendChild(el('span', 'trend', '异常升温（MAD ' + t.zscore.toFixed(1) + '）'));
       right.appendChild(el('div', 'topic-count', (t.count || 0) + '条'));
       row.appendChild(right);
       row.style.borderLeftColor = COLORS[i % COLORS.length];

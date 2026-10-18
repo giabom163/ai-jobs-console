@@ -374,18 +374,21 @@ def topic_analysis(db, window_days=7):
         else:
             trend = round((last - prev) / prev * 100, 1)
         baseline = series[:-1]
-        if len(baseline) >= 2 and last > 0:
-            mean = sum(baseline) / len(baseline)
-            variance = sum((v - mean) ** 2 for v in baseline) / len(baseline)
-            std = variance ** 0.5
-            if std > 0:
-                zscore = round((last - mean) / std, 2)
-            else:
-                # 基线全 0 的“从零起量”只在量级足够大时才判异常，避免每个新话题都报警
+        if len(baseline) >= 3 and last > 0:
+            ordered = sorted(baseline)
+            mid = len(ordered) // 2
+            median = (ordered[mid - 1] + ordered[mid]) / 2
+            deviations = sorted(abs(v - median) for v in baseline)
+            mid = len(deviations) // 2
+            mad = (deviations[mid - 1] + deviations[mid]) / 2
+            if max(baseline) == 0:
+                # 真正从零起量：量级足够大才判异常
                 zscore = 99.0 if last >= 5 else 0.0
+            else:
+                zscore = round(0.6745 * (last - median) / max(mad, 1.0), 2)
         else:
             zscore = 0.0
-        anomaly = bool(last >= 2 and zscore >= 2.0)
+        anomaly = bool(last >= 2 and zscore >= 3.5)
         label = ev["label"] or "(无标题)"
         all_topics.append({
             "name": label[:18] + ("…" if len(label) > 18 else ""),

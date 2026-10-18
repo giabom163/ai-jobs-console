@@ -82,6 +82,13 @@
       head.appendChild(el('span', sentimentClass(item.sentiment), item.sentiment || '未判定'));
       card.appendChild(head);
       if (item.summary) card.appendChild(el('p', 'muted', item.summary));
+      var entities = item.entities;
+      if (!Array.isArray(entities)) {
+        try { entities = JSON.parse(entities || '[]'); } catch (e) { entities = []; }
+      }
+      if (Array.isArray(entities) && entities.length) {
+        card.appendChild(el('p', 'filter-note', '实体：' + entities.join('、')));
+      }
       var foot = el('p', 'filter-note',
         (item.source || '未知来源') + ' · 抓取 ' + fmt(item.fetched_at));
       card.appendChild(foot);
