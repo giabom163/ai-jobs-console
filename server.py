@@ -461,6 +461,13 @@ class Handler(BaseHTTPRequestHandler):
             with connect() as db:
                 return self.send(200, {"active_topics": admin_features.active_topics(db),
                                        "events": admin_features.list_events(db, int(raw))})
+        if path == "/api/topic-analysis":
+            query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query, keep_blank_values=True)
+            raw = (query.get("window", ["7"])[0] or "").strip()
+            if raw not in ("7", "14", "30"):
+                raise ValueError("window 只接受 7 / 14 / 30")
+            with connect() as db:
+                return self.send(200, admin_features.topic_analysis(db, int(raw)))
         if path == "/api/collect/status":
             return self.send(200, collect_status())
         if path == "/api/search":
@@ -527,6 +534,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(200, (ROOT / "settings.js").read_bytes(), "text/javascript; charset=utf-8")
         if path == "/events.js":
             return self.send(200, (ROOT / "events.js").read_bytes(), "text/javascript; charset=utf-8")
+        if path == "/topic-analysis.js":
+            return self.send(200, (ROOT / "topic-analysis.js").read_bytes(), "text/javascript; charset=utf-8")
         if path == "/style.css":
             return self.send(200, (ROOT / "style.css").read_bytes(), "text/css; charset=utf-8")
         if path == "/api/overview-stats":

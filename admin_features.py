@@ -285,3 +285,83 @@ def list_events(db, limit=50):
 
 def active_topics(db, min_records=2):
     return db.execute("SELECT count(*) FROM events WHERE records >= ?", (min_records,)).fetchone()[0]
+
+
+def topic_analysis(db, window_days=7):
+    """话题分析：以 events（相似标题聚类）为话题，按本地日统计趋势与共现关系。"""
+    if window_days not in (7, 14, 30):
+        raise ValueError("window 只接受 7 / 14 / 30")
+    now = datetime.now(timezone(timedelta(hours=8)))
+    days = [(now - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(window_days - 1, -1, -1)]
+    start = (now - timedelta(days=window_days - 1)).replace(hour=0, minute=0, second=0, microsecond=0)
+    since = start.astimezone(timezone.utc).isoformat()
+
+    rows = db.execute("SELECT title, fetched_at FROM records WHERE fetched_at >= ?", (since,)).fetchall()
+    total = len(rows)
+    day_of = {}
+    for row in rows:
+        try:
+            dt = datetime.fromisoformat(row["fetched_at"]).astimezone(timezone(timedelta(hours=8)))
+            day = dt.strftime("%Y-%m-%d")
+        except ValueError:
+            continue
+        day_of.setdefault(row["title"], []).append(day)
+
+    events = db.execute(
+        "SELECT label, records, platforms, titles FROM events WHERE records >= 2 "
+        "ORDER BY records DESC, label").fetchall()
+    analyzed = db.execute("SELECT coalesce(sum(records),0) FROM events").fetchone()[0] or 0
+    all_topics = []
+    for index, ev in enumerate(events):
+        try:
+            titles = json.loads(ev["titles"] or "[]")
+            platforms = json.loads(ev["platforms"] or "[]")
+        except ValueError:
+            titles, platforms = [], []
+        series = [0] * len(days)
+        for title in titles:
+            for day in day_of.get(title, []):
+                if day in days:
+                    series[days.index(day)] += 1
+        last = series[-1] if series else 0
+        prev = series[-2] if len(series) > 1 else 0
+        if prev == 0:
+            trend = 0 if last == 0 else 100.0
+        else:
+            trend = round((last - prev) / prev * 100, 1)
+        label = ev["label"] or "(无标题)"
+        all_topics.append({
+            "name": label[:18] + ("…" if len(label) > 18 else ""),
+            "full": label,
+            "keywords": platforms,
+            "count": int(ev["records"] or 0),
+            "trend": trend,
+            "series": series,
+            "index": index,
+        })
+
+    topics = all_topics[:6]
+    clustered = sum(t["count"] for t in all_topics)
+    other = max(0, analyzed - sum(t["count"] for t in topics))
+    coverage = round(clustered / analyzed * 100, 1) if analyzed else 0.0
+    rising = sum(1 for t in all_topics if t["trend"] > 0)
+
+    edges = []
+    for i in range(len(topics)):
+        for j in range(i + 1, len(topics)):
+            shared = set(topics[i]["keywords"]) & set(topics[j]["keywords"])
+            if shared:
+                edges.append({"a": i, "b": j, "weight": len(shared)})
+
+    return {
+        "window_days": window_days,
+        "days": days,
+        "kpi": {"topics": len(all_topics), "coverage": coverage, "rising": rising,
+                "total": total, "analyzed": analyzed, "clustered": clustered, "other": other},
+        "topics": topics,
+        "other": {"name": "其他话题", "count": other, "trend": 0.0,
+                  "series": [0] * len(days)},
+        "edges": edges,
+        "generated_at": storage.now(),
+    }
+

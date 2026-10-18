@@ -106,15 +106,35 @@
     <!-- 业务二：议题与表达线索（固定标题） -->
 
   <section id="view-topics" class="view" role="tabpanel" aria-labelledby="tab-topics" tabindex="0" hidden>
-      <section class="panel" id="events-panel">
-        <div class="section-title">
-          <div><p class="eyebrow">EVENTS</p><h2>事件聚类（相似标题，≥2 条）</h2></div>
-          <div class="card-actions">
-            <span id="events-meta" class="hint"></span>
-            <button id="events-rebuild" class="secondary" type="button">重新聚类</button>
-          </div>
+      <div class="page-head">
+        <div>
+          <h1>话题分析</h1>
+          <p class="sub">话题聚类、趋势追踪与关联分析 · 话题来自相似标题聚类（events）</p>
         </div>
-        <div id="events-list"></div>
+        <div class="head-actions">
+          <select id="topic-window" aria-label="统计窗口">
+            <option value="7" selected>近7天</option>
+            <option value="14">近14天</option>
+            <option value="30">近30天</option>
+          </select>
+          <button id="topic-refresh" class="primary" type="button">重新分析</button>
+        </div>
+      </div>
+      <div class="kpi-cards" id="topic-kpis"></div>
+      <div class="chart-two">
+        <section class="panel">
+          <h3 class="col-title">话题列表</h3>
+          <div id="topic-list"></div>
+        </section>
+        <section class="panel">
+          <h3 class="col-title">话题热度趋势对比</h3>
+          <div id="topic-trend"></div>
+        </section>
+      </div>
+      <section class="panel">
+        <h3 class="col-title">话题关联网络</h3>
+        <p class="hint">节点=话题（大小按条数），连线=共享来源平台；不是因果或立场关系。</p>
+        <div id="topic-network"></div>
       </section>
 
       <section class="panel">
@@ -662,5 +682,6 @@
 <script src="/reports.js" defer></script>
 <script src="/settings.js" defer></script>
 <script src="/events.js" defer></script>
+<script src="/topic-analysis.js" defer></script>
 </body>
 </html>

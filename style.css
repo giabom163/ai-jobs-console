@@ -812,6 +812,21 @@ input, select, textarea { border-radius: 6px; border-color: var(--line); }
 .chart-two .chart-card { border: 0; padding: 0; background: transparent; }
 .chart-two .chart-grid { display: block; }
 
+/* 话题分析列表 */
+.topic-row {
+  display: flex; justify-content: space-between; gap: 12px;
+  padding: 12px 14px; margin-bottom: 10px;
+  border: 1px solid var(--line); border-left: 3px solid var(--accent);
+  border-radius: 8px; background: #fff;
+}
+.topic-name { font-weight: 600; font-size: 14px; margin-bottom: 4px; }
+.topic-kw { font-size: 12px; color: var(--muted); }
+.topic-stat { text-align: right; white-space: nowrap; }
+.trend { color: #16a34a; font-size: 12px; }
+.trend.down { color: #f04438; }
+.topic-count { font-size: 12px; color: var(--muted); margin-top: 4px; }
+.legend-inline { flex-direction: row; gap: 14px; flex-wrap: wrap; margin-top: 8px; }
+
 @media (max-width: 1100px) {
   .topbar { flex-wrap: wrap; gap: 10px 18px; padding: 8px 16px; }
   .topbar .tabs { order: 3; width: 100%; gap: 14px; }
