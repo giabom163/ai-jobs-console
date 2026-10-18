@@ -231,7 +231,7 @@
     bars(stats.platforms, platforms.body);
     var top = card('话题分类', '先按标题规则分类，再由 jieba 抽取类别关键词');
     bars((stats.categories || []).map(function (c) {
-      return { label: c.name, value: c.count, keywords: c.keywords };
+      return { label: c.name, value: c.records || c.count, keywords: c.keywords };
     }), top.body);
     var platformPanel = el('section', 'panel');
     platformPanel.appendChild(platforms.box);

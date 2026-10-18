@@ -7,6 +7,8 @@
   var trendHost = document.getElementById('topic-trend');
   var netHost = document.getElementById('topic-network');
   var windowSelect = document.getElementById('topic-window');
+  var catBar = document.getElementById('topic-category-bar');
+  var catList = document.getElementById('topic-category-list');
   var refreshBtn = document.getElementById('topic-refresh');
   var COLORS = ['#1f8ef1', '#f59e0b', '#22c55e', '#8b5cf6', '#ef4444', '#06b6d4'];
   var current = '7';
@@ -231,6 +233,54 @@
     network(data);
   }
 
+
+  function loadCategory(name) {
+    if (!catList) return;
+    if (!name) { catList.textContent = ''; catList.appendChild(el('p', 'chart-empty', '选择上方类别查看内容')); return; }
+    fetch('/api/topic-categories?hours=24&limit=30&category=' + encodeURIComponent(name),
+          { headers: { accept: 'application/json' } })
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        catList.textContent = '';
+        if (!data.items || !data.items.length) { catList.appendChild(el('p', 'chart-empty', '该类别暂无内容')); return; }
+        data.items.forEach(function (item) {
+          var a = el('a', null, item.title);
+          a.href = item.url;
+          a.target = '_blank';
+          a.rel = 'noreferrer';
+          catList.appendChild(a);
+        });
+      })
+      .catch(function (e) { catList.textContent = '加载失败：' + e.message; });
+  }
+
+  function loadCategories() {
+    if (!catBar) return;
+    fetch('/api/topic-categories?hours=24', { headers: { accept: 'application/json' } })
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        catBar.textContent = '';
+        var all = el('button', 'active', '全部');
+        all.addEventListener('click', function () {
+          Array.prototype.forEach.call(catBar.children, function (b) { b.classList.remove('active'); });
+          all.classList.add('active');
+          loadCategory(null);
+        });
+        catBar.appendChild(all);
+        (data.categories || []).forEach(function (cat) {
+          var btn = el('button', null, cat.name + ' ' + (cat.records || cat.count));
+          btn.addEventListener('click', function () {
+            Array.prototype.forEach.call(catBar.children, function (b) { b.classList.remove('active'); });
+            btn.classList.add('active');
+            loadCategory(cat.name);
+          });
+          catBar.appendChild(btn);
+        });
+        loadCategory(null);
+      })
+      .catch(function () {});
+  }
+
   function load() {
     fetch('/api/topic-analysis?window=' + current, { headers: { accept: 'application/json' } })
       .then(function (r) { return r.json(); })
@@ -269,4 +319,5 @@
   window.addEventListener('resize', function () { if (netChart) netChart.resize(); });
 
   load();
+  loadCategories();
 })();

@@ -730,6 +730,23 @@ class Handler(BaseHTTPRequestHandler):
             with connect() as db:
                 return self.send(200, {"active_topics": admin_features.active_topics(db),
                                        "events": admin_features.list_events(db, int(raw))})
+        if path == "/api/topic-categories":
+            query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query, keep_blank_values=True)
+            raw_hours = (query.get("hours", ["24"])[0] or "").strip()
+            if not raw_hours.isdigit() or not 1 <= int(raw_hours) <= 720:
+                raise ValueError("hours 必须是 1..720 的整数")
+            category = (query.get("category", [""])[0] or "").strip() or None
+            if category and category not in topics.CATEGORY_NAMES:
+                raise ValueError("category 不在白名单：" + "/".join(topics.CATEGORY_NAMES))
+            raw_limit = (query.get("limit", ["50"])[0] or "").strip()
+            if not raw_limit.isdigit() or not 1 <= int(raw_limit) <= 200:
+                raise ValueError("limit 必须是 1..200 的整数")
+            with connect() as db:
+                if category:
+                    items = topics.records_for_category(db, int(raw_hours), category, int(raw_limit))
+                    return self.send(200, {"category": category, "items": items,
+                                           "total": len(items)})
+                return self.send(200, topics.categories(db, int(raw_hours)))
         if path == "/api/topic-analysis":
             query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query, keep_blank_values=True)
             raw = (query.get("window", ["7"])[0] or "").strip()
@@ -864,7 +881,7 @@ class Handler(BaseHTTPRequestHandler):
                 stats["kpi"]["open_alerts"] = db.execute(
                     "SELECT count(*) FROM alerts WHERE status='open'").fetchone()[0]
                 stats["kpi"]["active_topics"] = admin_features.active_topics(db)
-                stats["categories"] = topics.categories(db, 24 if hours else max(1, (days or 30) * 24))
+                stats["categories"] = topics.categories(db, 24 if hours else max(1, (days or 30) * 24))["categories"]
             return self.send(200, stats)
         if path == "/api/data":
             with connect() as db:

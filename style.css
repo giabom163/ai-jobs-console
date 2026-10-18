@@ -841,3 +841,10 @@ input, select, textarea { border-radius: 6px; border-color: var(--line); }
   .kpi-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .chart-two { grid-template-columns: 1fr; }
 }
+
+.topic-category-bar { display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0 12px; }
+.topic-category-bar button { border: 1px solid var(--line, #e5eaf0); background: #fff; border-radius: 16px; padding: 4px 12px; cursor: pointer; font-size: 12px; }
+.topic-category-bar button.active { background: #1f8ef1; border-color: #1f8ef1; color: #fff; }
+.topic-category-list { display: grid; gap: 6px; }
+.topic-category-list a { color: #1f2937; text-decoration: none; font-size: 13px; padding: 6px 0; border-bottom: 1px dashed var(--line, #eef2f7); }
+.topic-category-list a:hover { color: #1f8ef1; }

@@ -24,6 +24,7 @@ sys.path.insert(0, str(ROOT))
 
 import relevance  # noqa: E402
 import server  # noqa: E402
+import topics  # noqa: E402
 import storage  # noqa: E402
 
 MIXIN = [46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35, 27, 43, 5, 49,
@@ -68,13 +69,18 @@ def main(argv=None):
     parser.add_argument("--hours", type=int, default=24)
     parser.add_argument("--pages", type=int, default=3)
     parser.add_argument("--keywords", default="性别,女权,彩礼,家暴,性别对立,厌女,性别歧视,男女")
+    parser.add_argument("--per-category-limit", type=int, default=30,
+                        help="每个类别最多保留多少条（默认 30）")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--db", type=Path, default=ROOT / "sentiment.db")
     args = parser.parse_args(argv)
 
+    if not 1 <= args.per_category_limit <= 200:
+        parser.error("--per-category-limit 必须在 1..200")
     mixin = _mixin_key()
     cutoff = datetime.now(timezone.utc) - timedelta(hours=args.hours)
     found = {}
+    category_counts = {}
     for keyword in [k.strip() for k in args.keywords.split(",") if k.strip()]:
         for page in range(1, args.pages + 1):
             try:
@@ -94,11 +100,18 @@ def main(argv=None):
                     continue
                 if any(t in title for t in FICTION) or re.search(r"第\d+集", title):
                     continue
+                labels = topics.classify_all(title) or [topics.FALLBACK]
+                primary = labels[0]
+                if category_counts.get(primary, 0) >= args.per_category_limit:
+                    continue
+                category_counts[primary] = category_counts.get(primary, 0) + 1
                 found[bvid] = {"title": title, "url": f"https://www.bilibili.com/video/{bvid}",
                                "published_at": published.isoformat()}
             time.sleep(0.4)
 
     result = {"hours": args.hours, "pages": args.pages, "strict": True,
+              "per_category_limit": args.per_category_limit,
+              "category_counts": category_counts,
               "found": len(found), "dry_run": args.dry_run,
               "items": list(found.values())[:20]}
     if args.dry_run or not found:

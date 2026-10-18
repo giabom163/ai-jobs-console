@@ -1,6 +1,6 @@
-"""话题分类：规则词表把标题归到稳定类别，再用 jieba 抽类别关键词。
+"""话题分类：规则词表把标题归到稳定类别（支持多标签），再用 jieba 抽类别关键词。
 
-先分类、再抽词；类别是产品口径，不是模型结论。
+类别是产品口径，不是模型结论；多标签总和可以大于内容数。
 """
 from __future__ import annotations
 
@@ -13,14 +13,23 @@ CATEGORIES = (
     ("大龄/婚恋", ("大龄", "剩女", "相亲", "催婚", "逼婚", "婚恋", "单身")),
 )
 FALLBACK = "其他"
+CATEGORY_NAMES = tuple(name for name, _ in CATEGORIES) + (FALLBACK,)
+BASIS = ("count 是标签命中数（内容×标签），records 是去重内容数；"
+         "同一内容命中多个标签会重复计入 count，因此 count 总和可大于内容数。")
+
+
+def classify_all(title, summary=""):
+    text = f"{title or ''} {summary or ''}"
+    labels = []
+    for name, terms in CATEGORIES:
+        if any(term in text for term in terms):
+            labels.append(name)
+    return labels
 
 
 def classify(title):
-    text = title or ""
-    for name, terms in CATEGORIES:
-        if any(term in text for term in terms):
-            return name
-    return FALLBACK
+    labels = classify_all(title)
+    return "、".join(labels) if labels else FALLBACK
 
 
 def keywords(titles, topk=4):
@@ -32,20 +41,53 @@ def keywords(titles, topk=4):
         return []
 
 
-def categories(db, hours=24):
-    """按最近 hours 小时的 records 标题分类；返回 [{name,count,keywords,examples}]。"""
+def _since(hours):
     from datetime import datetime, timedelta, timezone
-    since = (datetime.now(timezone.utc) - timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M:%S")
-    rows = db.execute("SELECT title FROM records WHERE coalesce(published_at, fetched_at) >= ?",
-                      (since,)).fetchall()
-    buckets = {}
+    return (datetime.now(timezone.utc) - timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M:%S")
+
+
+def categories(db, hours=24):
+    """按最近 hours 小时分类；返回 [{name,count,records,keywords,examples}]。"""
+    rows = db.execute("SELECT title, summary FROM records "
+                      "WHERE coalesce(published_at, fetched_at) >= ?", (_since(hours),)).fetchall()
+    label_counts = {name: 0 for name in CATEGORY_NAMES}
+    record_counts = {name: 0 for name in CATEGORY_NAMES}
+    titles = {name: [] for name in CATEGORY_NAMES}
+    total = 0
     for row in rows:
-        name = classify(row[0])
-        buckets.setdefault(name, []).append(row[0])
+        total += 1
+        labels = classify_all(row[0], row[1] if len(row) > 1 else "") or [FALLBACK]
+        for name in labels:
+            label_counts[name] += 1
+            record_counts[name] += 1
+            if len(titles[name]) < 3:
+                titles[name].append(row[0])
     out = []
-    for name, titles in buckets.items():
-        out.append({"name": name, "count": len(titles),
-                    "keywords": keywords(titles),
-                    "examples": titles[:3]})
-    out.sort(key=lambda item: (-item["count"], item["name"]))
-    return out
+    for name in CATEGORY_NAMES:
+        if not record_counts[name]:
+            continue
+        out.append({"name": name, "count": label_counts[name], "records": record_counts[name],
+                    "keywords": keywords(titles[name]), "examples": titles[name][:3]})
+    out.sort(key=lambda item: (-item["records"], item["name"]))
+    return {"categories": out, "total_contents": total, "basis": BASIS}
+
+
+def records_for_category(db, hours, category, limit=50):
+    """返回某个类别下最近的内容（按标题去重），供话题页筛选。"""
+    rows = db.execute(
+        "SELECT r.title, r.summary, r.url, r.published_at, f.name FROM records r "
+        "JOIN feeds f ON f.id=r.feed_id "
+        "WHERE coalesce(r.published_at, r.fetched_at) >= ? "
+        "ORDER BY coalesce(r.published_at, r.fetched_at) DESC LIMIT 500", (_since(hours),)).fetchall()
+    items, seen = [], set()
+    for row in rows:
+        labels = classify_all(row[0], row[1] or "") or [FALLBACK]
+        if category not in labels and not (category == FALLBACK and len(labels) == 0):
+            continue
+        if row[0] in seen:
+            continue
+        seen.add(row[0])
+        items.append({"title": row[0], "url": row[2], "published_at": row[3], "source": row[4]})
+        if len(items) >= limit:
+            break
+    return items
