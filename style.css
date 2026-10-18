@@ -812,6 +812,11 @@ input, select, textarea { border-radius: 6px; border-color: var(--line); }
 .chart-two .chart-card { border: 0; padding: 0; background: transparent; }
 .chart-two .chart-grid { display: block; }
 
+@media (max-width: 1100px) {
+  .topbar { flex-wrap: wrap; gap: 10px 18px; padding: 8px 16px; }
+  .topbar .tabs { order: 3; width: 100%; gap: 14px; }
+}
+
 @media (max-width: 900px) {
   .kpi-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .chart-two { grid-template-columns: 1fr; }

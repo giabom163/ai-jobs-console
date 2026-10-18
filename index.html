@@ -106,6 +106,17 @@
     <!-- 业务二：议题与表达线索（固定标题） -->
 
   <section id="view-topics" class="view" role="tabpanel" aria-labelledby="tab-topics" tabindex="0" hidden>
+      <section class="panel" id="events-panel">
+        <div class="section-title">
+          <div><p class="eyebrow">EVENTS</p><h2>事件聚类（相似标题，≥2 条）</h2></div>
+          <div class="card-actions">
+            <span id="events-meta" class="hint"></span>
+            <button id="events-rebuild" class="secondary" type="button">重新聚类</button>
+          </div>
+        </div>
+        <div id="events-list"></div>
+      </section>
+
       <section class="panel">
         <div class="section-title">
           <div><p class="eyebrow">TOPICS</p><h2>议题与表达线索</h2></div>
@@ -650,5 +661,6 @@
 <script src="/corpus-search.js" defer></script>
 <script src="/reports.js" defer></script>
 <script src="/settings.js" defer></script>
+<script src="/events.js" defer></script>
 </body>
 </html>
