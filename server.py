@@ -736,16 +736,16 @@ class Handler(BaseHTTPRequestHandler):
             if not raw_hours.isdigit() or not 1 <= int(raw_hours) <= 720:
                 raise ValueError("hours 必须是 1..720 的整数")
             category = (query.get("category", [""])[0] or "").strip() or None
-            if category and category not in topics.CATEGORY_NAMES:
+            if category and category != "__all__" and category not in topics.CATEGORY_NAMES:
                 raise ValueError("category 不在白名单：" + "/".join(topics.CATEGORY_NAMES))
             raw_limit = (query.get("limit", ["50"])[0] or "").strip()
             if not raw_limit.isdigit() or not 1 <= int(raw_limit) <= 200:
                 raise ValueError("limit 必须是 1..200 的整数")
             with connect() as db:
                 if category:
-                    items = topics.records_for_category(db, int(raw_hours), category, int(raw_limit))
-                    return self.send(200, {"category": category, "items": items,
-                                           "total": len(items)})
+                    payload = topics.records_for_category(db, int(raw_hours), category, int(raw_limit))
+                    payload["category"] = category
+                    return self.send(200, payload)
                 return self.send(200, topics.categories(db, int(raw_hours)))
         if path == "/api/topic-analysis":
             query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query, keep_blank_values=True)

@@ -239,7 +239,10 @@
     if (!name) { catList.textContent = ''; catList.appendChild(el('p', 'chart-empty', '选择上方类别查看内容')); return; }
     fetch('/api/topic-categories?hours=24&limit=30&category=' + encodeURIComponent(name),
           { headers: { accept: 'application/json' } })
-      .then(function (r) { return r.json(); })
+      .then(function (r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.json();
+      })
       .then(function (data) {
         catList.textContent = '';
         if (!data.items || !data.items.length) { catList.appendChild(el('p', 'chart-empty', '该类别暂无内容')); return; }
@@ -264,7 +267,7 @@
         all.addEventListener('click', function () {
           Array.prototype.forEach.call(catBar.children, function (b) { b.classList.remove('active'); });
           all.classList.add('active');
-          loadCategory(null);
+          loadCategory('__all__');
         });
         catBar.appendChild(all);
         (data.categories || []).forEach(function (cat) {
@@ -276,9 +279,12 @@
           });
           catBar.appendChild(btn);
         });
-        loadCategory(null);
+        loadCategory('__all__');
       })
-      .catch(function () {});
+      .catch(function (e) {
+        catBar.textContent = '';
+        catBar.appendChild(el('span', 'chart-empty', '分类加载失败：' + e.message));
+      });
   }
 
   function load() {

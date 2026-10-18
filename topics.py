@@ -48,46 +48,48 @@ def _since(hours):
 
 def categories(db, hours=24):
     """按最近 hours 小时分类；返回 [{name,count,records,keywords,examples}]。"""
-    rows = db.execute("SELECT title, summary FROM records "
+    rows = db.execute("SELECT title, summary, canonical_id FROM records "
                       "WHERE coalesce(published_at, fetched_at) >= ?", (_since(hours),)).fetchall()
     label_counts = {name: 0 for name in CATEGORY_NAMES}
-    record_counts = {name: 0 for name in CATEGORY_NAMES}
+    seen = {name: set() for name in CATEGORY_NAMES}
     titles = {name: [] for name in CATEGORY_NAMES}
     total = 0
     for row in rows:
         total += 1
         labels = classify_all(row[0], row[1] if len(row) > 1 else "") or [FALLBACK]
+        identity = row[2] or row[0]
         for name in labels:
             label_counts[name] += 1
-            record_counts[name] += 1
+            seen[name].add(identity)
             if len(titles[name]) < 3:
                 titles[name].append(row[0])
     out = []
     for name in CATEGORY_NAMES:
-        if not record_counts[name]:
+        if not label_counts[name]:
             continue
-        out.append({"name": name, "count": label_counts[name], "records": record_counts[name],
+        out.append({"name": name, "count": label_counts[name], "records": len(seen[name]),
                     "keywords": keywords(titles[name]), "examples": titles[name][:3]})
     out.sort(key=lambda item: (-item["records"], item["name"]))
     return {"categories": out, "total_contents": total, "basis": BASIS}
 
 
 def records_for_category(db, hours, category, limit=50):
-    """返回某个类别下最近的内容（按标题去重），供话题页筛选。"""
+    """返回某个类别（或 __all__）下最近的内容（按标题去重），供话题页筛选。"""
     rows = db.execute(
         "SELECT r.title, r.summary, r.url, r.published_at, f.name FROM records r "
         "JOIN feeds f ON f.id=r.feed_id "
         "WHERE coalesce(r.published_at, r.fetched_at) >= ? "
-        "ORDER BY coalesce(r.published_at, r.fetched_at) DESC LIMIT 500", (_since(hours),)).fetchall()
-    items, seen = [], set()
+        "ORDER BY coalesce(r.published_at, r.fetched_at) DESC LIMIT 1000", (_since(hours),)).fetchall()
+    items, seen, total = [], set(), 0
     for row in rows:
         labels = classify_all(row[0], row[1] or "") or [FALLBACK]
-        if category not in labels and not (category == FALLBACK and len(labels) == 0):
+        if category != "__all__" and category not in labels:
             continue
         if row[0] in seen:
             continue
         seen.add(row[0])
-        items.append({"title": row[0], "url": row[2], "published_at": row[3], "source": row[4]})
-        if len(items) >= limit:
-            break
-    return items
+        total += 1
+        if len(items) < limit:
+            items.append({"title": row[0], "url": row[2],
+                          "published_at": row[3], "source": row[4]})
+    return {"items": items, "total": total, "has_more": total > len(items)}

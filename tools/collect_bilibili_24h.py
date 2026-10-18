@@ -81,6 +81,14 @@ def main(argv=None):
     cutoff = datetime.now(timezone.utc) - timedelta(hours=args.hours)
     found = {}
     category_counts = {}
+    if not args.dry_run:
+        try:
+            db0 = storage.connect(args.db)
+            for item in topics.categories(db0, args.hours)["categories"]:
+                category_counts[item["name"]] = item["records"]
+            db0.close()
+        except Exception:
+            category_counts = {}
     for keyword in [k.strip() for k in args.keywords.split(",") if k.strip()]:
         for page in range(1, args.pages + 1):
             try:
@@ -100,11 +108,14 @@ def main(argv=None):
                     continue
                 if any(t in title for t in FICTION) or re.search(r"第\d+集", title):
                     continue
-                labels = topics.classify_all(title) or [topics.FALLBACK]
-                primary = labels[0]
-                if category_counts.get(primary, 0) >= args.per_category_limit:
+                if bvid in found:
                     continue
-                category_counts[primary] = category_counts.get(primary, 0) + 1
+                labels = topics.classify_all(title) or [topics.FALLBACK]
+                if any(category_counts.get(label, 0) >= args.per_category_limit
+                       for label in labels):
+                    continue
+                for label in labels:
+                    category_counts[label] = category_counts.get(label, 0) + 1
                 found[bvid] = {"title": title, "url": f"https://www.bilibili.com/video/{bvid}",
                                "published_at": published.isoformat()}
             time.sleep(0.4)
