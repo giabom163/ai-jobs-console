@@ -150,6 +150,8 @@ ENDPOINTS = {
         "fields": {"title": "title", "url": "url", "summary": None,
                    "source_id": "bvid", "published_at": None},
         "summary_empty_when_same_as_title": False,
+        # 实测：不带持久会话时 pre-navigation 会被 Chrome 拒绝（COMMAND_EXEC）
+        "extra_args": ["--window", "background", "--site-session", "persistent"],
     },
     "xiaohongshu-feed": {
         "argv": ["xiaohongshu", "feed"],
@@ -200,6 +202,8 @@ ENDPOINTS = {
         "fields": {"title": "title", "url": "url", "summary": None,
                    "source_id": "bvid", "published_at": None},
         "summary_empty_when_same_as_title": False,
+        # 实测：不带持久会话时 pre-navigation 会被 Chrome 拒绝（COMMAND_EXEC）
+        "extra_args": ["--window", "background", "--site-session", "persistent"],
     },
     "xiaohongshu-search": {
         "argv": ["xiaohongshu", "search"], "keyword": True,
@@ -233,7 +237,7 @@ def _validate_endpoints():
     required = {"argv", "platform", "feed_url", "default_group", "fields",
                 "summary_empty_when_same_as_title"}
     for name, spec in ENDPOINTS.items():
-        extra = set(spec) - required - {"keyword"}
+        extra = set(spec) - required - {"keyword", "extra_args"}
         if not required <= set(spec) or extra:
             raise RuntimeError(f"端点 {name} 的声明键不合法：缺少 {sorted(required - set(spec))}，多余 {sorted(extra)}")
         if set(spec["fields"]) != {"title", "url", "summary", "source_id", "published_at"}:
@@ -478,6 +482,7 @@ def run_opencli(node, main, endpoint, limit, timeout, keyword=None):
     argv = [str(node), str(main), *spec["argv"]]
     if spec.get("keyword"):
         argv.append(keyword)
+    argv += list(spec.get("extra_args") or [])
     argv += ["--limit", str(limit), "-f", "json"]
     started = utc()
     clock = time.monotonic()
