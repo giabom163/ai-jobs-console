@@ -550,14 +550,16 @@ def map_rows(endpoint, items):
     """
     spec = ENDPOINTS[endpoint]
     fields = spec["fields"]
-    rows, previews = [], []
+    rows, previews, invalid = [], [], 0
     for index, item in enumerate(items):
         if not isinstance(item, dict):
             raise CollectError("map", f"第 {index + 1} 条不是对象：{json.dumps(item, ensure_ascii=False)[:500]}", 6)
         title = take(item, fields["title"]) or ""
         url = take(item, fields["url"]) or ""
         if not title or not url:
-            raise CollectError("map", f"第 {index + 1} 条缺少 title/url：{json.dumps(item, ensure_ascii=False)[:500]}", 6)
+            # 搜索流里偶发空 url（如 B 站某条目）；跳过该条，不拖垮整个端点
+            invalid += 1
+            continue
         source_id = take(item, fields["source_id"]) or None
         summary = take(item, fields["summary"]) or ""
         if spec["summary_empty_when_same_as_title"] and summary == title:
@@ -585,7 +587,7 @@ def map_rows(endpoint, items):
             "raw_sha256_method": "sha256(storage.json_bytes(row))，与 save_snapshot 落盘字节一致",
         })
         rows.append(row)
-    return rows, previews
+    return rows, previews, invalid
 
 
 def ensure_feed(db, group_id, feed_url):
@@ -769,7 +771,8 @@ def main(argv=None):
 
         try:
             items, call = run_opencli(node, main_js, endpoint, effective, args.timeout, args.keyword)
-            rows, previews = map_rows(endpoint, items)
+            rows, previews, invalid = map_rows(endpoint, items)
+            result["invalid_rows"] = invalid
             if not args.no_gender_filter:
                 kept_rows, kept_previews, dropped = [], [], 0
                 for row, preview in zip(rows, previews):
