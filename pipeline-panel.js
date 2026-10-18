@@ -107,19 +107,27 @@
       });
   }
 
-  function pollState(traceId) {
+  function pollState(traceId, attempt) {
+    attempt = attempt || 0;
+    if (attempt > 200) {   // 最多等 5 分钟，避免服务挂掉后无限轮询
+      if (runBtn) { runBtn.disabled = false; runBtn.textContent = '运行分析流水线'; }
+      return;
+    }
     fetch('/api/pipeline/state?trace=' + encodeURIComponent(traceId), { headers: { accept: 'application/json' } })
       .then(function (r) { return r.json(); })
       .then(function (data) {
-        if (!data || !data.run) return;
+        if (!data || !data.run) {   // 404 / 数据缺失时不能把按钮永久卡在“运行中…”
+          if (runBtn) { runBtn.disabled = false; runBtn.textContent = '运行分析流水线'; }
+          return;
+        }
         if (data.run.status === 'running') {
-          setTimeout(function () { pollState(traceId); }, 1500);
+          setTimeout(function () { pollState(traceId, attempt + 1); }, 1500);
         } else {
           if (runBtn) { runBtn.disabled = false; runBtn.textContent = '运行分析流水线'; }
           load();
         }
       })
-      .catch(function () { setTimeout(function () { pollState(traceId); }, 2000); });
+      .catch(function () { setTimeout(function () { pollState(traceId, attempt + 1); }, 2000); });
   }
 
   if (runBtn) {

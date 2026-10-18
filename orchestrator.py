@@ -16,7 +16,14 @@ STAGES = ("sentiment", "topic", "alert", "report")
 
 
 def init(db):
+    try:
+        row = db.execute("SELECT value FROM schema_meta WHERE key='orchestrator_version'").fetchone()
+    except sqlite3.Error:
+        row = None
+    if row and row[0] == "1":
+        return
     db.executescript("""
+      CREATE TABLE IF NOT EXISTS schema_meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS pipeline_runs(
         trace_id TEXT PRIMARY KEY, status TEXT NOT NULL, current_stage TEXT,
         stages TEXT NOT NULL, started_at TEXT NOT NULL, finished_at TEXT, error TEXT);
@@ -25,6 +32,8 @@ def init(db):
         result TEXT, error TEXT, updated_at TEXT NOT NULL,
         PRIMARY KEY(trace_id, stage));
     """)
+    with db:
+        db.execute("INSERT OR REPLACE INTO schema_meta(key,value) VALUES('orchestrator_version','1')")
 
 
 def _connect(path):
@@ -111,9 +120,22 @@ def run(db_path, trace_id, handlers, stages):
         db.close()
 
 
+def fail_run(db_path, trace_id, error):
+    """兜底：阶段循环之外的异常也要把 run 收尾，避免永久 running。"""
+    db = _connect(db_path)
+    try:
+        _finish_run(db, trace_id, "failed", error)
+    finally:
+        db.close()
+
+
 def recover(db, before):
-    """进程重启：把上一个进程遗留的 running 置 interrupted。"""
+    """进程重启：run 与遗留的 running 阶段一起收尾。"""
     with db:
         db.execute("UPDATE pipeline_runs SET status='failed', error='进程重启，任务中断', "
                    "finished_at=? WHERE status='running' AND started_at < ?",
                    (storage.now(), before))
+        db.execute("UPDATE pipeline_state SET status='failed', error='进程重启，任务中断', updated_at=? "
+                   "WHERE status='running' AND trace_id IN "
+                   "(SELECT trace_id FROM pipeline_runs WHERE status='failed')",
+                   (storage.now(),))

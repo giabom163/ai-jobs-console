@@ -410,8 +410,8 @@ def search_records(db, query, sentiment, feed_id, date_from, date_to, limit, off
 
 
 def _stage_task(trace_id, stage, fn):
-    """给没有自带记账的阶段（sentiment / alert）补一条 pipeline_tasks。"""
-    task = pipeline.start(DB, stage, {}, trace_id=trace_id)
+    """给没有自带记账的阶段（sentiment / alert）补一条 pipeline_tasks；task_id 固定，重试复用同一行。"""
+    task = pipeline.start(DB, stage, {}, trace_id=trace_id, task_id=f"task-{trace_id}-{stage}")
     try:
         result = fn()
     except Exception as exc:
@@ -433,13 +433,15 @@ def _stage_alert():
 
 def _stage_report(trace_id):
     with connect() as db:
-        return admin_features.generate_report(db, "daily", trace_id=trace_id)
+        return admin_features.generate_report(db, "daily", trace_id=trace_id,
+                                              task_id=f"task-{trace_id}-report")
 
 
 def pipeline_handlers(trace_id):
     return {
         "sentiment": lambda: _stage_task(trace_id, "sentiment", _stage_sentiment),
-        "topic": lambda: admin_features.rebuild_events(200, trace_id=trace_id),
+        "topic": lambda: admin_features.rebuild_events(200, trace_id=trace_id,
+                                                       task_id=f"task-{trace_id}-topic"),
         "alert": lambda: _stage_task(trace_id, "alert", _stage_alert),
         "report": lambda: _stage_report(trace_id),
     }
@@ -448,6 +450,11 @@ def pipeline_handlers(trace_id):
 def run_analysis_pipeline(trace_id, stages):
     try:
         orchestrator.run(DB, trace_id, pipeline_handlers(trace_id), stages)
+    except Exception as exc:
+        try:
+            orchestrator.fail_run(DB, trace_id, exc)
+        except Exception:
+            pass
     finally:
         ORCH_LOCK.release()
 
@@ -917,8 +924,16 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception:
                     ORCH_LOCK.release()
                     raise
-                threading.Thread(target=run_analysis_pipeline, args=(trace_id, stages),
-                                 daemon=True, name="analysis-pipeline").start()
+                try:
+                    threading.Thread(target=run_analysis_pipeline, args=(trace_id, stages),
+                                     daemon=True, name="analysis-pipeline").start()
+                except Exception as exc:
+                    try:
+                        orchestrator.fail_run(DB, trace_id, exc)
+                    except Exception:
+                        pass
+                    ORCH_LOCK.release()
+                    raise
                 return self.send(202, {"trace_id": trace_id, "stages": stages})
             if path == "/api/collect":
                 # 先抢锁再起线程，避免两个请求同时看到 running=False 而各起一轮。
