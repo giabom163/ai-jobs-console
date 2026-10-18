@@ -8,7 +8,7 @@ from __future__ import annotations
 GENDER_TERMS = (
     "女性", "男性", "女生", "男生", "女人", "男人", "性别", "女权", "男权",
     "女性主义", "性别歧视", "性别对立", "男女对立", "厌女", "媚男", "彩礼",
-    "婚恋", "生育", "堕胎", "家务", "重男轻女", "女子", "妇女", "女童",
+    "婚恋", "生育", "堕胎", "怀孕", "备孕", "家务", "重男轻女", "女子", "妇女", "女童",
     "宝妈", "剩女", "雌竞", "女博主", "女乘客", "女员工", "女学生", "男女",
 )
 
@@ -47,14 +47,15 @@ def _normalize(text):
 
 def explain(title, summary=""):
     """返回 (relevant, score, reason)；reason 用于审计，不做展示。"""
-    text = _normalize(f"{title or ''} {summary or ''}")
+    # 分别归一化再拼接，避免 "他家"+"暴了" 跨字段造出 "家暴"
+    text = _normalize(title or "") + "\n" + _normalize(summary or "")
     if not text.strip():
         return False, 0, "empty"
     excluded = [t for t in EXCLUDE_TERMS if t in text]
     strong = [t for t in STRONG_TERMS if t in text]
     if excluded and not strong:
-        # 出现“对立/争议/家暴/歧视”等冲突词时仍保留（如“家暴科普”）
-        if not any(t in text for t in ("对立", "争议", "家暴", "性骚扰", "歧视", "打拳", "女权", "男权")):
+        # 出现任意冲突词时仍保留（如“家暴科普”“性别争议科普”）
+        if not any(t in text for t in CONFLICT_TERMS):
             return False, 0, "excluded:" + ",".join(excluded[:3])
     if strong:
         return True, 2 + len(strong), "strong:" + ",".join(strong[:3])

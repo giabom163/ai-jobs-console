@@ -410,59 +410,104 @@ def start_collection_scheduler():
 EDGE_CANDIDATES = (
     Path(r"C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe"),
     Path(r"C:/Program Files/Microsoft/Edge/Application/msedge.exe"),
+    Path(os.environ.get("LOCALAPPDATA", "")) / "Microsoft/Edge/Application/msedge.exe",
+    Path(r"C:/Program Files/Google/Chrome/Application/chrome.exe"),
+    Path(r"C:/Program Files (x86)/Google/Chrome/Application/chrome.exe"),
 )
+_PDF_LOCK = threading.Lock()
 
 
 def markdown_to_html(title, body):
-    """轻量 Markdown → HTML：标题/列表/引用/粗体/段落，够打印即可。"""
+    """轻量 Markdown → HTML：标题/列表/表格/引用，够打印即可。"""
     import html as _html
-    lines = body.splitlines()
     out = ["<!doctype html><html><head><meta charset='utf-8'>",
            f"<title>{_html.escape(title)}</title>",
            "<style>body{font-family:'Microsoft YaHei',sans-serif;margin:36px;line-height:1.7;color:#222}"
            "h1{font-size:24px}h2{font-size:18px;border-bottom:1px solid #ddd;padding-bottom:4px}"
-           "li{margin:4px 0}blockquote{color:#666;border-left:3px solid #ccc;margin:8px 0;padding-left:12px}</style>",
+           "table{border-collapse:collapse;width:100%;margin:8px 0}td,th{border:1px solid #ccc;padding:6px 8px;text-align:left}"
+           "th{background:#f2f5f9}li{margin:4px 0}blockquote{color:#666;border-left:3px solid #ccc;margin:8px 0;padding-left:12px}</style>",
            "</head><body>"]
-    for line in lines:
+    in_ul = False
+
+    def close_ul():
+        nonlocal in_ul
+        if in_ul:
+            out.append("</ul>")
+            in_ul = False
+
+    table = []
+
+    def flush_table():
+        if not table:
+            return
+        out.append("<table>")
+        for index, cells in enumerate(table):
+            tag = "th" if index == 0 else "td"
+            out.append("<tr>" + "".join(f"<{tag}>{_html.escape(c)}</{tag}>" for c in cells) + "</tr>")
+        out.append("</table>")
+        table.clear()
+
+    for line in body.splitlines():
         text = line.rstrip()
-        if not text:
+        if text.startswith("|"):
+            cells = [c.strip() for c in text.strip().strip("|").split("|")]
+            if cells and all(set(c) <= set("-: ") for c in cells):
+                continue
+            table.append(cells)
             continue
-        escaped = _html.escape(text)
+        flush_table()
+        if not text:
+            close_ul()
+            continue
+        if text.startswith("- "):
+            if not in_ul:
+                out.append("<ul>")
+                in_ul = True
+            out.append(f"<li>{_html.escape(text[2:])}</li>")
+            continue
+        close_ul()
         if text.startswith("# "):
             out.append(f"<h1>{_html.escape(text[2:])}</h1>")
         elif text.startswith("## "):
             out.append(f"<h2>{_html.escape(text[3:])}</h2>")
         elif text.startswith("### "):
             out.append(f"<h3>{_html.escape(text[4:])}</h3>")
-        elif text.startswith("- "):
-            out.append(f"<li>{_html.escape(text[2:])}</li>")
         elif text.startswith("> "):
             out.append(f"<blockquote>{_html.escape(text[2:])}</blockquote>")
         else:
-            out.append(f"<p>{escaped}</p>")
+            out.append(f"<p>{_html.escape(text)}</p>")
+    flush_table()
+    close_ul()
     out.append("</body></html>")
     return "\n".join(out)
 
 
 def report_pdf(md_path, title):
-    """用 Edge headless 把 Markdown 报告打印成 PDF；无 Edge 返回 None。"""
+    """Edge/Chrome headless 打印 PDF；无浏览器抛 FileNotFoundError，失败抛 RuntimeError。"""
     edge = next((c for c in EDGE_CANDIDATES if c.is_file()), None)
     if edge is None:
-        return None
+        raise FileNotFoundError("未找到 Edge/Chrome")
     pdf = md_path.with_suffix(".pdf")
-    if pdf.is_file() and pdf.stat().st_mtime >= md_path.stat().st_mtime:
+    with _PDF_LOCK:
+        if pdf.is_file() and pdf.stat().st_mtime >= md_path.stat().st_mtime:
+            return pdf
+        html_path = md_path.with_suffix(".report.html")
+        try:
+            html_path.write_text(markdown_to_html(title, md_path.read_text(encoding="utf-8")), encoding="utf-8")
+            done = subprocess.run([str(edge), "--headless=new", "--disable-gpu", "--no-pdf-header-footer",
+                                   f"--print-to-pdf={pdf}", html_path.as_uri()],
+                                  capture_output=True, text=True, timeout=90)
+            if done.returncode != 0 or not pdf.is_file():
+                if pdf.exists():
+                    pdf.unlink()
+                raise RuntimeError((done.stderr or "PDF 生成失败")[:300])
+        except subprocess.TimeoutExpired:
+            if pdf.exists():
+                pdf.unlink()
+            raise RuntimeError("PDF 生成超时")
+        finally:
+            html_path.unlink(missing_ok=True)
         return pdf
-    html_path = md_path.with_suffix(".report.html")
-    html_path.write_text(markdown_to_html(title, md_path.read_text(encoding="utf-8")), encoding="utf-8")
-    try:
-        done = subprocess.run([str(edge), "--headless=new", "--disable-gpu", "--no-pdf-header-footer",
-                               f"--print-to-pdf={pdf}", html_path.as_uri()],
-                              capture_output=True, text=True, timeout=90)
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    if done.returncode != 0 or not pdf.is_file():
-        return None
-    return pdf
 
 
 def search_records(db, query, sentiment, feed_id, date_from, date_to, limit, offset):
@@ -643,9 +688,12 @@ class Handler(BaseHTTPRequestHandler):
             md_path = Path(row["path"])
             if not md_path.is_file():
                 return self.send(404, {"error": "报告文件缺失"})
-            pdf = report_pdf(md_path, row["title"])
-            if pdf is None:
-                return self.send(501, {"error": "本机未找到 Edge，无法导出 PDF"})
+            try:
+                pdf = report_pdf(md_path, row["title"])
+            except FileNotFoundError:
+                return self.send(501, {"error": "本机未找到 Edge/Chrome，无法导出 PDF"})
+            except RuntimeError as exc:
+                return self.send(500, {"error": f"PDF 导出失败：{exc}"})
             return self.send(200, pdf.read_bytes(), "application/pdf")
         if path.startswith("/api/reports/") and path.endswith("/preview"):
             report_id = path[len("/api/reports/"):-len("/preview")]
