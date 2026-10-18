@@ -324,22 +324,24 @@ def seconds_since_last_collect():
 
 
 def start_collection_scheduler():
-    if COLLECT_INTERVAL_MIN <= 0:
-        return None
-
+    """常驻线程：每轮读取当前 interval。0 = 空转等待，改回 >0 后会自动恢复采集。"""
     def loop():
-        time.sleep(min(120, COLLECT_INTERVAL_MIN * 60))
+        time.sleep(5)
         while True:
-            # 刚手动采过就先等过冷却，避免启动后的第一轮必然全被 throttle
+            interval = COLLECT_INTERVAL_MIN
+            if interval <= 0:
+                time.sleep(30)
+                continue
             elapsed = seconds_since_last_collect()
             target = collect_cooldown_seconds() + 60
             if elapsed is not None and elapsed < target:
                 time.sleep(target - elapsed)
+                continue
             try:
                 run_collection("scheduler")
             except Exception:
                 pass
-            time.sleep(COLLECT_INTERVAL_MIN * 60)
+            time.sleep(interval * 60)
 
     thread = threading.Thread(target=loop, daemon=True, name="collector-scheduler")
     thread.start()
@@ -431,7 +433,10 @@ class Handler(BaseHTTPRequestHandler):
                 row = db.execute("SELECT path,title FROM reports WHERE id=?", (report_id,)).fetchone()
             if not row:
                 return self.send(404, {"error": "报告不存在"})
-            body = Path(row["path"]).read_text(encoding="utf-8")
+            path = Path(row["path"])
+            if not path.is_file():
+                return self.send(404, {"error": "报告文件缺失（数据库有记录但文件不存在）"})
+            body = path.read_text(encoding="utf-8")
             from html import escape
             page = ("<!doctype html><meta charset='utf-8'><title>" + escape(row["title"]) +
                     "</title><style>body{max-width:900px;margin:32px auto;font:14px/1.7 system-ui;"
@@ -444,7 +449,10 @@ class Handler(BaseHTTPRequestHandler):
                 row = db.execute("SELECT path,title FROM reports WHERE id=?", (report_id,)).fetchone()
             if not row:
                 return self.send(404, {"error": "报告不存在"})
-            return self.send(200, Path(row["path"]).read_bytes(), "text/markdown; charset=utf-8")
+            path = Path(row["path"])
+            if not path.is_file():
+                return self.send(404, {"error": "报告文件缺失（数据库有记录但文件不存在）"})
+            return self.send(200, path.read_bytes(), "text/markdown; charset=utf-8")
         if path == "/api/events":
             query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query, keep_blank_values=True)
             raw = (query.get("limit", ["50"])[0] or "").strip()
@@ -623,7 +631,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         try:
-            refreshing = urllib.parse.urlsplit(self.path).path == "/api/refresh"
+            refreshing = urllib.parse.urlsplit(self.path).path in ("/api/refresh", "/api/topics/rebuild")
         except ValueError as exc:
             return self.send(400, {"error": str(exc)})
         if refreshing:
@@ -689,10 +697,9 @@ class Handler(BaseHTTPRequestHandler):
                 terms = value.get("keywords", [])
                 if not isinstance(terms, list) or len(terms) > 100:
                     raise ValueError("关键词格式错误")
-                clean_terms = {clean(str(x))[:80] for x in terms if clean(str(x))}
+                clean_terms = [clean(str(x))[:80] for x in terms if clean(str(x))]
                 with connect() as db:
-                    db.execute("DELETE FROM keywords")
-                    db.executemany("INSERT OR IGNORE INTO keywords(value) VALUES(?)", [(x,) for x in clean_terms])
+                    admin_features.set_keywords(db, clean_terms)
                 return self.send(200, {"ok": True})
             if path == "/api/import":
                 if set(value) != {"feed_id", "records"}:
@@ -816,6 +823,9 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(400, {"error": str(exc)})
         except (OSError, sqlite3.Error) as exc:
             return self.send(500, {"error": str(exc)})
+        except RuntimeError as exc:
+            busy = "运行" in str(exc)
+            return self.send(409 if busy else 500, {"error": str(exc), "status": "busy" if busy else "failed"})
         except Exception as exc:  # 聚类子进程等运行时错误，不能直接断连接
             return self.send(500, {"error": f"{type(exc).__name__}: {exc}"[:500]})
 

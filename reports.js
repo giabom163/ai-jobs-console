@@ -18,7 +18,12 @@
     if (!v) return '—';
     var d = new Date(v);
     if (Number.isNaN(d.getTime())) return String(v).replace('T', ' ').slice(0, 19);
-    return new Date(d.getTime() + 8 * 3600 * 1000).toISOString().replace('T', ' ').slice(0, 19);
+    // 后端时间可能带 Z/+00:00 或 +08:00，统一按上海时区显示，避免手工加 8 小时的双重换算
+    return d.toLocaleString('zh-CN', {
+      timeZone: 'Asia/Shanghai', hour12: false,
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', second: '2-digit'
+    }).replace(/\//g, '-');
   }
 
   function sizeText(bytes) {

@@ -6,6 +6,7 @@ import json
 import subprocess
 import sys
 import threading
+import time
 import uuid
 from pathlib import Path
 import sqlite3
@@ -53,6 +54,26 @@ def get_settings(db):
     return out
 
 
+def set_keywords(db, items):
+    """关键词唯一写入口：同时更新 keywords 表与 settings.keywords。"""
+    cleaned = []
+    for item in items or []:
+        if not isinstance(item, str):
+            continue
+        text = item.strip()[:80]
+        if text and text not in cleaned:
+            cleaned.append(text)
+    stamp = storage.now()
+    with db:
+        db.execute("DELETE FROM keywords")
+        db.executemany("INSERT OR IGNORE INTO keywords(value) VALUES(?)", [(k,) for k in cleaned])
+        db.execute(
+            "INSERT INTO settings(key,value,updated_at) VALUES('keywords',?,?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
+            (json.dumps(cleaned, ensure_ascii=False), stamp))
+    return cleaned
+
+
 def save_settings(db, payload):
     """只接受四个已知键；keywords 同步写入 keywords 表（检索/预警用）。"""
     merged = get_settings(db)
@@ -70,12 +91,6 @@ def save_settings(db, payload):
         items = payload["keywords"]
         if not isinstance(items, list) or len(items) > 100:
             raise ValueError("keywords 必须是最多 100 项的数组")
-        cleaned = []
-        for item in items:
-            text = str(item).strip()[:80]
-            if text and text not in cleaned:
-                cleaned.append(text)
-        merged["keywords"] = cleaned
     if "fuzzy" in payload:
         if not isinstance(payload["fuzzy"], bool):
             raise ValueError("fuzzy 必须是布尔值")
@@ -83,14 +98,13 @@ def save_settings(db, payload):
 
     stamp = storage.now()
     with db:
-        for key in SETTINGS_KEYS:
+        for key in ("collect_interval", "collect_limit", "fuzzy"):
             db.execute(
                 "INSERT INTO settings(key,value,updated_at) VALUES(?,?,?) "
                 "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
                 (key, json.dumps(merged[key], ensure_ascii=False), stamp))
-        db.execute("DELETE FROM keywords")
-        db.executemany("INSERT OR IGNORE INTO keywords(value) VALUES(?)",
-                       [(k,) for k in merged["keywords"]])
+    if "keywords" in payload:
+        merged["keywords"] = set_keywords(db, payload["keywords"])
     return merged
 
 
@@ -126,7 +140,8 @@ def generate_report(db, kind):
         start = (now - timedelta(days=7)).replace(hour=0, minute=0, second=0, microsecond=0)
         title = f"舆情周报 · {start.strftime('%Y-%m-%d')} ~ {now.strftime('%Y-%m-%d')}"
 
-    stats = storage.overview_stats(db, 7)
+    stats = storage.overview_stats(db, 1 if kind == "daily" else 7)
+    window_days = 1 if kind == "daily" else 7
     kpi = stats["kpi"]
     platforms = stats["platforms"][:8]
     sentiment = stats["sentiment"]
@@ -141,7 +156,7 @@ def generate_report(db, kind):
         f"# {title}",
         "",
         f"- 生成时间：{now.strftime('%Y-%m-%d %H:%M:%S')}（UTC+8）",
-        f"- 统计窗口：近 7 天（{_fmt_local(stats.get('window_since'))} 起）",
+        f"- 统计窗口：近 {window_days} 天（{_fmt_local(stats.get('window_since'))} 起）",
         f"- 数据来源：本机采集库 sentiment.db（records / events / alerts）",
         "",
         "## 一、核心指标",
@@ -192,12 +207,16 @@ def generate_report(db, kind):
     path = REPORTS_DIR / f"{report_id}.md"
     path.write_text(body, encoding="utf-8")
     size = path.stat().st_size
-    with db:
-        db.execute(
-            "INSERT INTO reports(id,kind,title,period_start,period_end,created_at,size_bytes,path,summary) "
-            "VALUES(?,?,?,?,?,?,?,?,?)",
-            (report_id, kind, title, start.isoformat(), now.isoformat(),
-             storage.now(), size, str(path), f"{kpi['records']} 条记录 / {len(events)} 个事件"))
+    try:
+        with db:
+            db.execute(
+                "INSERT INTO reports(id,kind,title,period_start,period_end,created_at,size_bytes,path,summary) "
+                "VALUES(?,?,?,?,?,?,?,?,?)",
+                (report_id, kind, title, start.isoformat(), now.isoformat(),
+                 storage.now(), size, str(path), f"{kpi['records']} 条记录 / {len(events)} 个事件"))
+    except Exception:
+        path.unlink(missing_ok=True)   # 入库失败不留孤儿文件
+        raise
     return {"id": report_id, "kind": kind, "title": title, "size_bytes": size,
             "created_at": storage.now(), "path": str(path)}
 
@@ -211,6 +230,8 @@ def rebuild_events(limit=200):
     if not _EVENT_LOCK.acquire(blocking=False):
         raise RuntimeError("已有聚类任务在运行，请稍后再试")
     try:
+        before = {p.name for p in EVENTS_DIR.glob("events-*.jsonl")}
+        started_ts = time.time()
         cmd = [sys.executable, "-B", str(ROOT / "tools" / "cluster_events.py"),
                "--no-model", "--limit", str(limit), "--db", str(DB), "--out-dir", str(EVENTS_DIR)]
         proc = subprocess.run(cmd, cwd=str(ROOT), capture_output=True, text=True,
@@ -218,9 +239,12 @@ def rebuild_events(limit=200):
         if proc.returncode != 0:
             detail = ((proc.stdout or "") + " " + (proc.stderr or "")).strip()[:400]
             raise RuntimeError(f"聚类失败（退出码 {proc.returncode}）：{detail}")
-        files = sorted(EVENTS_DIR.glob("events-*.jsonl"), key=lambda p: p.stat().st_mtime)
-        if not files:
-            raise RuntimeError("聚类未产出 events-*.jsonl")
+        produced = [p for p in sorted(EVENTS_DIR.glob("events-*.jsonl"),
+                                      key=lambda p: p.stat().st_mtime)
+                    if p.name not in before or p.stat().st_mtime >= started_ts]
+        if not produced:
+            raise RuntimeError("本次聚类没有产出新的 events-*.jsonl，已保留旧数据")
+        files = produced
         counts = 0
         stamp = storage.now()
         db = DB_CONNECT()

@@ -10,6 +10,8 @@
   var input = document.getElementById('kw-input');
   var addBtn = document.getElementById('kw-add');
   var keywords = [];
+  var loaded = false;
+  saveBtn.disabled = true;
 
   function el(tag, cls, text) {
     var n = document.createElement(tag);
@@ -53,25 +55,51 @@
 
   function load() {
     fetch('/api/settings', { headers: { accept: 'application/json' } })
-      .then(function (r) { return r.json(); })
+      .then(function (r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.json();
+      })
       .then(function (data) {
         interval.value = data.collect_interval;
         limit.value = data.collect_limit;
         fuzzy.checked = !!data.fuzzy;
         keywords = (data.keywords || []).slice();
         renderChips();
+        loaded = true;
+        saveBtn.disabled = false;
+        saveBtn.title = '';
       })
-      .catch(function () { /* 读取失败保持空表单 */ });
+      .catch(function (e) {
+        loaded = false;
+        saveBtn.disabled = true;
+        saveBtn.title = '设置读取失败，禁止保存以免覆盖现有配置';
+        chips.textContent = '';
+        chips.appendChild(el('span', 'hint', '设置读取失败：' + e.message));
+      });
   }
 
   saveBtn.addEventListener('click', function () {
+    if (!loaded) {
+      alert('设置尚未成功读取，禁止保存以免覆盖现有配置。');
+      return;
+    }
+    var intervalValue = Number(interval.value);
+    var limitValue = Number(limit.value);
+    if (!Number.isInteger(intervalValue) || intervalValue < 0 || intervalValue > 1440) {
+      alert('采集间隔必须是 0–1440 的整数（分钟）');
+      return;
+    }
+    if (!Number.isInteger(limitValue) || limitValue < 1 || limitValue > 50) {
+      alert('每端点条数必须是 1–50 的整数');
+      return;
+    }
     saveBtn.disabled = true;
     fetch('/api/settings', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        collect_interval: Number(interval.value),
-        collect_limit: Number(limit.value),
+        collect_interval: intervalValue,
+        collect_limit: limitValue,
         fuzzy: !!fuzzy.checked,
         keywords: keywords
       })
