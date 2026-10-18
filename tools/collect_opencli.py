@@ -630,7 +630,8 @@ def validate_args(args):
         raise CollectError("args", f"端点 {'/'.join(needs_keyword)} 需要 --keyword", 2)
     if args.keyword is not None:
         keyword = args.keyword.strip()
-        if not keyword or len(keyword) > 50 or any(ord(ch) < 32 for ch in keyword):
+        if (not keyword or len(keyword) > 50 or keyword.startswith("-")
+                or any(ord(ch) < 32 for ch in keyword)):
             raise CollectError("args", "--keyword 必须是 1-50 个可打印字符", 2)
         args.keyword = keyword
     if not 1 <= args.limit <= MAX_LIMIT:

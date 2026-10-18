@@ -466,12 +466,19 @@ def run_analysis_pipeline(trace_id, stages):
 def _run_crawl_once():
     if not CRAWL_LOCK.acquire(blocking=False):
         return
+    # 与热榜采集共用同一个 Chrome：热榜在跑时本轮关键词任务顺延，避免浏览器争用
+    if not COLLECT_LOCK.acquire(blocking=False):
+        CRAWL_LOCK.release()
+        return
     try:
         crawl_jobs.run_pending(DB, 3, opencli=OPENCLI_MAIN or default_opencli_main())
     except Exception as exc:
         print(f"关键词采集失败：{exc}", file=sys.stderr, flush=True)
     finally:
-        CRAWL_LOCK.release()
+        try:
+            COLLECT_LOCK.release()
+        finally:
+            CRAWL_LOCK.release()
 
 
 def start_crawl_worker():
@@ -1089,6 +1096,11 @@ if __name__ == "__main__":
                 fts_db.close()
         except Exception as exc:
             print(f"FTS 初始化重试失败：{exc}", file=sys.stderr, flush=True)
+        try:
+            with connect() as db:
+                crawl_jobs.recover(db)
+        except Exception as exc:
+            print(f"crawl_jobs 启动恢复失败：{exc}", file=sys.stderr, flush=True)
         try:
             pipeline.recover(DB, RUNTIME["started_at"])
         except Exception as exc:

@@ -29,6 +29,10 @@ MAX_BUDGET = 120
 KEYWORD_COOLDOWN_MIN = 60
 
 
+class Throttled(RuntimeError):
+    """平台冷却：只延后，不计失败次数。"""
+
+
 def init(db):
     db.executescript("""
       CREATE TABLE IF NOT EXISTS crawl_jobs(
@@ -44,6 +48,7 @@ def init(db):
         added INTEGER NOT NULL DEFAULT 0,
         duplicates INTEGER NOT NULL DEFAULT 0,
         last_error TEXT,
+        run_id TEXT,
         next_retry_at TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL);
@@ -51,14 +56,24 @@ def init(db):
       CREATE UNIQUE INDEX IF NOT EXISTS crawl_jobs_dedupe
         ON crawl_jobs(keyword, platform, status) WHERE status IN ('queued','running');
     """)
+    cols = [row[1] for row in db.execute("PRAGMA table_info(crawl_jobs)")]
+    if "run_id" not in cols:
+        db.execute("ALTER TABLE crawl_jobs ADD COLUMN run_id TEXT")
 
 
 def enqueue(db, keywords, platforms=None, limit=5, trace_id=None):
     """按 关键词×平台 入队；同词同平台已有 queued/running 或 60 分钟内 ok 的跳过。"""
+    if not isinstance(keywords, list) or any(not isinstance(k, str) for k in keywords):
+        raise ValueError("keywords 必须是字符串数组")
+    if platforms is not None and (not isinstance(platforms, list) or
+                                  any(not isinstance(p, str) or p not in PLATFORM_ENDPOINTS for p in platforms)):
+        raise ValueError("platforms 必须是受支持平台的字符串数组")
     platforms = [p for p in (platforms or DEFAULT_PLATFORMS) if p in PLATFORM_ENDPOINTS]
     if not platforms:
         raise ValueError("platforms 至少包含一个受支持的平台")
-    keywords = [k.strip() for k in keywords if isinstance(k, str) and k.strip()]
+    keywords = [k.strip() for k in keywords if k.strip()]
+    if any(k.startswith("-") for k in keywords):
+        raise ValueError("关键词不能以 - 开头")
     if not keywords or len(keywords) > 20:
         raise ValueError("keywords 必须是 1–20 个非空字符串")
     trace_id = trace_id or "trace-crawl-" + storage.digest(str(time.time()).encode())[:12]
@@ -69,16 +84,18 @@ def enqueue(db, keywords, platforms=None, limit=5, trace_id=None):
             for platform in platforms:
                 busy = db.execute(
                     "SELECT 1 FROM crawl_jobs WHERE keyword=? AND platform=? "
-                    "AND (status IN ('queued','running') OR (status='ok' AND updated_at >= ?))",
-                    (keyword, platform, _minutes_ago(KEYWORD_COOLDOWN_MIN))).fetchone()
+                    "AND (status IN ('queued','running') "
+                    "OR (status='failed' AND next_retry_at > ?) "
+                    "OR (status='ok' AND updated_at >= ?))",
+                    (keyword, platform, storage.now(), _minutes_ago(KEYWORD_COOLDOWN_MIN))).fetchone()
                 if busy:
                     continue
-                db.execute(
-                    "INSERT INTO crawl_jobs(trace_id,keyword,platform,endpoint,status,limit_n,"
+                cursor = db.execute(
+                    "INSERT OR IGNORE INTO crawl_jobs(trace_id,keyword,platform,endpoint,status,limit_n,"
                     "next_retry_at,created_at,updated_at) VALUES(?,?,?,?,'queued',?,?,?,?)",
                     (trace_id, keyword, platform, PLATFORM_ENDPOINTS[platform],
                      limit, stamp, stamp, stamp))
-                created += 1
+                created += max(0, cursor.rowcount)
     return {"trace_id": trace_id, "queued": created, "keywords": keywords,
             "platforms": platforms, "limit": limit}
 
@@ -89,6 +106,14 @@ def _iso(moment):
 
 def _minutes_ago(minutes):
     return _iso(datetime.now(timezone.utc) - timedelta(minutes=minutes))
+
+
+def recover(db, minutes=10):
+    """启动恢复：把上一个进程遗留的 running 置 failed，释放去重索引。"""
+    with db:
+        db.execute("UPDATE crawl_jobs SET status='failed', last_error='进程重启，任务中断', "
+                   "updated_at=? WHERE status='running' AND updated_at < ?",
+                   (storage.now(), _minutes_ago(minutes)))
 
 
 def list_jobs(db, limit=50):
@@ -116,9 +141,9 @@ def finish(db, job_id, report):
     run = result.get("run") or {}
     with db:
         db.execute("UPDATE crawl_jobs SET status='ok', returned=?, added=?, duplicates=?, "
-                   "last_error=NULL, updated_at=? WHERE id=?",
+                   "last_error=NULL, run_id=?, updated_at=? WHERE id=?",
                    (result.get("returned_count") or 0, run.get("added") or 0,
-                    run.get("duplicates") or 0, storage.now(), job_id))
+                    run.get("duplicates") or 0, run.get("id"), storage.now(), job_id))
 
 
 def fail(db, job_id, message):
@@ -131,6 +156,20 @@ def fail(db, job_id, message):
         next_retry = _iso(datetime.now(timezone.utc) + timedelta(seconds=delay))
         db.execute("UPDATE crawl_jobs SET status=?, last_error=?, next_retry_at=?, updated_at=? "
                    "WHERE id=?", (status, str(message)[:800], next_retry, stamp, job_id))
+
+
+def defer(db_path, job_id, seconds=300, reason="throttled"):
+    """冷却延后：把 claim 时加的 attempts 还回去，只改 next_retry_at。"""
+    from storage import connect
+    db = connect(db_path)
+    try:
+        with db:
+            db.execute("UPDATE crawl_jobs SET status='failed', attempts=max(0, attempts-1), "
+                       "next_retry_at=?, last_error=?, updated_at=? WHERE id=?",
+                       (_iso(datetime.now(timezone.utc) + timedelta(seconds=seconds)),
+                        reason, storage.now(), job_id))
+    finally:
+        db.close()
 
 
 def run_one(db_path, job, timeout=180, opencli=None):
@@ -153,7 +192,7 @@ def run_one(db_path, job, timeout=180, opencli=None):
         err = (report.get("error") or {}).get("message") or (proc.stderr or "")[:300]
         raise RuntimeError(err or f"采集器退出码 {proc.returncode}")
     if report.get("status") == "throttled":
-        raise RuntimeError("平台冷却中，稍后重试")
+        raise Throttled("平台冷却中，稍后重试")
     return report
 
 
@@ -170,6 +209,10 @@ def run_pending(db_path, max_jobs=3, opencli=None):
                 break
             try:
                 report = run_one(db_path, job, opencli=opencli)
+            except Throttled as exc:
+                defer(db_path, job["id"], 300, str(exc))
+                done.append({"id": job["id"], "status": "deferred", "error": str(exc)})
+                continue
             except Exception as exc:
                 fail(db, job["id"], exc)
                 done.append({"id": job["id"], "status": "failed", "error": str(exc)[:200]})
