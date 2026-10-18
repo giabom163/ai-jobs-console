@@ -27,6 +27,7 @@ import admin_features
 import pipeline
 import orchestrator
 import crawl_jobs
+import topics
 
 ROOT = Path(__file__).resolve().parent
 DB = ROOT / "sentiment.db"
@@ -863,6 +864,7 @@ class Handler(BaseHTTPRequestHandler):
                 stats["kpi"]["open_alerts"] = db.execute(
                     "SELECT count(*) FROM alerts WHERE status='open'").fetchone()[0]
                 stats["kpi"]["active_topics"] = admin_features.active_topics(db)
+                stats["categories"] = topics.categories(db, 24 if hours else max(1, (days or 30) * 24))
             return self.send(200, stats)
         if path == "/api/data":
             with connect() as db:

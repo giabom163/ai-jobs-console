@@ -167,7 +167,9 @@
     var max = Math.max.apply(null, rows.map(function (r) { return r.value; }).concat([1]));
     rows.forEach(function (r) {
       var row = el('div', 'bar-row');
-      row.appendChild(el('span', 'bar-label', r.label));
+      var labelEl = el('span', 'bar-label', r.label);
+      if (r.keywords && r.keywords.length) labelEl.title = r.label + '：' + r.keywords.join('、');
+      row.appendChild(labelEl);
       var track = el('span', 'bar-track');
       var fill = el('span', 'bar-fill');
       var ratio = r.value / max;
@@ -227,8 +229,10 @@
     var grid = el('div', 'chart-grid');
     var platforms = card('平台分布', '按采集源名称聚合');
     bars(stats.platforms, platforms.body);
-    var top = card('条目 TOP10', '按 canonical_id 去重分组，非语义聚类');
-    bars(stats.top_groups, top.body);
+    var top = card('话题分类', '先按标题规则分类，再由 jieba 抽取类别关键词');
+    bars((stats.categories || []).map(function (c) {
+      return { label: c.name, value: c.count, keywords: c.keywords };
+    }), top.body);
     var platformPanel = el('section', 'panel');
     platformPanel.appendChild(platforms.box);
     var topPanel = el('section', 'panel');
