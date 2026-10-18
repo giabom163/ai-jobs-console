@@ -6,3 +6,5 @@ snapshots/
 .collector-throttle.json
 events/
 reports/
+
+.collector-throttle-search.json

@@ -26,6 +26,7 @@ import alertcenter
 import admin_features
 import pipeline
 import orchestrator
+import crawl_jobs
 
 ROOT = Path(__file__).resolve().parent
 DB = ROOT / "sentiment.db"
@@ -44,6 +45,7 @@ HISTORY_QUERY_KEYS = {"evidence_id", "from", "to", "limit", "offset"}
 WRITE_LOCK = threading.Lock()
 REFRESH_LOCK = threading.Lock()
 ORCH_LOCK = threading.Lock()
+CRAWL_LOCK = threading.Lock()
 RUNTIME = {}
 
 # 采集调度：默认 20 分钟一轮，轮转 6 个已验证平台；冷却账与熔断仍由采集器本体负责。
@@ -67,6 +69,7 @@ def connect():
         admin_features.init(db)       # settings / reports / events 表
         pipeline.init(db)             # pipeline_tasks 表
         orchestrator.init(db)         # 分析流水线 run/state 表
+        crawl_jobs.init(db)           # 关键词采集任务表
         with db:
             yield db
     finally:
@@ -460,6 +463,28 @@ def run_analysis_pipeline(trace_id, stages):
         ORCH_LOCK.release()
 
 
+def _run_crawl_once():
+    if not CRAWL_LOCK.acquire(blocking=False):
+        return
+    try:
+        crawl_jobs.run_pending(DB, 3, opencli=OPENCLI_MAIN or default_opencli_main())
+    except Exception as exc:
+        print(f"关键词采集失败：{exc}", file=sys.stderr, flush=True)
+    finally:
+        CRAWL_LOCK.release()
+
+
+def start_crawl_worker():
+    def loop():
+        while True:
+            try:
+                _run_crawl_once()
+            except Exception:
+                pass
+            time.sleep(30)
+    threading.Thread(target=loop, daemon=True, name="crawl-jobs").start()
+
+
 class SingleInstanceHTTPServer(ThreadingHTTPServer):
     """禁止端口复用：同一端口只能有一个实例，避免新旧进程同时服务。"""
     allow_reuse_address = False
@@ -571,6 +596,13 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError("limit 必须是 1..200 的整数")
             with connect() as db:
                 return self.send(200, {"tasks": pipeline.list_tasks(db, int(raw))})
+        if path == "/api/crawl/jobs":
+            query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query, keep_blank_values=True)
+            raw = (query.get("limit", ["50"])[0] or "").strip()
+            if not raw.isdigit() or not 1 <= int(raw) <= 200:
+                raise ValueError("limit 必须是 1..200 的整数")
+            with connect() as db:
+                return self.send(200, {"jobs": crawl_jobs.list_jobs(db, int(raw))})
         if path == "/api/collect/status":
             return self.send(200, collect_status())
         if path == "/api/search":
@@ -936,6 +968,19 @@ class Handler(BaseHTTPRequestHandler):
                     ORCH_LOCK.release()
                     raise
                 return self.send(202, {"trace_id": trace_id, "stages": stages})
+            if path == "/api/crawl/keywords/run":
+                raw_limit = value.get("limit", 5)
+                if type(raw_limit) is not int or not 1 <= raw_limit <= 20:
+                    raise ValueError("limit 必须是 1..20 的整数")
+                platforms = value.get("platforms")
+                if platforms is not None and (not isinstance(platforms, list) or
+                                              any(p not in crawl_jobs.PLATFORM_ENDPOINTS for p in platforms)):
+                    raise ValueError("platforms 必须是受支持平台的数组")
+                with connect() as db:
+                    keywords = value.get("keywords") or admin_features.get_settings(db)["keywords"]
+                    result = crawl_jobs.enqueue(db, keywords, platforms, raw_limit)
+                threading.Thread(target=_run_crawl_once, daemon=True, name="crawl-now").start()
+                return self.send(202, result)
             if path == "/api/collect":
                 # 先抢锁再起线程，避免两个请求同时看到 running=False 而各起一轮。
                 if not COLLECT_LOCK.acquire(blocking=False):
@@ -1055,6 +1100,7 @@ if __name__ == "__main__":
             print(f"orchestrator 启动恢复失败：{exc}", file=sys.stderr, flush=True)
         alertcenter.start_scheduler(DB)
         start_collection_scheduler()
+        start_crawl_worker()
         print(f"本地舆情面板：http://{HOST}:{PORT}（手动批次上限 {LIMIT}；"
               f"自动采集 {COLLECT_INTERVAL_MIN} 分钟/轮，0=关闭；Ctrl+C 停止）", flush=True)
         server.serve_forever()

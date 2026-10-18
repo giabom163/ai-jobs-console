@@ -163,6 +163,54 @@ ENDPOINTS = {
                    "source_id": "id", "published_at": None},
         "summary_empty_when_same_as_title": False,
     },
+    # ---- 关键词搜索端点（C1）----
+    # argv 只到子命令，关键词由 --keyword 在调用时插入；字段映射按 2026-10-18 实采样例。
+    "weibo-search": {
+        "argv": ["weibo", "search"], "keyword": True,
+        "platform": "weibo",
+        "feed_url": "https://s.weibo.com/weibo?q=",
+        "default_group": "weibo-search",
+        "fields": {"title": "word", "url": "url", "summary": "text",
+                   "source_id": "id", "published_at": "created_at"},
+        "summary_empty_when_same_as_title": False,
+    },
+    "zhihu-search": {
+        "argv": ["zhihu", "search"], "keyword": True,
+        "platform": "zhihu",
+        "feed_url": "https://www.zhihu.com/search?type=content&q=",
+        "default_group": "zhihu-search",
+        "fields": {"title": "title", "url": "url", "summary": "excerpt",
+                   "source_id": None, "published_at": None},
+        "summary_empty_when_same_as_title": False,
+    },
+    "tieba-search": {
+        "argv": ["tieba", "search"], "keyword": True,
+        "platform": "tieba",
+        "feed_url": "https://tieba.baidu.com/f/search/res?qw=",
+        "default_group": "tieba-search",
+        "fields": {"title": "title", "url": "url", "summary": "snippet",
+                   "source_id": "id", "published_at": "time"},
+        "summary_empty_when_same_as_title": False,
+    },
+    "bilibili-search": {
+        "argv": ["bilibili", "search"], "keyword": True,
+        "platform": "bilibili",
+        "feed_url": "https://search.bilibili.com/all?keyword=",
+        "default_group": "bilibili-search",
+        "fields": {"title": "title", "url": "url", "summary": None,
+                   "source_id": "bvid", "published_at": None},
+        "summary_empty_when_same_as_title": False,
+    },
+    "xiaohongshu-search": {
+        "argv": ["xiaohongshu", "search"], "keyword": True,
+        "platform": "xiaohongshu",
+        "feed_url": "https://www.xiaohongshu.com/search_result?keyword=",
+        "default_group": "xiaohongshu-search",
+        "fields": {"title": "note_card.display_title", "url": "url", "summary": None,
+                   "source_id": "note_card.note_id", "published_at": None},
+        "summary_empty_when_same_as_title": False,
+    },
+
 }
 
 # 本地 schema 里必须有值、缺失即报错的字段（不静默丢弃，不用其它字段顶替）。
@@ -182,11 +230,12 @@ RISK_TEXT_PATTERNS = (
 
 def _validate_endpoints():
     """声明式映射表的完整性自检：少键/多键都在导入时立刻报错，而不是运行到一半才 KeyError。"""
-    expected = {"argv", "platform", "feed_url", "default_group", "fields",
+    required = {"argv", "platform", "feed_url", "default_group", "fields",
                 "summary_empty_when_same_as_title"}
     for name, spec in ENDPOINTS.items():
-        if set(spec) != expected:
-            raise RuntimeError(f"端点 {name} 的声明键不完整：{sorted(spec)}")
+        extra = set(spec) - required - {"keyword"}
+        if not required <= set(spec) or extra:
+            raise RuntimeError(f"端点 {name} 的声明键不合法：缺少 {sorted(required - set(spec))}，多余 {sorted(extra)}")
         if set(spec["fields"]) != {"title", "url", "summary", "source_id", "published_at"}:
             raise RuntimeError(f"端点 {name} 的 fields 键不完整：{sorted(spec['fields'])}")
         if not all(spec["fields"].get(key) for key in REQUIRED_FIELDS):
@@ -420,12 +469,16 @@ def cooldown_of(entry, moment, min_interval):
     return False, last_raw, elapsed, None
 
 
-def run_opencli(node, main, endpoint, limit, timeout):
+def run_opencli(node, main, endpoint, limit, timeout, keyword=None):
     """唯一一次上游调用：read-only 公开端点，无分页、无重试、无并发。
 
     失败时带出该站点的 endpoint 名、真实退出码与 stderr 原文，不用别的站点数据顶替。
     """
-    argv = [str(node), str(main), *ENDPOINTS[endpoint]["argv"], "--limit", str(limit), "-f", "json"]
+    spec = ENDPOINTS[endpoint]
+    argv = [str(node), str(main), *spec["argv"]]
+    if spec.get("keyword"):
+        argv.append(keyword)
+    argv += ["--limit", str(limit), "-f", "json"]
     started = utc()
     clock = time.monotonic()
     try:
@@ -475,7 +528,11 @@ def take(item, field_name):
     """
     if field_name is None:
         return None
-    value = item.get(field_name)
+    value = item
+    for part in str(field_name).split("."):
+        value = value.get(part) if isinstance(value, dict) else None
+        if value is None:
+            break
     return value.strip() if isinstance(value, str) else None
 
 
@@ -543,6 +600,8 @@ def build_parser():
                         help="读端点（白名单，可重复传多次以在一轮内采多个平台）："
                              + " / ".join(f"{name}" for name in sorted(ENDPOINTS))
                              + "（默认 hot：头条热榜）")
+    parser.add_argument("--keyword", default=None,
+                        help="关键词（仅 *-search 端点需要；单端点单次一个词）")
     parser.add_argument("--limit", type=int, default=DEFAULT_LIMIT, help=f"每个端点条数 1-{MAX_LIMIT}（默认 {DEFAULT_LIMIT}）")
     parser.add_argument("--dry-run", action="store_true",
                         help="只采集并打印映射结果：不打开/创建数据库，也不写节流账（只读账）")
@@ -566,6 +625,14 @@ def build_parser():
 
 def validate_args(args):
     """参数校验在调用上游之前完成，非法值直接报错，不发起任何请求。"""
+    needs_keyword = [name for name in (args.endpoint or ["hot"]) if ENDPOINTS[name].get("keyword")]
+    if needs_keyword and not (isinstance(args.keyword, str) and args.keyword.strip()):
+        raise CollectError("args", f"端点 {'/'.join(needs_keyword)} 需要 --keyword", 2)
+    if args.keyword is not None:
+        keyword = args.keyword.strip()
+        if not keyword or len(keyword) > 50 or any(ord(ch) < 32 for ch in keyword):
+            raise CollectError("args", "--keyword 必须是 1-50 个可打印字符", 2)
+        args.keyword = keyword
     if not 1 <= args.limit <= MAX_LIMIT:
         raise CollectError("args", f"--limit 必须在 1-{MAX_LIMIT} 之间，收到 {args.limit}", 2)
     if args.min_interval < 0:
@@ -692,7 +759,7 @@ def main(argv=None):
             result["gap_waited_seconds"] = round(time.monotonic() - clock, 3)
 
         try:
-            items, call = run_opencli(node, main_js, endpoint, effective, args.timeout)
+            items, call = run_opencli(node, main_js, endpoint, effective, args.timeout, args.keyword)
             rows, previews = map_rows(endpoint, items)
         except CollectError as exc:
             signal = risk_signal(exc)
