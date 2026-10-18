@@ -860,9 +860,13 @@ if __name__ == "__main__":
         with connect() as db:
             storage.recover_runs(db)
             analysis.recover(db)
-            if db.execute("SELECT count(*) FROM alert_rules WHERE enabled=1").fetchone()[0] == 0:
+            # 一次性迁移：首次启动把 10-17 冒烟规则打开，之后尊重用户的启停选择
+            seeded = db.execute("SELECT value FROM settings WHERE key='alerts_seeded'").fetchone()
+            if seeded is None:
                 with db:
                     db.execute("UPDATE alert_rules SET enabled=1")
+                    db.execute("INSERT INTO settings(key,value,updated_at) VALUES('alerts_seeded','true',?)",
+                               (storage.now(),))
             saved = admin_features.get_settings(db)
             COLLECT_INTERVAL_MIN = int(saved["collect_interval"])
             COLLECT_LIMIT = int(saved["collect_limit"])

@@ -5,6 +5,8 @@ from datetime import datetime, timedelta, timezone
 import json
 import subprocess
 import sys
+import threading
+import uuid
 from pathlib import Path
 import sqlite3
 
@@ -16,6 +18,7 @@ EVENTS_DIR = ROOT / "events"
 REPORTS_DIR = ROOT / "reports"
 SETTINGS_KEYS = ("collect_interval", "collect_limit", "keywords", "fuzzy")
 DEFAULT_SETTINGS = {"collect_interval": 20, "collect_limit": 20, "keywords": [], "fuzzy": True}
+_EVENT_LOCK = threading.Lock()
 
 
 def init(db):
@@ -40,6 +43,8 @@ def init(db):
 def get_settings(db):
     out = dict(DEFAULT_SETTINGS)
     for row in db.execute("SELECT key, value FROM settings"):
+        if row["key"] not in SETTINGS_KEYS:
+            continue
         try:
             out[row["key"]] = json.loads(row["value"])
         except (TypeError, ValueError):
@@ -182,7 +187,7 @@ def generate_report(db, kind):
 
     body = "\n".join(lines) + "\n"
     stamp = now.strftime("%Y%m%d-%H%M%S")
-    report_id = f"report-{kind}-{stamp}"
+    report_id = f"report-{kind}-{stamp}-{uuid.uuid4().hex[:6]}"
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
     path = REPORTS_DIR / f"{report_id}.md"
     path.write_text(body, encoding="utf-8")
@@ -203,37 +208,42 @@ def rebuild_events(limit=200):
     """调用 tools/cluster_events.py --no-model，导入 events 表；失败保留旧数据。"""
     if not 10 <= limit <= 200:
         raise ValueError("limit 必须在 10–200 之间（聚类工具上限 200）")
-    cmd = [sys.executable, "-B", str(ROOT / "tools" / "cluster_events.py"),
-           "--no-model", "--limit", str(limit), "--db", str(DB), "--out-dir", str(EVENTS_DIR)]
-    proc = subprocess.run(cmd, cwd=str(ROOT), capture_output=True, text=True,
-                          encoding="utf-8", errors="replace", timeout=300)
-    if proc.returncode != 0:
-        detail = ((proc.stdout or "") + " " + (proc.stderr or "")).strip()[:400]
-        raise RuntimeError(f"聚类失败（退出码 {proc.returncode}）：{detail}")
-    files = sorted(EVENTS_DIR.glob("events-*.jsonl"), key=lambda p: p.stat().st_mtime)
-    if not files:
-        raise RuntimeError("聚类未产出 events-*.jsonl")
-    counts = 0
-    stamp = storage.now()
-    db = DB_CONNECT()
+    if not _EVENT_LOCK.acquire(blocking=False):
+        raise RuntimeError("已有聚类任务在运行，请稍后再试")
     try:
-        with db:
-            db.execute("DELETE FROM events")
-            for line in files[-1].read_text(encoding="utf-8").splitlines():
-                if not line.strip():
-                    continue
-                event = json.loads(line)
-                titles = event.get("titles") or []
-                db.execute(
-                    "INSERT OR REPLACE INTO events(id,label,records,platforms,titles,first_seen,created_at) "
-                    "VALUES(?,?,?,?,?,?,?)",
-                    (event["event_id"], titles[0] if titles else "(无标题)", int(event.get("size") or 0),
-                     json.dumps(event.get("feeds") or [], ensure_ascii=False),
-                     json.dumps(titles[:20], ensure_ascii=False), event.get("first_seen"), stamp))
-                counts += 1
+        cmd = [sys.executable, "-B", str(ROOT / "tools" / "cluster_events.py"),
+               "--no-model", "--limit", str(limit), "--db", str(DB), "--out-dir", str(EVENTS_DIR)]
+        proc = subprocess.run(cmd, cwd=str(ROOT), capture_output=True, text=True,
+                              encoding="utf-8", errors="replace", timeout=300)
+        if proc.returncode != 0:
+            detail = ((proc.stdout or "") + " " + (proc.stderr or "")).strip()[:400]
+            raise RuntimeError(f"聚类失败（退出码 {proc.returncode}）：{detail}")
+        files = sorted(EVENTS_DIR.glob("events-*.jsonl"), key=lambda p: p.stat().st_mtime)
+        if not files:
+            raise RuntimeError("聚类未产出 events-*.jsonl")
+        counts = 0
+        stamp = storage.now()
+        db = DB_CONNECT()
+        try:
+            with db:
+                db.execute("DELETE FROM events")
+                for line in files[-1].read_text(encoding="utf-8").splitlines():
+                    if not line.strip():
+                        continue
+                    event = json.loads(line)
+                    titles = event.get("titles") or []
+                    db.execute(
+                        "INSERT OR REPLACE INTO events(id,label,records,platforms,titles,first_seen,created_at) "
+                        "VALUES(?,?,?,?,?,?,?)",
+                        (event["event_id"], titles[0] if titles else "(无标题)", int(event.get("size") or 0),
+                         json.dumps(event.get("feeds") or [], ensure_ascii=False),
+                         json.dumps(titles[:20], ensure_ascii=False), event.get("first_seen"), stamp))
+                    counts += 1
+        finally:
+            db.close()
+        return {"events": counts, "limit": limit, "source": str(files[-1])}
     finally:
-        db.close()
-    return {"events": counts, "limit": limit, "source": str(files[-1])}
+        _EVENT_LOCK.release()
 
 
 def DB_CONNECT():
