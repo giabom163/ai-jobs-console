@@ -41,9 +41,7 @@ def import_json(db, path):
         opposition = item.get("opposition")
         if opposition is None:
             opposition = rel["opposition"]
-        relevant = item.get("relevant")
-        if relevant is None:
-            relevant = gender
+        relevant = gender
         storage.save_model_annotation(
             db, record_id, MODEL, item.get("model_sentiment"), item.get("model_topic"),
             gender, opposition, relevant, json.dumps(item, ensure_ascii=False))

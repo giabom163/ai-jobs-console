@@ -79,8 +79,8 @@
       a.target = '_blank';
       a.rel = 'noreferrer';
       head.appendChild(a);
-      head.appendChild(el('span', sentimentClass(item.sentiment), item.sentiment || '未判定'));
-      if (item.model_sentiment && item.sentiment !== '中性/待判' && item.model_sentiment !== item.sentiment) {
+      head.appendChild(el('span', sentimentClass(item.sentiment), item.sentiment === '中性/待判' ? '未判定' : (item.sentiment || '未判定')));
+      if (item.model_sentiment) {
         head.appendChild(el('span', 'pill muted', '模型：' + item.model_sentiment));
       }
       card.appendChild(head);
