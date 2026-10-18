@@ -369,9 +369,9 @@ def search_records(db, query, sentiment, feed_id, date_from, date_to, limit, off
     where, params = [], []
     join = ""
     fts_ready = False
-    if query:
-        fts_ready = (len(query) >= 3 and
-                     db.execute("SELECT 1 FROM sqlite_master WHERE name='records_fts'").fetchone() is not None)
+    if query and len(query) >= 3:
+        row = db.execute("SELECT value FROM schema_meta WHERE key='fts_version'").fetchone()
+        fts_ready = bool(row) and row[0] == storage.FTS_VERSION
     if fts_ready:
         # trigram 索引：短语匹配，双引号转义后交给 FTS5
         where.append("records_fts MATCH ?")
@@ -933,6 +933,10 @@ if __name__ == "__main__":
         RUNTIME["collect_interval_minutes"] = COLLECT_INTERVAL_MIN
         RUNTIME["collect_limit"] = COLLECT_LIMIT
         # 启动期调度：alertcenter.init 已由 connect() 内的调用完成；此处只启动 60 秒 daemon 线程。
+        try:
+            pipeline.recover(DB, RUNTIME["started_at"])
+        except Exception:
+            pass
         alertcenter.start_scheduler(DB)
         start_collection_scheduler()
         print(f"本地舆情面板：http://{HOST}:{PORT}（手动批次上限 {LIMIT}；"

@@ -48,7 +48,9 @@
       row.appendChild(el('td', null, fmt(task.started_at || task.created_at)));
       row.appendChild(el('td', null, task.stage));
       var statusCell = el('td');
-      statusCell.appendChild(el('span', 'pill ' + (STATUS[task.status] || 'muted'), task.status));
+      statusCell.appendChild(el('span', 'pill ' +
+        (Object.prototype.hasOwnProperty.call(STATUS, task.status) ? STATUS[task.status] : 'muted'),
+        task.status));
       row.appendChild(statusCell);
       row.appendChild(el('td', null, String(task.attempts)));
       row.appendChild(el('td', null, duration(task)));

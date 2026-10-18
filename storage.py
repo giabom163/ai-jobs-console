@@ -159,32 +159,49 @@ def connect(path):
     return db
 
 
+FTS_VERSION = "2"   # 2 = title/summary/url + trigram；版本不符时重建一次并记入 schema_meta
+
+
 def _init_fts(db):
-    """FTS5 trigram 全文索引（SQLite 自带，无需外部服务）；失败则静默回退 LIKE。"""
+    """FTS5 trigram 全文索引：只在版本不符时建表/重建，避免每请求全量校验。"""
     try:
-        db.execute("CREATE VIRTUAL TABLE IF NOT EXISTS records_fts "
-                   "USING fts5(title, summary, tokenize='trigram')")
+        row = db.execute("SELECT value FROM schema_meta WHERE key='fts_version'").fetchone()
+        version = row[0] if row else None
+    except sqlite3.Error:
+        version = None
+    if version in (FTS_VERSION, "unavailable"):
+        return
+    try:
         db.executescript("""
-          CREATE TRIGGER IF NOT EXISTS records_fts_ai AFTER INSERT ON records BEGIN
-            INSERT INTO records_fts(rowid,title,summary) VALUES (new.rowid,new.title,new.summary);
+          DROP TRIGGER IF EXISTS records_fts_ai;
+          DROP TRIGGER IF EXISTS records_fts_ad;
+          DROP TRIGGER IF EXISTS records_fts_au;
+          DROP TABLE IF EXISTS records_fts;
+          CREATE VIRTUAL TABLE records_fts USING fts5(title, summary, url, tokenize='trigram');
+          CREATE TRIGGER records_fts_ai AFTER INSERT ON records BEGIN
+            INSERT INTO records_fts(rowid,title,summary,url) VALUES (new.rowid,new.title,new.summary,new.url);
           END;
-          CREATE TRIGGER IF NOT EXISTS records_fts_ad AFTER DELETE ON records BEGIN
+          CREATE TRIGGER records_fts_ad AFTER DELETE ON records BEGIN
             DELETE FROM records_fts WHERE rowid=old.rowid;
           END;
-          CREATE TRIGGER IF NOT EXISTS records_fts_au AFTER UPDATE OF title,summary ON records BEGIN
+          CREATE TRIGGER records_fts_au AFTER UPDATE OF title,summary,url ON records BEGIN
             DELETE FROM records_fts WHERE rowid=old.rowid;
-            INSERT INTO records_fts(rowid,title,summary) VALUES (new.rowid,new.title,new.summary);
+            INSERT INTO records_fts(rowid,title,summary,url) VALUES (new.rowid,new.title,new.summary,new.url);
           END;
         """)
-        indexed = db.execute("SELECT count(*) FROM records_fts").fetchone()[0]
-        total = db.execute("SELECT count(*) FROM records").fetchone()[0]
-        if indexed != total:  # 首次建表或历史数据未入索引
-            with db:
-                db.execute("DELETE FROM records_fts")
-                db.execute("INSERT INTO records_fts(rowid,title,summary) "
-                           "SELECT rowid,title,summary FROM records")
+        with db:
+            db.execute("DELETE FROM records_fts")
+            db.execute("INSERT INTO records_fts(rowid,title,summary,url) "
+                       "SELECT rowid,title,summary,url FROM records")
+            indexed = db.execute("SELECT count(*) FROM records_fts").fetchone()[0]
+            total = db.execute("SELECT count(*) FROM records").fetchone()[0]
+            if indexed != total:   # 重建后仍不一致：宁可不标版本，退回 LIKE
+                raise sqlite3.OperationalError("fts count mismatch after rebuild")
+            db.execute("INSERT OR REPLACE INTO schema_meta(key,value) VALUES('fts_version',?)",
+                       (FTS_VERSION,))
     except sqlite3.OperationalError:
-        pass   # 老版本 SQLite 无 trigram 时退回 LIKE
+        with db:
+            db.execute("INSERT OR REPLACE INTO schema_meta(key,value) VALUES('fts_version','unavailable')")
 
 
 def start_run(db, feed_id, kind, limit):

@@ -206,10 +206,10 @@ def generate_report(db, kind):
     report_id = f"report-{kind}-{stamp}-{uuid.uuid4().hex[:6]}"
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
     path = REPORTS_DIR / f"{report_id}.md"
-    path.write_text(body, encoding="utf-8")
-    size = path.stat().st_size
     task = pipeline.start(DB, "report", {"kind": kind, "report_id": report_id})
     try:
+        path.write_text(body, encoding="utf-8")
+        size = path.stat().st_size
         with db:
             db.execute(
                 "INSERT INTO reports(id,kind,title,period_start,period_end,created_at,size_bytes,path,summary) "
@@ -217,7 +217,7 @@ def generate_report(db, kind):
                 (report_id, kind, title, start.isoformat(), now.isoformat(),
                  storage.now(), size, str(path), f"{kpi['records']} 条记录 / {len(events)} 个事件"))
     except Exception as exc:
-        path.unlink(missing_ok=True)   # 入库失败不留孤儿文件
+        path.unlink(missing_ok=True)   # 写盘或入库失败都不留孤儿文件
         pipeline.fail(DB, task["id"], exc)
         raise
     pipeline.finish(DB, task["id"], {"id": report_id, "size": size})
@@ -233,8 +233,9 @@ def rebuild_events(limit=200):
         raise ValueError("limit 必须在 10–200 之间（聚类工具上限 200）")
     if not _EVENT_LOCK.acquire(blocking=False):
         raise RuntimeError("已有聚类任务在运行，请稍后再试")
-    task = pipeline.start(DB, "topic", {"limit": limit})
+    task = None
     try:
+        task = pipeline.start(DB, "topic", {"limit": limit})
         before = {p.name for p in EVENTS_DIR.glob("events-*.jsonl")}
         started_ts = time.time()
         cmd = [sys.executable, "-B", str(ROOT / "tools" / "cluster_events.py"),
@@ -273,7 +274,8 @@ def rebuild_events(limit=200):
         pipeline.finish(DB, task["id"], {"events": counts})
         return {"events": counts, "limit": limit, "source": str(files[-1])}
     except Exception as exc:
-        pipeline.fail(DB, task["id"], exc)
+        if task:
+            pipeline.fail(DB, task["id"], exc)
         raise
     finally:
         _EVENT_LOCK.release()
