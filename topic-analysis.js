@@ -43,9 +43,10 @@
       var row = el('div', 'topic-row');
       var left = el('div');
       left.appendChild(el('div', 'topic-name', t.name || '其他话题'));
-      var kw = (t.keywords || []).length ? '关键词：' + t.keywords.join('、') : '';
-      var src = (t.platforms || []).join('、') || '未匹配到来源';
-      left.appendChild(el('div', 'topic-kw', kw || '来源：' + src));
+      var kwText = (t.keywords || []).length ? '关键词：' + t.keywords.join('、') : '';
+      var srcText = '来源：' + ((t.platforms || []).join('、') || '未匹配到来源');
+      if (kwText) left.appendChild(el('div', 'topic-kw', kwText));
+      left.appendChild(el('div', 'topic-kw', srcText));
       row.appendChild(left);
       var right = el('div', 'topic-stat');
       var trend = Number(t.trend || 0);
@@ -128,6 +129,7 @@
   }
 
   var netChart = null;
+  var netRO = null;
 
   function networkSvg(data) {
     var W = 760, H = 420, cx = W / 2, cy = H / 2, R = 150;
@@ -171,6 +173,7 @@
 
   function network(data) {
     netHost.textContent = '';
+    if (netChart) { netChart.dispose(); netChart = null; }   // 先销毁，早退分支也不留实例
     if (!data.topics.length) { netHost.appendChild(el('p', 'chart-empty', '暂无话题')); return; }
     if (!window.echarts) { networkSvg(data); return; }   // 库未加载时回退手绘
     if (netChart) { netChart.dispose(); netChart = null; }
@@ -194,12 +197,13 @@
                lineStyle: { width: 0.6 + e.weight * 0.8, color: '#c9dff3', curveness: 0.08 } };
     });
     netChart = window.echarts.init(box, null, { renderer: 'canvas' });
-    if (window.ResizeObserver) {   // 视图从隐藏切到可见时容器宽度会变，图表要跟着 resize
-      var ro = new ResizeObserver(function () { if (netChart) netChart.resize(); });
-      ro.observe(netHost);
+    if (window.ResizeObserver && !netRO) {   // 单例观察器：视图从隐藏切到可见时修正宽度
+      netRO = new ResizeObserver(function () { if (netChart) netChart.resize(); });
+      netRO.observe(netHost);
     }
     netChart.setOption({
       tooltip: {
+        renderMode: 'richText',   // 避免节点名走 HTML innerHTML
         formatter: function (p) {
           if (p.dataType === 'edge') return p.data.value + ' 个共同来源';
           return p.data.name + '：' + p.data.value + ' 条';

@@ -35,7 +35,7 @@ def init(db):
       CREATE INDEX IF NOT EXISTS reports_created ON reports(created_at);
       CREATE TABLE IF NOT EXISTS events(
         id TEXT PRIMARY KEY, label TEXT NOT NULL, records INTEGER NOT NULL,
-        platforms TEXT NOT NULL, titles TEXT NOT NULL, first_seen TEXT,
+        platforms TEXT NOT NULL, titles TEXT NOT NULL, keywords TEXT, first_seen TEXT,
         created_at TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS events_size ON events(records);
     """)
