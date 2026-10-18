@@ -292,7 +292,7 @@
           '✓ 入库完成 · 新增 ' + log.added + ' 条（重复 ' + log.duplicates + ' 条）', clock(log.finished_at)));
         if (stats) {
           consoleBody.appendChild(consoleLine('sentiment', 'SENTIMENT',
-            '规则词典判定 · 待判 ' + stats.kpi.sentiment_pending + ' 条（未跑模型）', clock(log.finished_at)));
+            '规则词典判定 · 待判 ' + stats.kpi.sentiment_pending + ' 条；模型标注见检索卡片', clock(log.finished_at)));
           consoleBody.appendChild(consoleLine('topic', 'TOPIC',
             '聚类事件 ' + (stats.kpi.active_topics || 0) + ' 个（≥2 条）', clock(log.finished_at)));
           consoleBody.appendChild(consoleLine('alert', 'ALERT',
