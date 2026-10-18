@@ -26,6 +26,7 @@ import relevance  # noqa: E402
 import server  # noqa: E402
 import topics  # noqa: E402
 import content_filter  # noqa: E402
+import relevance  # noqa: E402
 import storage  # noqa: E402
 
 MIXIN = [46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35, 27, 43, 5, 49,
@@ -51,9 +52,9 @@ def _mixin_key():
     return "".join((img + sub)[i] for i in MIXIN)[:32]
 
 
-def search(keyword, page, mixin):
+def search(keyword, page, mixin, order="pubdate"):
     params = {"search_type": "video", "keyword": keyword, "page": page,
-              "page_size": 30, "order": "pubdate", "wts": str(int(time.time()))}
+              "page_size": 30, "order": order, "wts": str(int(time.time()))}
     query = "&".join(f"{k}={urllib.parse.quote(str(params[k]), safe='')}" for k in sorted(params))
     params["w_rid"] = hashlib.md5((query + mixin).encode()).hexdigest()
     url = ("https://api.bilibili.com/x/web-interface/wbi/search/type?"
@@ -71,6 +72,8 @@ def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("--hours", type=int, default=24)
     parser.add_argument("--pages", type=int, default=3)
+    parser.add_argument("--order", default="pubdate", choices=("pubdate", "click"),
+                        help="pubdate=最新发布，click=播放最多")
     parser.add_argument("--keywords", default="性别,女权,彩礼,家暴,性别对立,厌女,性别歧视,男女")
     parser.add_argument("--per-category-limit", type=int, default=30,
                         help="每个类别最多保留多少条（默认 30）")
@@ -103,7 +106,7 @@ def main(argv=None):
     for keyword in [k.strip() for k in args.keywords.split(",") if k.strip()]:
         for page in range(1, args.pages + 1):
             try:
-                items = search(keyword, page, mixin)
+                items = search(keyword, page, mixin, args.order)
             except Exception as exc:
                 print(f"search fail {keyword} p{page}: {exc}", file=sys.stderr)
                 break
@@ -119,7 +122,7 @@ def main(argv=None):
                 if args.min_age_hours and published > datetime.now(timezone.utc) - timedelta(hours=args.min_age_hours):
                     continue
                 title = html.unescape(re.sub(r"<[^>]+>", "", item.get("title") or ""))
-                if not any(t in title for t in STRICT):
+                if not relevance.is_gender_related(title):
                     continue
                 if content_filter.is_noise(title):
                     continue
@@ -131,8 +134,10 @@ def main(argv=None):
                     continue
                 for label in labels:
                     category_counts[label] = category_counts.get(label, 0) + 1
+                raw_play = item.get("play")
+                views = int(raw_play) if isinstance(raw_play, int) or (isinstance(raw_play, str) and raw_play.isdigit()) else 0
                 found[bvid] = {"title": title, "url": f"https://www.bilibili.com/video/{bvid}",
-                               "published_at": published.isoformat()}
+                               "published_at": published.isoformat(), "views": views}
             if len(found) >= args.max_total:
                 break
             time.sleep(0.4)
@@ -159,6 +164,7 @@ def main(argv=None):
         feed_id = feed["id"]
     run_id = storage.start_run(db, feed_id, "bilibili-search", max(1, min(len(found), 100)))
     rows = [{"title": item["title"], "summary": "", "url": item["url"],
+             "views": item.get("views", 0),
              "source_id": bvid, "published_at": item["published_at"]}
             for bvid, item in found.items()]
     outcome = storage.import_batch(db, ROOT, run_id, rows, server.classify, noise=False)

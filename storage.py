@@ -197,7 +197,7 @@ def connect(path):
         time_quality TEXT NOT NULL CHECK(time_quality IN ('valid','missing','invalid','timezone_missing','legacy_unverified')),
         canonical_id TEXT NOT NULL REFERENCES canonical_records(id), dedup_reason TEXT NOT NULL,
         run_id TEXT NOT NULL REFERENCES collection_runs(id), sentiment TEXT NOT NULL,
-        UNIQUE(feed_id, raw_sha256));
+        views INTEGER NOT NULL DEFAULT 0, UNIQUE(feed_id, raw_sha256));
       CREATE INDEX IF NOT EXISTS records_url ON records(canonical_url);
       CREATE INDEX IF NOT EXISTS records_content ON records(content_sha256);
       CREATE INDEX IF NOT EXISTS records_published ON records(published_at);
@@ -241,7 +241,8 @@ def connect(path):
     for column, ddl in (("quality", "TEXT NOT NULL DEFAULT 'ok'"),
                         ("quality_reason", "TEXT"),
                         ("simhash", "TEXT"),
-                        ("entities", "TEXT")):
+                        ("entities", "TEXT"),
+                        ("views", "INTEGER NOT NULL DEFAULT 0")):
         cols = [row[1] for row in db.execute("PRAGMA table_info(records)")]
         if column not in cols:
             try:
@@ -381,7 +382,7 @@ def import_batch(db, root, run_id, rows, classify, noise=True):
         for row in rows:
             if not isinstance(row, dict):
                 raise ValueError("每条记录必须为对象")
-            if set(row) - {"title", "summary", "url", "source_id", "published_at", "raw_xml"}:
+            if set(row) - {"title", "summary", "url", "source_id", "published_at", "raw_xml", "views"}:
                 raise ValueError("记录含未声明字段")
             title, summary = row.get("title"), row.get("summary", "")
             if not isinstance(title, str) or not isinstance(summary, str) or not normalized_text(title):
@@ -436,12 +437,12 @@ def import_batch(db, root, run_id, rows, classify, noise=True):
                 record_id = "record-" + uuid.uuid4().hex
                 db.execute("""INSERT INTO records(id,feed_id,source_id,title,summary,url,canonical_url,
                     content_sha256,raw_sha256,raw_path,published_at,published_raw,fetched_at,time_quality,
-                    canonical_id,dedup_reason,run_id,sentiment,quality,quality_reason,simhash,entities)
-                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    canonical_id,dedup_reason,run_id,sentiment,quality,quality_reason,simhash,entities,views)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                            (record_id, run["feed_id"], source_id, title, summary, row["url"], url,
                             content_hash, raw_hash, raw_path, published_at, row.get("published_at"), now(),
                             quality, canonical_id, reason, run_id, classify(title + " " + summary),
-                            "ok", "ok", f"{sh:016x}", ents))
+                            "ok", "ok", f"{sh:016x}", ents, int(row.get("views") or 0)))
                 recent.append((sh, record_id))
                 added += 1
             db.execute("""UPDATE collection_runs SET status='succeeded',finished_at=?,input_count=?,
