@@ -453,8 +453,9 @@ def run_analysis_pipeline(trace_id, stages):
     except Exception as exc:
         try:
             orchestrator.fail_run(DB, trace_id, exc)
-        except Exception:
-            pass
+        except Exception as inner:
+            print(f"orchestrator fail_run 失败：{inner}（原始错误：{exc}）",
+                  file=sys.stderr, flush=True)
     finally:
         ORCH_LOCK.release()
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 import json
+import os
 import subprocess
 import sys
 import threading
@@ -202,22 +203,17 @@ def generate_report(db, kind, trace_id=None, task_id=None):
               "> 本报告由本机规则与统计自动生成，不代表人工结论；情感为词典规则粗筛，时间口径为 published_at ?: fetched_at。"]
 
     body = "\n".join(lines) + "\n"
-    stamp = now.strftime("%Y%m%d-%H%M%S")
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
-    # 同一天同 kind 只保留一份：重跑覆盖，避免流水线每次运行都新增日报
-    existing = db.execute(
-        "SELECT id,path FROM reports WHERE kind=? AND date(created_at,'+8 hours')=?",
-        (kind, now.strftime("%Y-%m-%d"))).fetchone()
-    if existing:
-        report_id = existing["id"]
-        path = Path(existing["path"])
-    else:
-        report_id = f"report-{kind}-{stamp}-{uuid.uuid4().hex[:6]}"
-        path = REPORTS_DIR / f"{report_id}.md"
+    # 同一天同 kind 固定一个 id：并发/重跑都收敛到同一行，不会重复建行
+    report_id = f"report-{kind}-{now.strftime('%Y%m%d')}"
+    path = REPORTS_DIR / f"{report_id}.md"
+    task_id = task_id or f"task-{report_id}"
     task = pipeline.start(DB, "report", {"kind": kind, "report_id": report_id},
                           trace_id=trace_id, task_id=task_id)
+    tmp = path.with_suffix(".md.tmp")
     try:
-        path.write_text(body, encoding="utf-8")
+        tmp.write_text(body, encoding="utf-8")
+        os.replace(tmp, path)          # 原子替换，失败时不会破坏已有报告
         size = path.stat().st_size
         with db:
             db.execute(
@@ -226,7 +222,7 @@ def generate_report(db, kind, trace_id=None, task_id=None):
                 (report_id, kind, title, start.isoformat(), now.isoformat(),
                  storage.now(), size, str(path), f"{kpi['records']} 条记录 / {len(events)} 个事件"))
     except Exception as exc:
-        path.unlink(missing_ok=True)   # 写盘或入库失败都不留孤儿文件
+        tmp.unlink(missing_ok=True)    # 只清理临时文件，旧报告保持可用
         pipeline.fail(DB, task["id"], exc)
         raise
     pipeline.finish(DB, task["id"], {"id": report_id, "size": size})
