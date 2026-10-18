@@ -155,7 +155,36 @@ def connect(path):
         returned INTEGER NOT NULL DEFAULT 0, error TEXT, report TEXT);
       CREATE INDEX IF NOT EXISTS collector_logs_started ON collector_logs(started_at);
     """)
+    _init_fts(db)
     return db
+
+
+def _init_fts(db):
+    """FTS5 trigram 全文索引（SQLite 自带，无需外部服务）；失败则静默回退 LIKE。"""
+    try:
+        db.execute("CREATE VIRTUAL TABLE IF NOT EXISTS records_fts "
+                   "USING fts5(title, summary, tokenize='trigram')")
+        db.executescript("""
+          CREATE TRIGGER IF NOT EXISTS records_fts_ai AFTER INSERT ON records BEGIN
+            INSERT INTO records_fts(rowid,title,summary) VALUES (new.rowid,new.title,new.summary);
+          END;
+          CREATE TRIGGER IF NOT EXISTS records_fts_ad AFTER DELETE ON records BEGIN
+            DELETE FROM records_fts WHERE rowid=old.rowid;
+          END;
+          CREATE TRIGGER IF NOT EXISTS records_fts_au AFTER UPDATE OF title,summary ON records BEGIN
+            DELETE FROM records_fts WHERE rowid=old.rowid;
+            INSERT INTO records_fts(rowid,title,summary) VALUES (new.rowid,new.title,new.summary);
+          END;
+        """)
+        indexed = db.execute("SELECT count(*) FROM records_fts").fetchone()[0]
+        total = db.execute("SELECT count(*) FROM records").fetchone()[0]
+        if indexed != total:  # 首次建表或历史数据未入索引
+            with db:
+                db.execute("DELETE FROM records_fts")
+                db.execute("INSERT INTO records_fts(rowid,title,summary) "
+                           "SELECT rowid,title,summary FROM records")
+    except sqlite3.OperationalError:
+        pass   # 老版本 SQLite 无 trigram 时退回 LIKE
 
 
 def start_run(db, feed_id, kind, limit):

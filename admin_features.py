@@ -12,6 +12,7 @@ from pathlib import Path
 import sqlite3
 
 import storage
+import pipeline
 
 ROOT = Path(__file__).resolve().parent
 DB = ROOT / "sentiment.db"
@@ -207,6 +208,7 @@ def generate_report(db, kind):
     path = REPORTS_DIR / f"{report_id}.md"
     path.write_text(body, encoding="utf-8")
     size = path.stat().st_size
+    task = pipeline.start(DB, "report", {"kind": kind, "report_id": report_id})
     try:
         with db:
             db.execute(
@@ -214,9 +216,11 @@ def generate_report(db, kind):
                 "VALUES(?,?,?,?,?,?,?,?,?)",
                 (report_id, kind, title, start.isoformat(), now.isoformat(),
                  storage.now(), size, str(path), f"{kpi['records']} 条记录 / {len(events)} 个事件"))
-    except Exception:
+    except Exception as exc:
         path.unlink(missing_ok=True)   # 入库失败不留孤儿文件
+        pipeline.fail(DB, task["id"], exc)
         raise
+    pipeline.finish(DB, task["id"], {"id": report_id, "size": size})
     return {"id": report_id, "kind": kind, "title": title, "size_bytes": size,
             "created_at": storage.now(), "path": str(path)}
 
@@ -229,6 +233,7 @@ def rebuild_events(limit=200):
         raise ValueError("limit 必须在 10–200 之间（聚类工具上限 200）")
     if not _EVENT_LOCK.acquire(blocking=False):
         raise RuntimeError("已有聚类任务在运行，请稍后再试")
+    task = pipeline.start(DB, "topic", {"limit": limit})
     try:
         before = {p.name for p in EVENTS_DIR.glob("events-*.jsonl")}
         started_ts = time.time()
@@ -265,7 +270,11 @@ def rebuild_events(limit=200):
                     counts += 1
         finally:
             db.close()
+        pipeline.finish(DB, task["id"], {"events": counts})
         return {"events": counts, "limit": limit, "source": str(files[-1])}
+    except Exception as exc:
+        pipeline.fail(DB, task["id"], exc)
+        raise
     finally:
         _EVENT_LOCK.release()
 

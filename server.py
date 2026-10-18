@@ -24,6 +24,7 @@ import storage
 import analysis
 import alertcenter
 import admin_features
+import pipeline
 
 ROOT = Path(__file__).resolve().parent
 DB = ROOT / "sentiment.db"
@@ -62,6 +63,7 @@ def connect():
         analysis.init(db)
         alertcenter.init(db)          # 与 analysis.init 同处：每次连接/启动都保证预警表存在（IF NOT EXISTS）
         admin_features.init(db)       # settings / reports / events 表
+        pipeline.init(db)             # pipeline_tasks 表
         with db:
             yield db
     finally:
@@ -260,7 +262,12 @@ def run_collection(trigger="manual", lock_held=False):
     COLLECT_STATE.update(running=True, started_at=started_at, trigger=trigger)
     status, added, duplicates, returned, error, report = "failed", 0, 0, 0, None, {}
     finished_at = started_at
+    task = None
     try:
+        try:
+            task = pipeline.start(DB, "crawler", {"trigger": trigger, "endpoints": COLLECT_ENDPOINTS})
+        except Exception:
+            task = None
         main_js = OPENCLI_MAIN or default_opencli_main()
         if not main_js or not Path(main_js).is_file():
             raise RuntimeError("未找到 OpenCLI 的 dist/src/main.js；用 --opencli 指定")
@@ -298,6 +305,14 @@ def run_collection(trigger="manual", lock_held=False):
         status, error = "failed", f"{type(exc).__name__}: {exc}"[:1000]
     finally:
         finished_at = storage.now()
+        if task:
+            try:
+                if status in ("ok", "throttled", "skipped"):
+                    pipeline.finish(DB, task["id"], {"added": added, "duplicates": duplicates})
+                else:
+                    pipeline.fail(DB, task["id"], error or status)
+            except Exception:
+                pass
         try:
             insert_collect_log(trigger, COLLECT_ENDPOINTS, status, started_at, finished_at,
                                added, duplicates, returned, error, report)
@@ -352,7 +367,17 @@ def start_collection_scheduler():
 
 def search_records(db, query, sentiment, feed_id, date_from, date_to, limit, offset):
     where, params = [], []
+    join = ""
+    fts_ready = False
     if query:
+        fts_ready = (len(query) >= 3 and
+                     db.execute("SELECT 1 FROM sqlite_master WHERE name='records_fts'").fetchone() is not None)
+    if fts_ready:
+        # trigram 索引：短语匹配，双引号转义后交给 FTS5
+        where.append("records_fts MATCH ?")
+        params.append('"' + query.replace('"', '""') + '"')
+        join = " JOIN records_fts ON records_fts.rowid = r.rowid"
+    elif query:
         escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         like = f"%{escaped}%"
         where.append("(r.title LIKE ? ESCAPE '\\' OR r.summary LIKE ? ESCAPE '\\' OR r.url LIKE ? ESCAPE '\\')")
@@ -370,13 +395,14 @@ def search_records(db, query, sentiment, feed_id, date_from, date_to, limit, off
         where.append("date(r.fetched_at,'+8 hours') <= ?")
         params.append(date_to)
     clause = (" WHERE " + " AND ".join(where)) if where else ""
-    total = db.execute("SELECT count(*) FROM records r" + clause, params).fetchone()[0]
+    total = db.execute("SELECT count(*) FROM records r" + join + clause, params).fetchone()[0]
     rows = db.execute(
         "SELECT r.id,r.feed_id,f.name AS source,r.title,r.summary,r.url,r.fetched_at,"
-        "r.sentiment,r.canonical_id FROM records r JOIN feeds f ON f.id=r.feed_id"
+        "r.sentiment,r.canonical_id FROM records r JOIN feeds f ON f.id=r.feed_id" + join
         + clause + " ORDER BY r.fetched_at DESC, r.id LIMIT ? OFFSET ?",
         params + [limit, offset]).fetchall()
-    return {"total": total, "limit": limit, "offset": offset, "items": [dict(x) for x in rows]}
+    return {"total": total, "limit": limit, "offset": offset, "fts": bool(fts_ready),
+            "items": [dict(x) for x in rows]}
 
 
 class SingleInstanceHTTPServer(ThreadingHTTPServer):
@@ -468,6 +494,13 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError("window 只接受 7 / 14 / 30")
             with connect() as db:
                 return self.send(200, admin_features.topic_analysis(db, int(raw)))
+        if path == "/api/pipeline/tasks":
+            query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query, keep_blank_values=True)
+            raw = (query.get("limit", ["50"])[0] or "").strip()
+            if not raw.isdigit() or not 1 <= int(raw) <= 200:
+                raise ValueError("limit 必须是 1..200 的整数")
+            with connect() as db:
+                return self.send(200, {"tasks": pipeline.list_tasks(db, int(raw))})
         if path == "/api/collect/status":
             return self.send(200, collect_status())
         if path == "/api/search":
