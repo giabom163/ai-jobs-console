@@ -25,6 +25,7 @@ import analysis
 import alertcenter
 import admin_features
 import pipeline
+import orchestrator
 
 ROOT = Path(__file__).resolve().parent
 DB = ROOT / "sentiment.db"
@@ -42,6 +43,7 @@ VENDOR_STATIC = {
 HISTORY_QUERY_KEYS = {"evidence_id", "from", "to", "limit", "offset"}
 WRITE_LOCK = threading.Lock()
 REFRESH_LOCK = threading.Lock()
+ORCH_LOCK = threading.Lock()
 RUNTIME = {}
 
 # 采集调度：默认 20 分钟一轮，轮转 6 个已验证平台；冷却账与熔断仍由采集器本体负责。
@@ -64,6 +66,7 @@ def connect():
         alertcenter.init(db)          # 与 analysis.init 同处：每次连接/启动都保证预警表存在（IF NOT EXISTS）
         admin_features.init(db)       # settings / reports / events 表
         pipeline.init(db)             # pipeline_tasks 表
+        orchestrator.init(db)         # 分析流水线 run/state 表
         with db:
             yield db
     finally:
@@ -406,6 +409,49 @@ def search_records(db, query, sentiment, feed_id, date_from, date_to, limit, off
             "items": [dict(x) for x in rows]}
 
 
+def _stage_task(trace_id, stage, fn):
+    """给没有自带记账的阶段（sentiment / alert）补一条 pipeline_tasks。"""
+    task = pipeline.start(DB, stage, {}, trace_id=trace_id)
+    try:
+        result = fn()
+    except Exception as exc:
+        pipeline.fail(DB, task["id"], exc)
+        raise
+    pipeline.finish(DB, task["id"], result if isinstance(result, dict) else {"result": result})
+    return result
+
+
+def _stage_sentiment():
+    with connect() as db:
+        return analysis.run_rule_sentiment(db, 500)
+
+
+def _stage_alert():
+    with connect() as db:
+        return alertcenter.evaluate(db)
+
+
+def _stage_report(trace_id):
+    with connect() as db:
+        return admin_features.generate_report(db, "daily", trace_id=trace_id)
+
+
+def pipeline_handlers(trace_id):
+    return {
+        "sentiment": lambda: _stage_task(trace_id, "sentiment", _stage_sentiment),
+        "topic": lambda: admin_features.rebuild_events(200, trace_id=trace_id),
+        "alert": lambda: _stage_task(trace_id, "alert", _stage_alert),
+        "report": lambda: _stage_report(trace_id),
+    }
+
+
+def run_analysis_pipeline(trace_id, stages):
+    try:
+        orchestrator.run(DB, trace_id, pipeline_handlers(trace_id), stages)
+    finally:
+        ORCH_LOCK.release()
+
+
 class SingleInstanceHTTPServer(ThreadingHTTPServer):
     """禁止端口复用：同一端口只能有一个实例，避免新旧进程同时服务。"""
     allow_reuse_address = False
@@ -495,6 +541,21 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError("window 只接受 7 / 14 / 30")
             with connect() as db:
                 return self.send(200, admin_features.topic_analysis(db, int(raw)))
+        if path == "/api/pipeline/runs":
+            query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query, keep_blank_values=True)
+            raw = (query.get("limit", ["10"])[0] or "").strip()
+            if not raw.isdigit() or not 1 <= int(raw) <= 50:
+                raise ValueError("limit 必须是 1..50 的整数")
+            with connect() as db:
+                return self.send(200, {"runs": orchestrator.list_runs(db, int(raw))})
+        if path == "/api/pipeline/state":
+            query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query, keep_blank_values=True)
+            trace = (query.get("trace", [""])[0] or "").strip()
+            if not trace:
+                raise ValueError("trace 不能为空")
+            with connect() as db:
+                data = orchestrator.state(db, trace)
+            return self.send(200, data) if data else self.send(404, {"error": "trace 不存在"})
         if path == "/api/pipeline/tasks":
             query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query, keep_blank_values=True)
             raw = (query.get("limit", ["50"])[0] or "").strip()
@@ -834,6 +895,31 @@ class Handler(BaseHTTPRequestHandler):
                 if cursor.rowcount == 0:
                     return self.send(404, {"error": "规则不存在"})
                 return self.send(200, {"id": rule_id, "enabled": enabled})
+            if path == "/api/pipeline/run":
+                if not ORCH_LOCK.acquire(blocking=False):
+                    return self.send(409, {"error": "已有分析流水线在运行", "status": "busy"})
+                requested = str(value.get("trace_id") or "").strip()
+                try:
+                    with connect() as db:
+                        if requested:
+                            row = db.execute("SELECT stages FROM pipeline_runs WHERE trace_id=?",
+                                             (requested,)).fetchone()
+                            if not row:
+                                raise LookupError("trace 不存在")
+                            stages = json.loads(row["stages"])
+                            trace_id = requested
+                        else:
+                            stages = list(orchestrator.STAGES)
+                            trace_id = orchestrator.create_run(db, stages)
+                except LookupError as exc:
+                    ORCH_LOCK.release()
+                    return self.send(404, {"error": str(exc)})
+                except Exception:
+                    ORCH_LOCK.release()
+                    raise
+                threading.Thread(target=run_analysis_pipeline, args=(trace_id, stages),
+                                 daemon=True, name="analysis-pipeline").start()
+                return self.send(202, {"trace_id": trace_id, "stages": stages})
             if path == "/api/collect":
                 # 先抢锁再起线程，避免两个请求同时看到 running=False 而各起一轮。
                 if not COLLECT_LOCK.acquire(blocking=False):
@@ -946,6 +1032,11 @@ if __name__ == "__main__":
             pipeline.recover(DB, RUNTIME["started_at"])
         except Exception as exc:
             print(f"pipeline 启动恢复失败：{exc}", file=sys.stderr, flush=True)
+        try:
+            with connect() as db:
+                orchestrator.recover(db, RUNTIME["started_at"])
+        except Exception as exc:
+            print(f"orchestrator 启动恢复失败：{exc}", file=sys.stderr, flush=True)
         alertcenter.start_scheduler(DB)
         start_collection_scheduler()
         print(f"本地舆情面板：http://{HOST}:{PORT}（手动批次上限 {LIMIT}；"

@@ -608,9 +608,14 @@
         <section class="panel">
           <div class="section-title">
             <div><p class="eyebrow">PIPELINE</p><h2>流水线任务（pipeline_tasks）</h2></div>
-            <button id="pipeline-refresh" class="secondary" type="button">刷新</button>
+            <div class="card-actions">
+              <button id="pipeline-run" class="primary" type="button">运行分析流水线</button>
+              <button id="pipeline-refresh" class="secondary" type="button">刷新</button>
+            </div>
           </div>
-          <p class="hint">采集 / 聚类 / 报告三个阶段共用 trace_id；失败累计 3 次进入 dead，不再自动重试。</p>
+          <p class="hint">分析流水线：情感 → 话题 → 预警 → 报告；每阶段落库，失败可从断点重跑。下面是单阶段任务记录。</p>
+          <div id="pipeline-runs"></div>
+          <h3 class="col-title" style="margin-top:16px">单阶段任务</h3>
           <div id="pipeline-list" class="table-wrap"></div>
         </section>
       </div>

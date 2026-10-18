@@ -48,10 +48,10 @@ def start(db_path, stage, payload=None, trace_id=None, task_id=None):
         with db:
             cursor = db.execute(
                 "INSERT INTO pipeline_tasks(id,trace_id,stage,status,payload,attempts,created_at,started_at) "
-                "VALUES(?,?,?,'running',?,0,?,?) "
+                "VALUES(?,?,?,'running',?,1,?,?) "
                 "ON CONFLICT(id) DO UPDATE SET trace_id=excluded.trace_id, stage=excluded.stage, "
-                "payload=excluded.payload, status='running', started_at=excluded.started_at, "
-                "finished_at=NULL, last_error=NULL "
+                "payload=excluded.payload, status='running', attempts=attempts+1, "
+                "started_at=excluded.started_at, finished_at=NULL, last_error=NULL "
                 "WHERE pipeline_tasks.status <> 'dead'",
                 (task_id, trace_id, stage,
                  json.dumps(payload or {}, ensure_ascii=False)[:20000], stamp, stamp))
@@ -74,13 +74,12 @@ def finish(db_path, task_id, result=None):
 
 
 def fail(db_path, task_id, error):
-    """失败累加 attempts；第 3 次失败进入 dead。只对 running 生效，避免覆盖已结束任务。"""
+    """标记失败；第 3 次尝试失败进入 dead。attempts 只在 start 时递增，避免双计。"""
     db = _connect(db_path)
     try:
         with db:
             db.execute(
-                "UPDATE pipeline_tasks SET attempts = attempts + 1, "
-                "status = CASE WHEN attempts + 1 >= 3 THEN 'dead' ELSE 'failed' END, "
+                "UPDATE pipeline_tasks SET status = CASE WHEN attempts >= 3 THEN 'dead' ELSE 'failed' END, "
                 "last_error=?, finished_at=? WHERE id=? AND status='running'",
                 (str(error)[:1000], storage.now(), task_id))
     finally:

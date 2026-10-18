@@ -130,7 +130,7 @@ def _fmt_local(value):
     return (dt.astimezone(timezone(timedelta(hours=8)))).strftime("%Y-%m-%d %H:%M:%S")
 
 
-def generate_report(db, kind):
+def generate_report(db, kind, trace_id=None):
     if kind not in ("daily", "weekly"):
         raise ValueError("kind 必须是 daily 或 weekly")
     now = datetime.now(timezone(timedelta(hours=8)))
@@ -206,7 +206,7 @@ def generate_report(db, kind):
     report_id = f"report-{kind}-{stamp}-{uuid.uuid4().hex[:6]}"
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
     path = REPORTS_DIR / f"{report_id}.md"
-    task = pipeline.start(DB, "report", {"kind": kind, "report_id": report_id})
+    task = pipeline.start(DB, "report", {"kind": kind, "report_id": report_id}, trace_id=trace_id)
     try:
         path.write_text(body, encoding="utf-8")
         size = path.stat().st_size
@@ -227,7 +227,7 @@ def generate_report(db, kind):
 
 # ---------- 事件聚类 ----------
 
-def rebuild_events(limit=200):
+def rebuild_events(limit=200, trace_id=None):
     """调用 tools/cluster_events.py --no-model，导入 events 表；失败保留旧数据。"""
     if not 10 <= limit <= 200:
         raise ValueError("limit 必须在 10–200 之间（聚类工具上限 200）")
@@ -235,7 +235,7 @@ def rebuild_events(limit=200):
         raise RuntimeError("已有聚类任务在运行，请稍后再试")
     task = None
     try:
-        task = pipeline.start(DB, "topic", {"limit": limit})
+        task = pipeline.start(DB, "topic", {"limit": limit}, trace_id=trace_id)
         before = {p.name for p in EVENTS_DIR.glob("events-*.jsonl")}
         started_ts = time.time()
         cmd = [sys.executable, "-B", str(ROOT / "tools" / "cluster_events.py"),
