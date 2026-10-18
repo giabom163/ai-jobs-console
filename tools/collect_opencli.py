@@ -49,6 +49,7 @@ if str(ROOT) not in sys.path:
 import server  # noqa: E402  复用已复核的粗略情感词典 classify
 import storage  # noqa: E402  复用项目证据库既有函数
 import relevance  # noqa: E402  性别对立粗筛
+import content_filter  # noqa: E402  短剧/影视/广告/充电视频
 
 COLLECTOR = "s1-opencli"
 DEFAULT_LIMIT = 3
@@ -613,6 +614,8 @@ def build_parser():
     parser.add_argument("--limit", type=int, default=DEFAULT_LIMIT, help=f"每个端点条数 1-{MAX_LIMIT}（默认 {DEFAULT_LIMIT}）")
     parser.add_argument("--no-gender-filter", action="store_true",
                         help="关闭性别对立相关度粗筛（默认只入库相关条目）")
+    parser.add_argument("--no-noise-filter", action="store_true",
+                        help="关闭短剧/影视/广告/充电视频过滤")
     parser.add_argument("--dry-run", action="store_true",
                         help="只采集并打印映射结果：不打开/创建数据库，也不写节流账（只读账）")
     parser.add_argument("--group-id", default=None,
@@ -656,19 +659,19 @@ def validate_args(args):
         raise CollectError("args", f"--timeout 必须 >= 1，收到 {args.timeout}", 2)
 
 
-def import_collected(db, endpoint, group_id, rows):
+def import_collected(db, endpoint, group_id, rows, noise=True):
     """把某个端点已采到的行写进既有证据库；复用 storage.py 既有函数，不改表结构。"""
     spec = ENDPOINTS[endpoint]
     feed_id, feed_state = ensure_feed(db, group_id, spec["feed_url"])
     run_id = storage.start_run(db, feed_id, "opencli-" + endpoint, len(rows))
     try:
-        outcome = storage.import_batch(db, ROOT, run_id, rows, server.classify)
+        outcome = storage.import_batch(db, ROOT, run_id, rows, server.classify, noise=noise)
     except Exception as exc:  # 校验/磁盘/SQLite
         return {"run_id": run_id, "db_error": {"type": type(exc).__name__, "message": str(exc)}}
     return {"feed": {"id": feed_id, "state": feed_state, "name": group_id, "url": spec["feed_url"]},
             "run": {key: outcome[key] for key in
-                    ("id", "status", "input_count", "added", "duplicates", "input_sha256",
-                     "started_at", "finished_at")}}
+                    ("id", "status", "input_count", "added", "duplicates", "rejected",
+                     "noise_rejected", "input_sha256", "started_at", "finished_at")}}
 
 
 def main(argv=None):
@@ -773,6 +776,16 @@ def main(argv=None):
             items, call = run_opencli(node, main_js, endpoint, effective, args.timeout, args.keyword)
             rows, previews, invalid = map_rows(endpoint, items)
             result["invalid_rows"] = invalid
+            if not args.no_noise_filter:
+                kept_rows, kept_previews, noise = [], [], 0
+                for row, preview in zip(rows, previews):
+                    if content_filter.is_noise(row.get("title"), row.get("summary") or ""):
+                        noise += 1
+                    else:
+                        kept_rows.append(row)
+                        kept_previews.append(preview)
+                rows, previews = kept_rows, kept_previews
+                result["noise_filtered"] = noise
             if not args.no_gender_filter:
                 kept_rows, kept_previews, dropped = [], [], 0
                 for row, preview in zip(rows, previews):
@@ -822,7 +835,8 @@ def main(argv=None):
             report["db"] = {"path": str(args.db), "present": True, "touched": True}
             for endpoint, rows in collected.items():
                 result = next(r for r in report["results"] if r["endpoint"] == endpoint)
-                outcome = import_collected(db, endpoint, result["group_id"], rows)
+                outcome = import_collected(db, endpoint, result["group_id"], rows,
+                                           noise=False)
                 if "db_error" in outcome:
                     result["status"], result["reason"] = "failed", "db_import"
                     result["db_error"] = outcome["db_error"]

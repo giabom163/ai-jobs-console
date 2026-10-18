@@ -13,6 +13,7 @@ from urllib.parse import urlsplit, urlunsplit
 import uuid
 
 from entities import extract_entities
+import content_filter
 
 RULE = "exact-text-v1"
 SCHEMA = "m1-v1"
@@ -53,8 +54,8 @@ def json_bytes(value):
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
 
-AD_PATTERNS = ("点击查看", "扫码", "加微信", "优惠券", "广告", "推广", "下载app",
-               "关注公众号", "加群", "代购", "领取红包", "限时特价")
+AD_PATTERNS = ("点击查看", "扫码", "加微信", "优惠券", "下载app",
+               "关注公众号", "代购", "领取红包", "限时特价")
 
 
 def assess_quality(title, summary=""):
@@ -201,7 +202,9 @@ def connect(path):
         endpoints TEXT NOT NULL, status TEXT NOT NULL,
         started_at TEXT NOT NULL, finished_at TEXT,
         added INTEGER NOT NULL DEFAULT 0, duplicates INTEGER NOT NULL DEFAULT 0,
-        returned INTEGER NOT NULL DEFAULT 0, error TEXT, report TEXT);
+        returned INTEGER NOT NULL DEFAULT 0, rejected INTEGER NOT NULL DEFAULT 0,
+        near_duplicates INTEGER NOT NULL DEFAULT 0, noise_rejected INTEGER NOT NULL DEFAULT 0,
+        error TEXT, report TEXT);
       CREATE INDEX IF NOT EXISTS collector_logs_started ON collector_logs(started_at);
     """)
     for column, ddl in (("quality", "TEXT NOT NULL DEFAULT 'ok'"),
@@ -223,6 +226,11 @@ def connect(path):
     if "near_duplicates" not in run_cols:
         try:
             db.execute("ALTER TABLE collection_runs ADD COLUMN near_duplicates INTEGER NOT NULL DEFAULT 0")
+        except sqlite3.OperationalError:
+            pass
+    if "noise_rejected" not in run_cols:
+        try:
+            db.execute("ALTER TABLE collection_runs ADD COLUMN noise_rejected INTEGER NOT NULL DEFAULT 0")
         except sqlite3.OperationalError:
             pass
     _init_fts(db)
@@ -329,7 +337,7 @@ def save_snapshot(root, payload):
     return sha, relative.as_posix()
 
 
-def import_batch(db, root, run_id, rows, classify):
+def import_batch(db, root, run_id, rows, classify, noise=True):
     run = db.execute("SELECT * FROM collection_runs WHERE id=?", (run_id,)).fetchone()
     if run is None or run["status"] != "running":
         raise ValueError("批次不存在或已结束")
@@ -338,6 +346,7 @@ def import_batch(db, root, run_id, rows, classify):
             raise ValueError("记录必须为数组，且不得超过批次 limit")
         prepared = []
         rejected = 0
+        noise_rejected = 0
         for row in rows:
             if not isinstance(row, dict):
                 raise ValueError("每条记录必须为对象")
@@ -356,6 +365,9 @@ def import_batch(db, root, run_id, rows, classify):
             url = canonical_url(row.get("url"))
             published_at, quality = publication(row.get("published_at"))
             title, summary = normalized_text(title), normalized_text(summary)
+            if noise and content_filter.is_noise(title):
+                noise_rejected += 1
+                continue
             quality_ok, quality_reason = assess_quality(title, summary)
             if not quality_ok:
                 rejected += 1
@@ -402,8 +414,10 @@ def import_batch(db, root, run_id, rows, classify):
                 recent.append((sh, record_id))
                 added += 1
             db.execute("""UPDATE collection_runs SET status='succeeded',finished_at=?,input_count=?,
-                added=?,duplicates=?,near_duplicates=?,rejected=?,input_sha256=? WHERE id=? AND status='running'""",
-                       (now(), len(rows), added, duplicates, near_duplicates, rejected, input_hash, run_id))
+                added=?,duplicates=?,near_duplicates=?,rejected=?,noise_rejected=?,input_sha256=?
+                WHERE id=? AND status='running'""",
+                       (now(), len(rows), added, duplicates, near_duplicates, rejected,
+                        noise_rejected, input_hash, run_id))
         return dict(db.execute("SELECT * FROM collection_runs WHERE id=?", (run_id,)).fetchone())
     except Exception as exc:
         db.rollback()

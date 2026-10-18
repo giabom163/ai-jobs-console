@@ -25,6 +25,7 @@ sys.path.insert(0, str(ROOT))
 import relevance  # noqa: E402
 import server  # noqa: E402
 import topics  # noqa: E402
+import content_filter  # noqa: E402
 import storage  # noqa: E402
 
 MIXIN = [46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35, 27, 43, 5, 49,
@@ -35,9 +36,6 @@ UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")
 STRICT = ("性别对立", "男女对立", "女权", "女拳", "男权", "彩礼", "厌女", "媚男",
           "性别歧视", "重男轻女", "打拳", "拳师", "性别矛盾")
-FICTION = ("第1集", "第2集", "第3集", "短剧", "小说", "漫画", "动漫", "神豪",
-           "系统", "全集", "大结局", "免费版", "爽文", "剧情")
-
 
 def _get(url):
     req = urllib.request.Request(url, headers={"User-Agent": UA,
@@ -119,7 +117,7 @@ def main(argv=None):
                 title = html.unescape(re.sub(r"<[^>]+>", "", item.get("title") or ""))
                 if not any(t in title for t in STRICT):
                     continue
-                if any(t in title for t in FICTION) or re.search(r"第\d+集", title):
+                if content_filter.is_noise(title):
                     continue
                 if bvid in found:
                     continue
@@ -159,7 +157,7 @@ def main(argv=None):
     rows = [{"title": item["title"], "summary": "", "url": item["url"],
              "source_id": bvid, "published_at": item["published_at"]}
             for bvid, item in found.items()]
-    outcome = storage.import_batch(db, ROOT, run_id, rows, server.classify)
+    outcome = storage.import_batch(db, ROOT, run_id, rows, server.classify, noise=False)
     db.close()
     result["import"] = {k: outcome[k] for k in
                         ("input_count", "added", "duplicates", "near_duplicates", "rejected")}
