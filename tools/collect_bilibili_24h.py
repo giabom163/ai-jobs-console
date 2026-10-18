@@ -76,6 +76,8 @@ def main(argv=None):
                         help="每个类别最多保留多少条（默认 30）")
     parser.add_argument("--max-total", type=int, default=100,
                         help="本次最多新增多少条（默认 100）")
+    parser.add_argument("--min-age-hours", type=int, default=0,
+                        help="只保留发布时间早于 N 小时的内容（配合 --hours 取 24-48h 等窗口）")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--db", type=Path, default=ROOT / "sentiment.db")
     args = parser.parse_args(argv)
@@ -113,6 +115,8 @@ def main(argv=None):
                     continue
                 published = datetime.fromtimestamp(pub, timezone.utc)
                 if published < cutoff:
+                    continue
+                if args.min_age_hours and published > datetime.now(timezone.utc) - timedelta(hours=args.min_age_hours):
                     continue
                 title = html.unescape(re.sub(r"<[^>]+>", "", item.get("title") or ""))
                 if not any(t in title for t in STRICT):

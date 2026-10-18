@@ -525,7 +525,8 @@ def overview_stats(db, window_days=None, window_hours=None):
     kpi['last_success_at'] = last[0] if last else None
 
     if window_hours:
-        bucket = "strftime('%H:00', datetime(coalesce(published_at, fetched_at), '+8 hours'))"
+        fmt = '%m-%d %H:00' if int(window_hours) > 24 else '%H:00'
+        bucket = f"strftime('{fmt}', datetime(coalesce(published_at, fetched_at), '+8 hours'))"
     else:
         bucket = "date(coalesce(published_at, fetched_at), '+8 hours')"
     trend = [dict(day=r[0], records=r[1], canonical=r[2]) for r in db.execute(

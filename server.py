@@ -871,6 +871,9 @@ class Handler(BaseHTTPRequestHandler):
             elif value == "24h":
                 days = None
                 hours = 24
+            elif value == "48h":
+                days = None
+                hours = 48
             elif re.fullmatch(r"\d{1,3}d", value):
                 days = int(value[:-1])
             else:
