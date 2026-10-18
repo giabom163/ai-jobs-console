@@ -380,7 +380,7 @@ function filteredItems() {
 function recordCard(item) {
   return h("article", { class: "card" },
     h("div", { class: "meta" },
-      h("span", { class: `badge ${item.sentiment === "偏正面" ? "pos" : item.sentiment === "偏负面" ? "neg" : "neu"}` }, item.sentiment || "未知"),
+      h("span", { class: `badge ${["强正面","偏正面"].includes(item.sentiment) ? "pos" : ["强负面","偏负面"].includes(item.sentiment) ? "neg" : "neu"}` }, item.sentiment || "未知"),
       h("span", { class: "chip" }, `来源 ${item.feed_name ?? item.feed_id ?? "?"}`),
       h("span", { class: "chip" }, `时间质量 ${qualityLabel(item.time_quality)}`),
       h("time", { class: "muted" }, fmtTime(item.published))

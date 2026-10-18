@@ -51,6 +51,27 @@ def json_bytes(value):
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
 
+AD_PATTERNS = ("点击查看", "扫码", "加微信", "优惠券", "广告", "推广", "下载app",
+               "关注公众号", "加群", "代购", "领取红包", "限时特价")
+
+
+def assess_quality(title, summary=""):
+    """入库前质量闸门：返回 (ok, reason)。只做明显噪声拦截，不做主题判断。"""
+    text = (title or "").strip()
+    compact = re.sub(r"[\W_]+", "", text)
+    if len(compact) < 2:
+        return False, "too_short"
+    if not re.search(r"[\u4e00-\u9fffA-Za-z0-9]", text):
+        return False, "no_word"
+    low = text.lower()
+    for pattern in AD_PATTERNS:
+        if pattern in low:
+            return False, "ad:" + pattern
+    if len(compact) < 4 and not re.search(r"[\u4e00-\u9fff]", text):
+        return False, "too_short"
+    return True, "ok"
+
+
 def normalized_text(value):
     return re.sub(r"\s+", " ", unescape(re.sub(r"<[^>]*>", " ", value))).strip()
 
@@ -156,6 +177,14 @@ def connect(path):
         returned INTEGER NOT NULL DEFAULT 0, error TEXT, report TEXT);
       CREATE INDEX IF NOT EXISTS collector_logs_started ON collector_logs(started_at);
     """)
+    for column, ddl in (("quality", "TEXT NOT NULL DEFAULT 'ok'"),
+                        ("quality_reason", "TEXT")):
+        cols = [row[1] for row in db.execute("PRAGMA table_info(records)")]
+        if column not in cols:
+            db.execute(f"ALTER TABLE records ADD COLUMN {column} {ddl}")
+    run_cols = [row[1] for row in db.execute("PRAGMA table_info(collection_runs)")]
+    if "rejected" not in run_cols:
+        db.execute("ALTER TABLE collection_runs ADD COLUMN rejected INTEGER NOT NULL DEFAULT 0")
     _init_fts(db)
     return db
 
@@ -268,6 +297,7 @@ def import_batch(db, root, run_id, rows, classify):
         if not isinstance(rows, list) or len(rows) > run["limit_n"]:
             raise ValueError("记录必须为数组，且不得超过批次 limit")
         prepared = []
+        rejected = 0
         for row in rows:
             if not isinstance(row, dict):
                 raise ValueError("每条记录必须为对象")
@@ -286,6 +316,10 @@ def import_batch(db, root, run_id, rows, classify):
             url = canonical_url(row.get("url"))
             published_at, quality = publication(row.get("published_at"))
             title, summary = normalized_text(title), normalized_text(summary)
+            quality_ok, quality_reason = assess_quality(title, summary)
+            if not quality_ok:
+                rejected += 1
+                continue
             content_hash = digest(json_bytes([title, summary]))
             prepared.append((row, title, summary, url, content_hash, published_at, quality, source_id))
         input_hash = digest(json_bytes(rows))
@@ -312,14 +346,16 @@ def import_batch(db, root, run_id, rows, classify):
                 record_id = "record-" + uuid.uuid4().hex
                 db.execute("""INSERT INTO records(id,feed_id,source_id,title,summary,url,canonical_url,
                     content_sha256,raw_sha256,raw_path,published_at,published_raw,fetched_at,time_quality,
-                    canonical_id,dedup_reason,run_id,sentiment) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    canonical_id,dedup_reason,run_id,sentiment,quality,quality_reason)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                            (record_id, run["feed_id"], source_id, title, summary, row["url"], url,
                             content_hash, raw_hash, raw_path, published_at, row.get("published_at"), now(),
-                            quality, canonical_id, reason, run_id, classify(title + " " + summary)))
+                            quality, canonical_id, reason, run_id, classify(title + " " + summary),
+                            "ok", "ok"))
                 added += 1
             db.execute("""UPDATE collection_runs SET status='succeeded',finished_at=?,input_count=?,
-                added=?,duplicates=?,input_sha256=? WHERE id=? AND status='running'""",
-                       (now(), len(rows), added, duplicates, input_hash, run_id))
+                added=?,duplicates=?,rejected=?,input_sha256=? WHERE id=? AND status='running'""",
+                       (now(), len(rows), added, duplicates, rejected, input_hash, run_id))
         return dict(db.execute("SELECT * FROM collection_runs WHERE id=?", (run_id,)).fetchone())
     except Exception as exc:
         db.rollback()

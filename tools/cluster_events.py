@@ -88,7 +88,7 @@ DEFAULT_MODEL_BATCH = 10
 DEFAULT_MIN_INTERVAL = 8.0
 MAX_INPUT_TITLE = 80       # 仅限制送入模型的标题长度，不改数据库原文
 
-SIMILARITY_KINDS = ("dice", "jaccard")
+SIMILARITY_KINDS = ("dice", "jaccard", "tfidf")
 
 # 归一化：去掉空白与标点（Python 3 中 \w 含 CJK，\W 即标点/空白），统一小写。
 _PUNCT = re.compile(r"[\s\W_]+")
@@ -146,7 +146,51 @@ def jaccard_similarity(a, b):
     return len(sa & sb) / len(sa | sb)
 
 
-SIMILARITY_FUNCS = {"dice": dice_similarity, "jaccard": jaccard_similarity}
+_IDF = {}
+
+
+def _tokens(text):
+    """jieba 分词；不可用时退化为 CJK 单字 + 英文/数字串。"""
+    try:
+        import jieba
+        parts = jieba.lcut(text)
+    except Exception:
+        parts = re.findall(r"[\u4e00-\u9fff]|[A-Za-z0-9]+", text)
+    return [p for p in parts if p.strip() and len(p.strip()) > 1]
+
+
+def build_idf(texts):
+    """在全部标题上算文档频率，供 TF-IDF 余弦使用。"""
+    global _IDF
+    df = {}
+    for text in texts:
+        for token in set(_tokens(text)):
+            df[token] = df.get(token, 0) + 1
+    total = max(1, len(texts))
+    _IDF = {token: 1.0 + (total / (1 + count)) for token, count in df.items()}
+
+
+def tfidf_similarity(a, b):
+    """jieba 分词 + TF-IDF 余弦；无 IDF 时退化为 token Jaccard。"""
+    ta, tb = _tokens(a), _tokens(b)
+    if not ta or not tb:
+        return 0.0
+    if not _IDF:
+        return len(set(ta) & set(tb)) / len(set(ta) | set(tb))
+    def vector(tokens):
+        counts = {}
+        for token in tokens:
+            counts[token] = counts.get(token, 0) + 1
+        return {token: count * _IDF.get(token, 1.0) for token, count in counts.items()}
+    va, vb = vector(ta), vector(tb)
+    dot = sum(va[t] * vb.get(t, 0.0) for t in va)
+    na = sum(v * v for v in va.values()) ** 0.5
+    nb = sum(v * v for v in vb.values()) ** 0.5
+    return dot / (na * nb) if na and nb else 0.0
+
+
+SIMILARITY_FUNCS = {"dice": dice_similarity, "jaccard": jaccard_similarity,
+                    "tfidf": tfidf_similarity}
 
 
 # --- 并查集（连通分量） ----------------------------------------------------------------------
@@ -437,7 +481,9 @@ def build_summary(events, records, stats, model_meta, tokens, args, stamp, acces
         "timestamp": stamp,
         "db": {"path": str(args.db), "read_only": True, "access": access_mode},
         "params": {
-            "limit": args.limit, "threshold": args.threshold, "similarity": args.similarity,
+            "limit": args.limit,
+        "threshold": args.threshold if args.threshold is not None else (0.35 if args.similarity == "tfidf" else DEFAULT_THRESHOLD),
+        "similarity": args.similarity,
             "boundary_width": BOUNDARY_WIDTH, "max_model_pairs": args.max_model_pairs,
             "model": (not args.no_model and args.max_model_pairs > 0), "model_batch": args.model_batch,
             "min_interval_seconds": args.min_interval,
@@ -504,9 +550,9 @@ def build_parser():
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--limit", type=int, default=DEFAULT_LIMIT,
                         help=f"取最近 N 条 records（1-{MAX_LIMIT}，默认 {DEFAULT_LIMIT}）")
-    parser.add_argument("--threshold", type=float, default=DEFAULT_THRESHOLD,
+    parser.add_argument("--threshold", type=float, default=None,
                         help=f"标题相似度阈值（0-1，默认 {DEFAULT_THRESHOLD}）；>= 阈值判同事件")
-    parser.add_argument("--similarity", choices=SIMILARITY_KINDS, default="dice",
+    parser.add_argument("--similarity", choices=SIMILARITY_KINDS, default="tfidf",
                         help="标题相似度口径：字符级 dice（默认）或 token jaccard")
     parser.add_argument("--max-model-pairs", type=int, default=DEFAULT_MAX_MODEL_PAIRS,
                         help=f"最多送模型的边界对数（0-{MAX_MODEL_PAIRS}，默认 {DEFAULT_MAX_MODEL_PAIRS}）")
@@ -538,15 +584,16 @@ def emit_error(exc, context=None):
 def main(argv=None):
     _relevance._utf8_stdout()
     args = build_parser().parse_args(argv)
-    context = {"limit": args.limit, "threshold": args.threshold, "similarity": args.similarity,
+    threshold = args.threshold if args.threshold is not None else (0.35 if args.similarity == "tfidf" else DEFAULT_THRESHOLD)
+    context = {"limit": args.limit, "threshold": threshold, "similarity": args.similarity,
                "max_model_pairs": args.max_model_pairs, "no_model": args.no_model,
                "dry_run": args.dry_run, "db": str(args.db), "out_dir": str(args.out_dir)}
     db_handle = None
     try:
         if not 1 <= args.limit <= MAX_LIMIT:
             raise AnnotationError("args", f"--limit 必须在 1-{MAX_LIMIT} 之间，收到 {args.limit}", 2)
-        if not 0.0 < args.threshold <= 1.0:
-            raise AnnotationError("args", f"--threshold 必须在 (0,1] 之间，收到 {args.threshold}", 2)
+        if not 0.0 < threshold <= 1.0:
+            raise AnnotationError("args", f"--threshold 必须在 (0,1] 之间，收到 {threshold}", 2)
         if not 0 <= args.max_model_pairs <= MAX_MODEL_PAIRS:
             raise AnnotationError("args", f"--max-model-pairs 必须在 0-{MAX_MODEL_PAIRS} 之间，收到 {args.max_model_pairs}", 2)
         if not 1 <= args.model_batch <= MODEL_BATCH_MAX:
@@ -561,7 +608,8 @@ def main(argv=None):
         similarity = SIMILARITY_FUNCS[args.similarity]
 
         # 规则阶段（零模型调用）。先留存规则分量根，供 method 归属判断。
-        uf, stats, candidates = rule_pass(records, similarity, args.threshold)
+        build_idf([record["title"] for record in records])
+        uf, stats, candidates = rule_pass(records, similarity, threshold)
         rule_roots = [uf.find(i) for i in range(len(records))]
 
         model_enabled = not args.no_model and args.max_model_pairs > 0
@@ -575,7 +623,9 @@ def main(argv=None):
         base = {
             "tool": TOOL, "mode": "dry-run" if args.dry_run else "live",
             "db": {"path": str(args.db), "present": True, "access": access_mode, "touched": False},
-            "limit": args.limit, "threshold": args.threshold, "similarity": args.similarity,
+            "limit": args.limit,
+        "threshold": args.threshold if args.threshold is not None else (0.35 if args.similarity == "tfidf" else DEFAULT_THRESHOLD),
+        "similarity": args.similarity,
             "boundary_width": BOUNDARY_WIDTH,
             "record_count": len(records), "event_count_if_rule_only": len({uf.find(i) for i in range(len(records))}),
             "pairs": {"total": stats["total_pairs"],

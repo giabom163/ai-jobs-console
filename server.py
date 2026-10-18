@@ -56,8 +56,8 @@ COLLECT_LIMIT = 20
 COLLECT_TIMEOUT = 900
 COLLECT_ENDPOINTS = ["hot", "weibo-hot", "zhihu-hot", "tieba-hot", "36kr-hot", "xiaohongshu-feed"]
 OPENCLI_MAIN = ""
-POSITIVE = {"增长", "上涨", "利好", "成功", "创新", "支持", "改善", "满意", "合作", "突破", "good", "growth", "success", "positive", "support", "improve", "win"}
-NEGATIVE = {"下跌", "亏损", "投诉", "事故", "风险", "处罚", "下滑", "失败", "争议", "危机", "bad", "loss", "complaint", "risk", "fine", "decline", "failure", "crisis"}
+POSITIVE = {"增长", "上涨", "利好", "成功", "创新", "支持", "改善", "满意", "合作", "突破", "赞成", "好评", "点赞", "认可", "欢迎", "good", "growth", "success", "positive", "support", "improve", "win"}
+NEGATIVE = {"下跌", "亏损", "投诉", "事故", "风险", "处罚", "下滑", "失败", "争议", "危机", "反对", "抵制", "抗议", "愤怒", "不满", "谴责", "质疑", "批评", "指责", "辱骂", "嘲讽", "歧视", "压迫", "bad", "loss", "complaint", "risk", "fine", "decline", "failure", "crisis"}
 
 
 @contextmanager
@@ -87,13 +87,48 @@ def tag(node, name):
     return ""
 
 
+NEGATIONS = ("不", "没", "未", "无", "别", "非", "毫无", "并非")
+DEGREES = (("非常", 2.0), ("十分", 2.0), ("极", 2.0), ("特别", 1.5), ("很", 1.5),
+           ("太", 1.5), ("较", 0.8), ("有点", 0.8), ("稍", 0.6), ("略", 0.7))
+
+
+def _sentiment_weight(text, word):
+    """统计 word 的出现次数，按前 4 字窗口做否定翻转与程度加权。"""
+    total = 0.0
+    start = 0
+    while True:
+        index = text.find(word, start)
+        if index < 0:
+            break
+        window = text[max(0, index - 4):index]
+        mult = 1.0
+        neg_window = window
+        for degree, weight in DEGREES:
+            if degree in window:
+                mult = weight
+                neg_window = window.replace(degree, "")  # "非常"里的"非"不算否定
+                break
+        sign = -1.0 if any(neg in neg_window for neg in NEGATIONS) else 1.0
+        total += sign * mult
+        start = index + len(word)
+    return total
+
+
 def classify(text):
-    words = re.findall(r"[a-z]+", text.lower())
-    positive = sum(text.count(w) for w in POSITIVE if not w.isascii()) + sum(w in POSITIVE for w in words)
-    negative = sum(text.count(w) for w in NEGATIVE if not w.isascii()) + sum(w in NEGATIVE for w in words)
-    if positive > negative:
+    text = (text or "").lower()
+    words = re.findall(r"[a-z]+", text)
+    positive = sum(_sentiment_weight(text, w) for w in POSITIVE if not w.isascii())
+    negative = sum(_sentiment_weight(text, w) for w in NEGATIVE if not w.isascii())
+    positive += sum(1.0 for w in words if w in POSITIVE)
+    negative += sum(1.0 for w in words if w in NEGATIVE)
+    score = positive - negative
+    if score >= 2:
+        return "强正面"
+    if score >= 1:
         return "偏正面"
-    if negative > positive:
+    if score <= -2:
+        return "强负面"
+    if score <= -1:
         return "偏负面"
     return "中性/待判"
 
