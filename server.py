@@ -23,6 +23,7 @@ from pathlib import Path
 import storage
 import analysis
 import alertcenter
+import admin_features
 
 ROOT = Path(__file__).resolve().parent
 DB = ROOT / "sentiment.db"
@@ -60,6 +61,7 @@ def connect():
     try:
         analysis.init(db)
         alertcenter.init(db)          # 与 analysis.init 同处：每次连接/启动都保证预警表存在（IF NOT EXISTS）
+        admin_features.init(db)       # settings / reports / events 表
         with db:
             yield db
     finally:
@@ -417,6 +419,40 @@ class Handler(BaseHTTPRequestHandler):
         path = urllib.parse.urlsplit(self.path).path
         if path == "/api/runtime":
             return self.send(200, RUNTIME)
+        if path == "/api/settings":
+            with connect() as db:
+                return self.send(200, admin_features.get_settings(db))
+        if path == "/api/reports":
+            with connect() as db:
+                return self.send(200, {"reports": admin_features.list_reports(db)})
+        if path.startswith("/api/reports/") and path.endswith("/preview"):
+            report_id = path[len("/api/reports/"):-len("/preview")]
+            with connect() as db:
+                row = db.execute("SELECT path,title FROM reports WHERE id=?", (report_id,)).fetchone()
+            if not row:
+                return self.send(404, {"error": "报告不存在"})
+            body = Path(row["path"]).read_text(encoding="utf-8")
+            from html import escape
+            page = ("<!doctype html><meta charset='utf-8'><title>" + escape(row["title"]) +
+                    "</title><style>body{max-width:900px;margin:32px auto;font:14px/1.7 system-ui;"
+                    "background:#f7f9fc;color:#1f2d3d}pre{white-space:pre-wrap;background:#fff;padding:24px;"
+                    "border:1px solid #e7edf4;border-radius:10px}</style><pre>" + escape(body) + "</pre>")
+            return self.send(200, page.encode("utf-8"), "text/html; charset=utf-8")
+        if path.startswith("/api/reports/") and path.endswith("/download"):
+            report_id = path[len("/api/reports/"):-len("/download")]
+            with connect() as db:
+                row = db.execute("SELECT path,title FROM reports WHERE id=?", (report_id,)).fetchone()
+            if not row:
+                return self.send(404, {"error": "报告不存在"})
+            return self.send(200, Path(row["path"]).read_bytes(), "text/markdown; charset=utf-8")
+        if path == "/api/events":
+            query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query, keep_blank_values=True)
+            raw = (query.get("limit", ["50"])[0] or "").strip()
+            if not raw.isdigit() or not 1 <= int(raw) <= 200:
+                raise ValueError("limit 必须是 1..200 的整数")
+            with connect() as db:
+                return self.send(200, {"active_topics": admin_features.active_topics(db),
+                                       "events": admin_features.list_events(db, int(raw))})
         if path == "/api/collect/status":
             return self.send(200, collect_status())
         if path == "/api/search":
@@ -477,6 +513,10 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(200, (ROOT / "alert-panel.js").read_bytes(), "text/javascript; charset=utf-8")
         if path == "/corpus-search.js":
             return self.send(200, (ROOT / "corpus-search.js").read_bytes(), "text/javascript; charset=utf-8")
+        if path == "/reports.js":
+            return self.send(200, (ROOT / "reports.js").read_bytes(), "text/javascript; charset=utf-8")
+        if path == "/settings.js":
+            return self.send(200, (ROOT / "settings.js").read_bytes(), "text/javascript; charset=utf-8")
         if path == "/style.css":
             return self.send(200, (ROOT / "style.css").read_bytes(), "text/css; charset=utf-8")
         if path == "/api/overview-stats":
@@ -500,6 +540,7 @@ class Handler(BaseHTTPRequestHandler):
                     "SELECT count(*) FROM records WHERE sentiment='偏负面'").fetchone()[0]
                 stats["kpi"]["open_alerts"] = db.execute(
                     "SELECT count(*) FROM alerts WHERE status='open'").fetchone()[0]
+                stats["kpi"]["active_topics"] = admin_features.active_topics(db)
             return self.send(200, stats)
         if path == "/api/data":
             with connect() as db:
@@ -709,6 +750,32 @@ class Handler(BaseHTTPRequestHandler):
                     except (OSError, sqlite3.Error) as exc:
                         return self.send(500, {"error": str(exc), "status": "failed"})
                 return self.send(200, {"watch": watch})
+            if path == "/api/settings":
+                global COLLECT_INTERVAL_MIN, COLLECT_LIMIT
+                with connect() as db:
+                    saved = admin_features.save_settings(db, value)
+                COLLECT_INTERVAL_MIN = int(saved["collect_interval"])
+                COLLECT_LIMIT = int(saved["collect_limit"])
+                RUNTIME["collect_interval_minutes"] = COLLECT_INTERVAL_MIN
+                RUNTIME["collect_limit"] = COLLECT_LIMIT
+                return self.send(200, saved)
+            if path == "/api/reports/generate":
+                kind = str(value.get("kind", "daily"))
+                with connect() as db:
+                    return self.send(201, admin_features.generate_report(db, kind))
+            if path == "/api/topics/rebuild":
+                limit = value.get("limit", 200)
+                if type(limit) is not int:
+                    raise ValueError("limit 必须是整数")
+                return self.send(200, admin_features.rebuild_events(limit))
+            if path.startswith("/api/alert-rules/") and path.endswith("/toggle"):
+                rule_id = int(path[len("/api/alert-rules/"):-len("/toggle")])
+                enabled = value.get("enabled")
+                if not isinstance(enabled, bool):
+                    raise ValueError("enabled 必须是布尔值")
+                with connect() as db, db:
+                    db.execute("UPDATE alert_rules SET enabled=? WHERE id=?", (1 if enabled else 0, rule_id))
+                return self.send(200, {"id": rule_id, "enabled": enabled})
             if path == "/api/collect":
                 # 先抢锁再起线程，避免两个请求同时看到 running=False 而各起一轮。
                 if not COLLECT_LOCK.acquire(blocking=False):
@@ -743,6 +810,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(400, {"error": str(exc)})
         except (OSError, sqlite3.Error) as exc:
             return self.send(500, {"error": str(exc)})
+        except Exception as exc:  # 聚类子进程等运行时错误，不能直接断连接
+            return self.send(500, {"error": f"{type(exc).__name__}: {exc}"[:500]})
 
 
 if __name__ == "__main__":
@@ -791,6 +860,14 @@ if __name__ == "__main__":
         with connect() as db:
             storage.recover_runs(db)
             analysis.recover(db)
+            if db.execute("SELECT count(*) FROM alert_rules WHERE enabled=1").fetchone()[0] == 0:
+                with db:
+                    db.execute("UPDATE alert_rules SET enabled=1")
+            saved = admin_features.get_settings(db)
+            COLLECT_INTERVAL_MIN = int(saved["collect_interval"])
+            COLLECT_LIMIT = int(saved["collect_limit"])
+        RUNTIME["collect_interval_minutes"] = COLLECT_INTERVAL_MIN
+        RUNTIME["collect_limit"] = COLLECT_LIMIT
         # 启动期调度：alertcenter.init 已由 connect() 内的调用完成；此处只启动 60 秒 daemon 线程。
         alertcenter.start_scheduler(DB)
         start_collection_scheduler()

@@ -103,11 +103,28 @@
       host.appendChild(el('p', 'chart-empty', '暂无规则'));
     } else {
       host.appendChild(table(
-        ['规则ID', '名称', '匹配方式', '匹配值', '窗口(分钟)', '阈值', '级别', '冷却(分钟)', '启用', '创建时间'],
+        ['规则ID', '名称', '匹配方式', '匹配值', '窗口(分钟)', '阈值', '级别', '冷却(分钟)', '启用', '创建时间', '操作'],
         rules.map(function (r) {
+          var toggle = el('button', 'secondary', r.enabled ? '停用' : '启用');
+          toggle.type = 'button';
+          toggle.style.padding = '2px 10px';
+          toggle.style.fontSize = '12px';
+          toggle.addEventListener('click', function () {
+            toggle.disabled = true;
+            fetch('/api/alert-rules/' + r.id + '/toggle', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ enabled: !r.enabled })
+            }).then(function (resp) {
+              if (!resp.ok) throw new Error('HTTP ' + resp.status);
+              return resp.json();
+            }).then(load).catch(function (e) {
+              host.appendChild(el('p', 'chart-empty', '切换规则失败：' + e.message));
+            }).finally(function () { toggle.disabled = false; });
+          });
           return [r.id, r.name, KIND_TEXT[r.match_kind] || r.match_kind, r.match_value,
                   r.window_minutes, r.threshold, levelCell(r.level), r.cooldown_minutes,
-                  r.enabled ? '是' : '否', String(r.created_at || '').slice(0, 19).replace('T', ' ')];
+                  r.enabled ? '是' : '否', String(r.created_at || '').slice(0, 19).replace('T', ' '), toggle];
         })));
     }
 

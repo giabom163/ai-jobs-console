@@ -23,6 +23,8 @@
       <button class="tab" role="tab" id="tab-topics" aria-controls="view-topics" aria-selected="false" data-view="topics" tabindex="-1">话题分析</button>
       <button class="tab" role="tab" id="tab-search" aria-controls="view-search" aria-selected="false" data-view="search" tabindex="-1">舆情检索</button>
       <button class="tab" role="tab" id="tab-alert" aria-controls="view-alert" aria-selected="false" data-view="alert" tabindex="-1">预警中心</button>
+      <button class="tab" role="tab" id="tab-reports" aria-controls="view-reports" aria-selected="false" data-view="reports" tabindex="-1">报告管理</button>
+      <button class="tab" role="tab" id="tab-settings" aria-controls="view-settings" aria-selected="false" data-view="settings" tabindex="-1">系统设置</button>
       <button class="tab" role="tab" id="tab-watch" aria-controls="view-watch" aria-selected="false" data-view="watch" tabindex="-1">观察清单</button>
       <button class="tab weak" role="tab" id="tab-admin" aria-controls="view-admin" aria-selected="false" data-view="admin" tabindex="-1">数据管理</button>
     </nav>
@@ -228,6 +230,65 @@
       </div>
       <div class="kpi-cards" id="alert-kpis"></div>
       <section class="panel"><div id="alert-center" hidden></div></section>
+    </section>
+
+    <!-- 报告管理（真实生成 Markdown 报告） -->
+    <section id="view-reports" class="view" role="tabpanel" aria-labelledby="tab-reports" tabindex="0" hidden>
+      <div class="page-head">
+        <div>
+          <h1>报告管理</h1>
+          <p class="sub">自动生成、管理与导出舆情分析报告 · 数据来自本机采集库</p>
+        </div>
+        <div class="head-actions">
+          <button id="report-daily" class="secondary" type="button">生成日报</button>
+          <button id="report-weekly" class="primary" type="button">生成周报</button>
+        </div>
+      </div>
+      <div class="kpi-cards" id="report-kpis"></div>
+      <section class="panel">
+        <h3 class="col-title">报告列表</h3>
+        <div id="report-list" class="table-wrap"></div>
+      </section>
+    </section>
+
+    <!-- 系统设置（settings 表，真正生效） -->
+    <section id="view-settings" class="view" role="tabpanel" aria-labelledby="tab-settings" tabindex="0" hidden>
+      <div class="page-head">
+        <div>
+          <h1>系统设置</h1>
+          <p class="sub">采集间隔、每轮条数与监测关键词 · 保存后立即写入 settings 表</p>
+        </div>
+        <div class="head-actions">
+          <button id="settings-save" class="primary" type="button">保存设置</button>
+        </div>
+      </div>
+      <div class="chart-two" style="grid-template-columns:1fr 1fr">
+        <section class="panel">
+          <h3 class="col-title">采集配置</h3>
+          <label class="inline-field" style="display:flex;justify-content:space-between;margin-bottom:12px">
+            采集间隔（分钟）
+            <input id="set-interval" type="number" min="0" max="1440" style="width:120px">
+          </label>
+          <label class="inline-field" style="display:flex;justify-content:space-between;margin-bottom:12px">
+            每端点每轮条数
+            <input id="set-limit" type="number" min="1" max="50" style="width:120px">
+          </label>
+          <label class="inline-field" style="display:flex;justify-content:space-between">
+            启用模糊匹配
+            <input id="set-fuzzy" type="checkbox">
+          </label>
+          <p class="hint">间隔 0 = 关闭自动采集；修改在下一轮调度生效。</p>
+        </section>
+        <section class="panel">
+          <h3 class="col-title">监测关键词</h3>
+          <div class="card-actions" style="margin-bottom:10px">
+            <input id="kw-input" placeholder="输入关键词，回车添加" style="flex:1">
+            <button id="kw-add" class="secondary" type="button">添加</button>
+          </div>
+          <div id="kw-chips" class="card-actions"></div>
+          <p class="hint">关键词写入 keywords 表，用于检索与预警规则匹配。</p>
+        </section>
+      </div>
     </section>
 
     <!-- 业务四：观察清单（人工加入 / 退出 + 同帖真实历史） -->
@@ -587,5 +648,7 @@
 <script src="/topics-panel.js" defer></script>
 <script src="/alert-panel.js" defer></script>
 <script src="/corpus-search.js" defer></script>
+<script src="/reports.js" defer></script>
+<script src="/settings.js" defer></script>
 </body>
 </html>

@@ -41,7 +41,7 @@
       ['记录总数', kpi.records, 'blue'],
       ['今日新增', '+' + kpi.today_added, 'green'],
       ['负面舆情', kpi.negative, 'red'],
-      ['去重条目', kpi.canonical, 'orange'],
+      ['活跃话题', kpi.active_topics === undefined ? '—' : kpi.active_topics, 'orange'],
       ['未处理预警', kpi.open_alerts, 'red']
     ];
     items.forEach(function (it) {
@@ -247,9 +247,14 @@
 
   function renderConsole(stats) {
     if (!consoleBody) return;
-    fetch('/api/collect/status', { headers: { accept: 'application/json' } })
-      .then(function (r) { return r.json(); })
-      .then(function (status) {
+    Promise.all([
+      fetch('/api/collect/status', { headers: { accept: 'application/json' } }).then(function (r) { return r.json(); }),
+      fetch('/api/reports', { headers: { accept: 'application/json' } }).then(function (r) { return r.json(); })
+        .catch(function () { return { reports: [] }; })
+    ])
+      .then(function (payload) {
+        var status = payload[0];
+        var reports = (payload[1] && payload[1].reports) || [];
         consoleBody.textContent = '';
         var log = (status.logs || [])[0];
         if (!log) {
@@ -273,9 +278,13 @@
         if (stats) {
           consoleBody.appendChild(consoleLine('sentiment', 'SENTIMENT',
             '规则词典判定 · 待判 ' + stats.kpi.sentiment_pending + ' 条（未跑模型）', clock(log.finished_at)));
+          consoleBody.appendChild(consoleLine('topic', 'TOPIC',
+            '聚类事件 ' + (stats.kpi.active_topics || 0) + ' 个（≥2 条）', clock(log.finished_at)));
           consoleBody.appendChild(consoleLine('alert', 'ALERT',
             '未处理预警 ' + stats.kpi.open_alerts + ' 条 · 本轮状态 ' + log.status, clock(log.finished_at)));
         }
+        consoleBody.appendChild(consoleLine('report', 'REPORT',
+          reports.length ? ('最近报告 ' + reports[0].title) : '尚未生成报告', clock(log.finished_at)));
         if (online) {
           online.textContent = status.running
             ? '采集中…'

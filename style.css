@@ -714,8 +714,10 @@ body { background: var(--bg); color: var(--ink); font-size: 14px; }
 .topbar { max-width: 1200px; padding: 0 20px; gap: 24px; }
 .brand-logo { width: 24px; height: 24px; }
 .brand-title { font-size: 16px; }
-.topbar .tabs { gap: 26px; }
-.topbar .tab { padding: 15px 0 13px; font-size: 14px; color: #3b4a5a; }
+.brand-tag { display: none; }
+.topbar .tabs { gap: 18px; }
+.topbar .tab { padding: 15px 0 13px; font-size: 13px; color: #3b4a5a; }
+.topbar .conn, .topbar .conn.online, .topbar .conn.loading { font-size: 11px; padding: 5px 10px; max-width: 280px; }
 .topbar .tab[aria-selected="true"] { color: var(--accent); border-bottom-color: var(--accent); }
 h2 { font-size: 18px; font-weight: 700; }
 .eyebrow { color: #9aa7b6; margin-bottom: 6px; }
@@ -798,6 +800,8 @@ input, select, textarea { border-radius: 6px; border-color: var(--line); }
 .log-tag.cleaner { color: #fbbf24; }
 .log-tag.sentiment { color: #c084fc; }
 .log-tag.alert { color: #f87171; }
+.log-tag.topic { color: #a78bfa; }
+.log-tag.report { color: #38bdf8; }
 .console-line .m { color: #c7d2de; }
 .console-empty { color: #5f7085; margin: 6px 0; }
 

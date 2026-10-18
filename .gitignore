@@ -4,3 +4,5 @@ sentiment.db
 sentiment.db-*
 snapshots/
 .collector-throttle.json
+events/
+reports/
