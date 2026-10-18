@@ -12,7 +12,7 @@ import uuid
 
 import storage
 
-STAGES = ("sentiment", "topic", "alert", "report")
+STAGES = ("sentiment", "topic", "alert")
 
 
 def init(db):
