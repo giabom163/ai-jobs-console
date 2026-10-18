@@ -48,8 +48,9 @@ def _since(hours):
 
 def categories(db, hours=24):
     """按最近 hours 小时分类；返回 [{name,count,records,keywords,examples}]。"""
-    rows = db.execute("SELECT title, summary, canonical_id FROM records "
-                      "WHERE coalesce(published_at, fetched_at) >= ?", (_since(hours),)).fetchall()
+    rows = db.execute("SELECT r.title, r.summary, r.canonical_id, m.topic FROM records r "
+                      "LEFT JOIN model_annotations m ON m.record_id=r.id "
+                      "WHERE coalesce(r.published_at, r.fetched_at) >= ?", (_since(hours),)).fetchall()
     label_counts = {name: 0 for name in CATEGORY_NAMES}
     seen = {name: set() for name in CATEGORY_NAMES}
     titles = {name: [] for name in CATEGORY_NAMES}
@@ -57,7 +58,8 @@ def categories(db, hours=24):
     total = 0
     for row in rows:
         total += 1
-        labels = classify_all(row[0], row[1] if len(row) > 1 else "") or [FALLBACK]
+        model_topic = row[3] if row[3] in CATEGORY_NAMES else None
+        labels = [model_topic] if model_topic else (classify_all(row[0], row[1] if len(row) > 1 else "") or [FALLBACK])
         identity = row[2] or row[0]
         for name in labels:
             label_counts[name] += 1
@@ -80,14 +82,16 @@ def records_for_category(db, hours, category, limit=50):
     if category != "__all__" and category not in CATEGORY_NAMES:
         raise ValueError("category 不在白名单：" + "/".join(CATEGORY_NAMES + ("__all__",)))
     rows = db.execute(
-        "SELECT r.title, r.summary, r.url, r.published_at, f.name, r.canonical_id FROM records r "
-        "JOIN feeds f ON f.id=r.feed_id "
+        "SELECT r.title, r.summary, r.url, r.published_at, f.name, r.canonical_id, m.topic "
+        "FROM records r JOIN feeds f ON f.id=r.feed_id "
+        "LEFT JOIN model_annotations m ON m.record_id=r.id "
         "WHERE coalesce(r.published_at, r.fetched_at) >= ? "
         "ORDER BY coalesce(r.published_at, r.fetched_at) DESC LIMIT 5000", (_since(hours),)).fetchall()
     items, seen, total = [], set(), 0
     truncated = len(rows) >= 5000
     for row in rows:
-        labels = classify_all(row[0], row[1] or "") or [FALLBACK]
+        model_topic = row[6] if row[6] in CATEGORY_NAMES else None
+        labels = [model_topic] if model_topic else (classify_all(row[0], row[1] or "") or [FALLBACK])
         if category != "__all__" and category not in labels:
             continue
         identity = row[5] or row[0]

@@ -117,7 +117,21 @@ def publication(value):
         try:
             dt = parsedate_to_datetime(value)
         except (TypeError, ValueError, OverflowError):
-            return None, "invalid"
+            m = re.fullmatch(r"(\d{1,2})月(\d{1,2})日\s*(\d{1,2}):(\d{2})", value)
+            if not m:
+                return None, "invalid"
+            tz = timezone(timedelta(hours=8))
+            now = datetime.now(tz)
+            month, day, hour, minute = map(int, m.groups())
+            try:
+                dt = datetime(now.year, month, day, hour, minute, tzinfo=tz)
+            except ValueError:
+                return None, "invalid"
+            if dt > now + timedelta(days=1):
+                try:
+                    dt = dt.replace(year=now.year - 1)
+                except ValueError:
+                    return None, "invalid"
     if dt.tzinfo is None or dt.utcoffset() is None:
         return None, "timezone_missing"
     try:

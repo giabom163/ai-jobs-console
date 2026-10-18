@@ -519,6 +519,7 @@ def search_records(db, query, sentiment, feed_id, date_from, date_to, limit, off
         row = db.execute("SELECT value FROM schema_meta WHERE key='fts_version'").fetchone()
         table = db.execute("SELECT 1 FROM sqlite_master WHERE name='records_fts'").fetchone()
         fts_ready = bool(row) and row[0] == storage.FTS_VERSION and table is not None
+    join += " LEFT JOIN model_annotations m ON m.record_id=r.id"
     if fts_ready:
         # trigram 索引：短语匹配，双引号转义后交给 FTS5
         where.append("records_fts MATCH ?")
@@ -530,7 +531,7 @@ def search_records(db, query, sentiment, feed_id, date_from, date_to, limit, off
         where.append("(r.title LIKE ? ESCAPE '\\' OR r.summary LIKE ? ESCAPE '\\' OR r.url LIKE ? ESCAPE '\\')")
         params += [like, like, like]
     if sentiment:
-        where.append("r.sentiment = ?")
+        where.append("COALESCE(m.sentiment, r.sentiment) = ?")
         params.append(sentiment)
     if feed_id:
         where.append("r.feed_id = ?")
@@ -545,10 +546,10 @@ def search_records(db, query, sentiment, feed_id, date_from, date_to, limit, off
     total = db.execute("SELECT count(*) FROM records r" + join + clause, params).fetchone()[0]
     rows = db.execute(
         "SELECT r.id,r.feed_id,f.name AS source,r.title,r.summary,r.url,r.fetched_at,"
-        "r.sentiment,r.canonical_id,r.entities,m.sentiment AS model_sentiment,"
+        "r.sentiment,COALESCE(m.sentiment,r.sentiment) AS display_sentiment,"
+        "r.canonical_id,r.entities,m.sentiment AS model_sentiment,"
         "m.topic AS model_topic,m.gender_related AS model_gender_related,"
-        "m.opposition AS model_opposition FROM records r JOIN feeds f ON f.id=r.feed_id"
-        " LEFT JOIN model_annotations m ON m.record_id=r.id" + join
+        "m.opposition AS model_opposition FROM records r JOIN feeds f ON f.id=r.feed_id" + join
         + clause + " ORDER BY r.fetched_at DESC, r.id LIMIT ? OFFSET ?",
         params + [limit, offset]).fetchall()
     return {"total": total, "limit": limit, "offset": offset, "fts": bool(fts_ready),
@@ -880,7 +881,8 @@ class Handler(BaseHTTPRequestHandler):
                     "SELECT count(*) FROM records WHERE fetched_at >= ?",
                     (today_start_iso(),)).fetchone()[0]
                 stats["kpi"]["negative"] = db.execute(
-                    "SELECT count(*) FROM records WHERE sentiment IN ('偏负面','强负面')").fetchone()[0]
+                    "SELECT count(*) FROM records r LEFT JOIN model_annotations m ON m.record_id=r.id "
+                    "WHERE COALESCE(m.sentiment,r.sentiment) IN ('偏负面','强负面')").fetchone()[0]
                 stats["kpi"]["open_alerts"] = db.execute(
                     "SELECT count(*) FROM alerts WHERE status='open'").fetchone()[0]
                 stats["kpi"]["active_topics"] = admin_features.active_topics(db)

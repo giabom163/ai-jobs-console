@@ -174,8 +174,8 @@ ENDPOINTS = {
         "platform": "weibo",
         "feed_url": "https://s.weibo.com/weibo?q=",
         "default_group": "weibo-search",
-        "fields": {"title": "word", "url": "url", "summary": "text",
-                   "source_id": "id", "published_at": "created_at"},
+        "fields": {"title": "title", "url": "url", "summary": None,
+                   "source_id": "id", "published_at": "time"},
         "summary_empty_when_same_as_title": False,
     },
     "zhihu-search": {
