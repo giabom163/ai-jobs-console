@@ -246,6 +246,9 @@
       .then(function (data) {
         catList.textContent = '';
         if (!data.items || !data.items.length) { catList.appendChild(el('p', 'chart-empty', '该类别暂无内容')); return; }
+        var meta = el('p', 'hint', '共 ' + data.total + ' 条，显示前 ' + data.items.length + ' 条'
+          + (data.truncated ? '（扫描已达上限，可能不完整）' : ''));
+        catList.appendChild(meta);
         data.items.forEach(function (item) {
           var a = el('a', null, item.title);
           a.href = item.url;
@@ -260,7 +263,10 @@
   function loadCategories() {
     if (!catBar) return;
     fetch('/api/topic-categories?hours=24', { headers: { accept: 'application/json' } })
-      .then(function (r) { return r.json(); })
+      .then(function (r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.json();
+      })
       .then(function (data) {
         catBar.textContent = '';
         var all = el('button', 'active', '全部');
@@ -289,7 +295,10 @@
 
   function load() {
     fetch('/api/topic-analysis?window=' + current, { headers: { accept: 'application/json' } })
-      .then(function (r) { return r.json(); })
+      .then(function (r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.json();
+      })
       .then(render)
       .catch(function (e) {
         kpiHost.textContent = '';

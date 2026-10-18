@@ -81,14 +81,16 @@ def main(argv=None):
     cutoff = datetime.now(timezone.utc) - timedelta(hours=args.hours)
     found = {}
     category_counts = {}
+    base_applied = False
     if not args.dry_run:
         try:
             db0 = storage.connect(args.db)
             for item in topics.categories(db0, args.hours)["categories"]:
                 category_counts[item["name"]] = item["records"]
             db0.close()
-        except Exception:
-            category_counts = {}
+            base_applied = True
+        except Exception as exc:
+            print(f"warning: 读取已有分类基数失败，配额只按本轮计数：{exc}", file=sys.stderr)
     for keyword in [k.strip() for k in args.keywords.split(",") if k.strip()]:
         for page in range(1, args.pages + 1):
             try:
@@ -122,6 +124,7 @@ def main(argv=None):
 
     result = {"hours": args.hours, "pages": args.pages, "strict": True,
               "per_category_limit": args.per_category_limit,
+              "base_applied": base_applied,
               "category_counts": category_counts,
               "found": len(found), "dry_run": args.dry_run,
               "items": list(found.values())[:20]}
