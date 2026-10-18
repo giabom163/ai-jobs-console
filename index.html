@@ -22,6 +22,7 @@
       <button class="tab" role="tab" id="tab-overview" aria-controls="view-overview" aria-selected="true" data-view="overview" tabindex="0">总览大屏</button>
       <button class="tab" role="tab" id="tab-topics" aria-controls="view-topics" aria-selected="false" data-view="topics" tabindex="-1">话题分析</button>
       <button class="tab" role="tab" id="tab-search" aria-controls="view-search" aria-selected="false" data-view="search" tabindex="-1">舆情检索</button>
+      <button class="tab" role="tab" id="tab-alert" aria-controls="view-alert" aria-selected="false" data-view="alert" tabindex="-1">预警中心</button>
       <button class="tab" role="tab" id="tab-watch" aria-controls="view-watch" aria-selected="false" data-view="watch" tabindex="-1">观察清单</button>
       <button class="tab weak" role="tab" id="tab-admin" aria-controls="view-admin" aria-selected="false" data-view="admin" tabindex="-1">数据管理</button>
     </nav>
@@ -35,20 +36,35 @@
 
     <!-- 业务一（默认）：总览 -->
     <section id="view-overview" class="view" role="tabpanel" aria-labelledby="tab-overview" tabindex="0">
-      <section class="panel corpus-panel">
-        <div class="section-title">
-          <div><p class="eyebrow">COLLECTED CORPUS</p><h2>采集语料</h2></div>
-          <div class="card-actions">
-            <button id="collect-run" class="primary" type="button">采集 + 分析</button>
-            <button id="overview-reload" class="secondary" type="button">重新读取本地数据</button>
-          </div>
+      <div class="page-head">
+        <div>
+          <h1>舆情监测态势总览</h1>
+          <p class="sub">实时掌握全网舆情动态 · 数据更新时间：<span id="dash-updated">正在读取…</span></p>
         </div>
-        <p class="hint">
-          本区汇总采集库（records / collection_runs / snapshots）的只读指标，由采集器或手动批次写入；
-          页面不会自动采集，点「重新读取本地数据」只重读本机数据库。
-        </p>
-        <section class="charts" id="overview-charts" data-window="14d" aria-label="采集语料图表" hidden></section>
+        <div class="head-actions">
+          <select id="dash-window" aria-label="统计窗口">
+            <option value="7d" selected>近7天</option>
+            <option value="14d">近14天</option>
+            <option value="all">全部</option>
+          </select>
+          <button id="overview-reload" class="secondary" type="button">刷新</button>
+        </div>
+      </div>
+
+      <div id="dash-kpis" class="kpi-cards" aria-label="核心指标"></div>
+
+      <section class="agent-console" aria-label="采集流水线状态">
+        <div class="console-head">
+          <span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>
+          <span class="title">Agent 实时状态监控</span>
+          <span class="online" id="agent-online">—</span>
+          <span class="spacer"></span>
+          <button id="collect-run" class="console-btn" type="button">采集 + 分析</button>
+        </div>
+        <div class="console-body" id="agent-log"><p class="console-empty">尚未读取采集状态。</p></div>
       </section>
+
+      <section id="overview-charts" data-window="7d" aria-label="采集语料图表" hidden></section>
 
       <details class="panel p1-corner">
         <summary>P1 人工证据 · 手工导入（辅助）</summary>
@@ -198,6 +214,22 @@
       </section>
     </section>
 
+    <!-- 预警中心（真实 alert_rules / alerts） -->
+    <section id="view-alert" class="view" role="tabpanel" aria-labelledby="tab-alert" tabindex="0" hidden>
+      <div class="page-head">
+        <div>
+          <h1>预警中心</h1>
+          <p class="sub">实时预警监控与规则管理 · 数据来自 alert_rules / alerts，60 秒评估一次</p>
+        </div>
+        <div class="head-actions">
+          <button id="alert-run" class="secondary" type="button">立即评估</button>
+          <button id="alert-refresh" class="secondary" type="button">刷新</button>
+        </div>
+      </div>
+      <div class="kpi-cards" id="alert-kpis"></div>
+      <section class="panel"><div id="alert-center" hidden></div></section>
+    </section>
+
     <!-- 业务四：观察清单（人工加入 / 退出 + 同帖真实历史） -->
     <section id="view-watch" class="view" role="tabpanel" aria-labelledby="tab-watch" tabindex="0" hidden>
       <section class="panel">
@@ -270,8 +302,6 @@
           </table>
         </div>
       </section>
-
-      <section class="panel" id="alert-center-panel"><div id="alert-center" hidden></div></section>
     </section>
 
     <!-- 弱入口：数据管理（承接旧来源与导入 / 原文与证据 / 报告 / 运行） -->

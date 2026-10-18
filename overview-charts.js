@@ -1,10 +1,16 @@
-/* 总览图表：只读 /api/overview-stats，无第三方库，无网络外链。 */
+/* 总览大屏：KPI 五卡 + 采集流水线控制台 + 趋势/情感/平台/TOP10（只读）。 */
 (function () {
   'use strict';
 
-  var COLORS = ['#3b82f6', '#22c55e', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4', '#84cc16', '#f97316'];
   var host = document.getElementById('overview-charts');
   if (!host) return;
+  var consoleBody = document.getElementById('agent-log');
+  var online = document.getElementById('agent-online');
+  var windowSelect = document.getElementById('dash-window');
+  var updated = document.getElementById('dash-updated');
+  var currentWindow = '7d';
+
+  var COLORS = ['#3b82f6', '#22c55e', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4', '#84cc16', '#f97316'];
 
   function el(tag, cls, text) {
     var n = document.createElement(tag);
@@ -13,83 +19,99 @@
     return n;
   }
 
-  function card(title, note) {
-    var box = el('div', 'chart-card');
-    var head = el('div', 'chart-head');
-    head.appendChild(el('h3', null, title));
-    if (note) head.appendChild(el('p', 'chart-note', note));
-    box.appendChild(head);
-    var body = el('div', 'chart-body');
-    box.appendChild(body);
-    return { box: box, body: body };
+  function svgEl(tag) {
+    return document.createElementNS('http://www.w3.org/2000/svg', tag);
   }
 
-  function fmtTime(v) {
+  function fmtLocal(v) {
     if (!v) return '—';
-    return String(v).replace('T', ' ').slice(0, 19);
+    var d = new Date(v);
+    if (Number.isNaN(d.getTime())) return String(v).replace('T', ' ').slice(0, 19);
+    return new Date(d.getTime() + 8 * 3600 * 1000).toISOString().replace('T', ' ').slice(0, 19);
   }
 
-  function pct(v) {
-    return (v === null || v === undefined) ? '—' : (v * 100).toFixed(1) + '%';
+  function clock(v) {
+    var t = fmtLocal(v);
+    return t.length >= 19 ? t.slice(11, 19) : t;
   }
 
-  function kpiRow(kpi) {
-    var wrap = el('div', 'kpi-row');
+  /* ---------- KPI 五卡 ---------- */
+  function kpiCards(hostEl, kpi) {
     var items = [
-      ['记录数', kpi.records],
-      ['去重条目', kpi.canonical],
-      ['来源', kpi.feeds],
-      ['今日新增', kpi.today_added === undefined ? '—' : kpi.today_added],
-      ['负面舆情（全量）', kpi.negative === undefined ? '—' : kpi.negative],
-      ['未处理预警（全量）', kpi.open_alerts === undefined ? '—' : kpi.open_alerts],
-      ['时间缺失', pct(kpi.unknown_time_ratio)],
-      ['情感待判', pct(kpi.sentiment_pending_ratio)],
-      ['最近成功采集', fmtTime(kpi.last_success_at)]
+      ['记录总数', kpi.records, 'blue'],
+      ['今日新增', '+' + kpi.today_added, 'green'],
+      ['负面舆情', kpi.negative, 'red'],
+      ['去重条目', kpi.canonical, 'orange'],
+      ['未处理预警', kpi.open_alerts, 'red']
     ];
     items.forEach(function (it) {
-      var box = el('div', 'kpi');
-      box.appendChild(el('span', 'kpi-label', it[0]));
-      box.appendChild(el('strong', 'kpi-value', String(it[1])));
-      wrap.appendChild(box);
+      var card = el('div', 'kpi-card ' + it[2]);
+      var num = el('div', 'num', String(it[1]));
+      num.appendChild(el('small', null, '条'));
+      card.appendChild(num);
+      card.appendChild(el('div', 'label', it[0]));
+      hostEl.appendChild(card);
     });
-    return wrap;
   }
 
+  /* ---------- 趋势 ---------- */
   function trendChart(rows, body) {
-    if (!rows.length) { body.appendChild(el('p', 'chart-empty', '暂无数据')); return; }
-    var W = 520, H = 180, P = 28;
+    if (!rows || !rows.length) {
+      body.appendChild(el('p', 'chart-empty', '暂无数据'));
+      return;
+    }
+    var W = 820, H = 300, P = 40;
     var max = Math.max.apply(null, rows.map(function (r) { return r.records; }).concat([1]));
     var step = rows.length > 1 ? (W - P * 2) / (rows.length - 1) : 0;
+    var svg = svgEl('svg');
+    svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
+    svg.setAttribute('class', 'chart-svg');
+
+    for (var g = 0; g <= 4; g += 1) {
+      var gy = P + (H - P * 2) * g / 4;
+      var line = svgEl('line');
+      line.setAttribute('x1', P); line.setAttribute('x2', W - P);
+      line.setAttribute('y1', gy); line.setAttribute('y2', gy);
+      line.setAttribute('stroke', '#eef3f8');
+      svg.appendChild(line);
+      var label = svgEl('text');
+      label.setAttribute('x', P - 8); label.setAttribute('y', gy + 4);
+      label.setAttribute('text-anchor', 'end');
+      label.setAttribute('fill', '#9aa7b6'); label.setAttribute('font-size', '11');
+      label.textContent = String(Math.round(max * (4 - g) / 4));
+      svg.appendChild(label);
+    }
+
     var pts = rows.map(function (r, i) {
       var x = P + step * i;
       var y = H - P - (r.records / max) * (H - P * 2);
       return [x, y, r];
     });
-    var svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-    svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
-    svg.setAttribute('class', 'chart-svg');
     var area = 'M' + pts[0][0] + ',' + (H - P) + ' ' +
       pts.map(function (p) { return 'L' + p[0] + ',' + p[1]; }).join(' ') +
       ' L' + pts[pts.length - 1][0] + ',' + (H - P) + ' Z';
-    var path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-    path.setAttribute('d', area);
-    path.setAttribute('fill', 'rgba(59,130,246,.16)');
-    svg.appendChild(path);
-    var line = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
-    line.setAttribute('points', pts.map(function (p) { return p[0] + ',' + p[1]; }).join(' '));
-    line.setAttribute('fill', 'none');
-    line.setAttribute('stroke', '#3b82f6');
-    line.setAttribute('stroke-width', '2');
-    svg.appendChild(line);
+    var areaPath = svgEl('path');
+    areaPath.setAttribute('d', area);
+    areaPath.setAttribute('fill', 'rgba(31,142,241,.10)');
+    svg.appendChild(areaPath);
+
+    var poly = svgEl('polyline');
+    poly.setAttribute('points', pts.map(function (p) { return p[0] + ',' + p[1]; }).join(' '));
+    poly.setAttribute('fill', 'none');
+    poly.setAttribute('stroke', '#1f8ef1');
+    poly.setAttribute('stroke-width', '2');
+    svg.appendChild(poly);
+
     pts.forEach(function (p) {
-      var c = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
-      c.setAttribute('cx', p[0]); c.setAttribute('cy', p[1]); c.setAttribute('r', '3');
-      c.setAttribute('fill', '#3b82f6');
-      var t = document.createElementNS('http://www.w3.org/2000/svg', 'title');
+      var c = svgEl('circle');
+      c.setAttribute('cx', p[0]); c.setAttribute('cy', p[1]);
+      c.setAttribute('r', '3'); c.setAttribute('fill', '#1f8ef1');
+      var t = svgEl('title');
       t.textContent = p[2].day + '：' + p[2].records + ' 条（去重 ' + p[2].canonical + '）';
       c.appendChild(t);
       svg.appendChild(c);
     });
+
     body.appendChild(svg);
     var axis = el('div', 'chart-axis');
     axis.appendChild(el('span', null, rows[0].day));
@@ -98,28 +120,28 @@
     body.appendChild(axis);
   }
 
+  /* ---------- 情感环图 ---------- */
   function donut(rows, body) {
     var total = rows.reduce(function (s, r) { return s + r.value; }, 0);
-    if (!total) { body.appendChild(el('p', 'chart-empty', '暂无数据')); return; }
-    var W = 160, R = 60, C = 2 * Math.PI * R, offset = 0;
-    var svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-    svg.setAttribute('viewBox', '0 0 160 160');
+    if (!total) {
+      body.appendChild(el('p', 'chart-empty', '暂无数据'));
+      return;
+    }
+    var R = 68, C = 2 * Math.PI * R, offset = 0;
+    var svg = svgEl('svg');
+    svg.setAttribute('viewBox', '0 0 180 180');
     svg.setAttribute('class', 'donut-svg');
     rows.forEach(function (r, i) {
-      var len = (r.value / total) * C;
-      var seg = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
-      seg.setAttribute('cx', '80'); seg.setAttribute('cy', '80'); seg.setAttribute('r', String(R));
+      var seg = svgEl('circle');
+      seg.setAttribute('cx', 90); seg.setAttribute('cy', 90); seg.setAttribute('r', R);
       seg.setAttribute('fill', 'none');
       seg.setAttribute('stroke', COLORS[i % COLORS.length]);
-      seg.setAttribute('stroke-width', '22');
-      seg.setAttribute('stroke-dasharray', len + ' ' + (C - len));
-      seg.setAttribute('stroke-dashoffset', String(-offset));
-      seg.setAttribute('transform', 'rotate(-90 80 80)');
-      var t = document.createElementNS('http://www.w3.org/2000/svg', 'title');
-      t.textContent = r.label + '：' + r.value;
-      seg.appendChild(t);
+      seg.setAttribute('stroke-width', '26');
+      seg.setAttribute('stroke-dasharray', (r.value / total * C) + ' ' + C);
+      seg.setAttribute('stroke-dashoffset', -offset);
+      seg.setAttribute('transform', 'rotate(-90 90 90)');
       svg.appendChild(seg);
-      offset += len;
+      offset += r.value / total * C;
     });
     var wrap = el('div', 'donut-wrap');
     wrap.appendChild(svg);
@@ -136,15 +158,19 @@
     body.appendChild(wrap);
   }
 
+  /* ---------- 平台条形 ---------- */
   function bars(rows, body, unit) {
-    if (!rows.length) { body.appendChild(el('p', 'chart-empty', '暂无数据')); return; }
-    var max = Math.max.apply(null, rows.map(function (r) { return r.value; }));
+    if (!rows || !rows.length) {
+      body.appendChild(el('p', 'chart-empty', '暂无数据'));
+      return;
+    }
+    var max = Math.max.apply(null, rows.map(function (r) { return r.value; }).concat([1]));
     rows.forEach(function (r) {
       var row = el('div', 'bar-row');
       row.appendChild(el('span', 'bar-label', r.label));
-      var track = el('div', 'bar-track');
-      var fill = el('div', 'bar-fill');
-      fill.style.width = (max ? (r.value / max * 100) : 0) + '%';
+      var track = el('span', 'bar-track');
+      var fill = el('span', 'bar-fill');
+      fill.style.width = (r.value / max * 100) + '%';
       track.appendChild(fill);
       row.appendChild(track);
       row.appendChild(el('span', 'bar-value', String(r.value) + (unit || '')));
@@ -152,29 +178,119 @@
     });
   }
 
+  function card(title, note) {
+    var box = el('div', 'chart-card');
+    var head = el('div', 'chart-head');
+    head.appendChild(el('h3', null, title));
+    if (note) head.appendChild(el('p', 'chart-note', note));
+    box.appendChild(head);
+    var body = el('div', 'chart-body');
+    box.appendChild(body);
+    return { box: box, body: body };
+  }
+
+  /* ---------- 渲染整页 ---------- */
   function render(stats) {
     host.textContent = '';
-    host.appendChild(kpiRow(stats.kpi));
+    var board = document.getElementById('dash-kpis');
+    if (board) {
+      board.textContent = '';
+      kpiCards(board, stats.kpi);
+    }
+
+    var two = el('div', 'chart-two');
+    var trendBox = card('近7天舆情热度趋势', '按日统计，口径 published_at ?: fetched_at');
+    var trendPanel = el('section', 'panel');
+    trendPanel.appendChild(trendBox.box);
+    trendChart(stats.trend, trendBox.body);
+
+    var sentiBox = card('情感倾向分布', '规则情感判定（lexicon-zh-v1）');
+    var sentiPanel = el('section', 'panel');
+    sentiPanel.appendChild(sentiBox.box);
+    donut(stats.sentiment, sentiBox.body);
+
+    two.appendChild(trendPanel);
+    two.appendChild(sentiPanel);
+    host.appendChild(two);
+
     var grid = el('div', 'chart-grid');
-    var a = card('每日采集趋势', '口径：published_at ?: fetched_at，窗口 ' + (stats.window_days ? stats.window_days + ' 天' : '全量'));
-    trendChart(stats.trend, a.body);
-    var b = card('情感分布', '规则情感判定（lexicon-zh-v1）；中性含“无情感词”记录');
-    donut(stats.sentiment, b.body);
-    var c = card('平台分布', '按采集源名称聚合');
-    bars(stats.platforms, c.body);
-    var d = card('条目 TOP10', '按 canonical_id 去重分组，非语义聚类');
-    bars(stats.top_groups, d.body);
-    [a, b, c, d].forEach(function (x) { grid.appendChild(x.box); });
+    var platforms = card('平台分布', '按采集源名称聚合');
+    bars(stats.platforms, platforms.body);
+    var top = card('条目 TOP10', '按 canonical_id 去重分组，非语义聚类');
+    bars(stats.top_groups, top.body);
+    var platformPanel = el('section', 'panel');
+    platformPanel.appendChild(platforms.box);
+    var topPanel = el('section', 'panel');
+    topPanel.appendChild(top.box);
+    grid.appendChild(platformPanel);
+    grid.appendChild(topPanel);
     host.appendChild(grid);
+
     var foot = el('p', 'chart-foot',
-      '生成于 ' + stats.generated_at + ' · 覆盖口径 ' + stats.coverage +
+      '生成于 ' + fmtLocal(stats.generated_at) + ' · 覆盖口径 ' + stats.coverage +
       ' · ' + (stats.notes || []).join('；'));
     host.appendChild(foot);
     host.hidden = false;
+
+    if (updated) updated.textContent = fmtLocal(stats.generated_at);
+    renderConsole(stats);
   }
 
-  function load(days) {
-    fetch('/api/overview-stats?window=' + (days || '14d'), { headers: { accept: 'application/json' } })
+  /* ---------- 控制台 ---------- */
+  function consoleLine(tagClass, tagText, message, time) {
+    var row = el('div', 'console-line');
+    row.appendChild(el('span', 't', time));
+    row.appendChild(el('span', 'log-tag ' + tagClass, tagText));
+    row.appendChild(el('span', 'm', message));
+    return row;
+  }
+
+  function renderConsole(stats) {
+    if (!consoleBody) return;
+    fetch('/api/collect/status', { headers: { accept: 'application/json' } })
+      .then(function (r) { return r.json(); })
+      .then(function (status) {
+        consoleBody.textContent = '';
+        var log = (status.logs || [])[0];
+        if (!log) {
+          consoleBody.appendChild(el('p', 'console-empty', '尚无采集记录。点右上角「采集 + 分析」跑一轮。'));
+          if (online) online.textContent = '尚无采集记录';
+          return;
+        }
+        var time = clock(log.started_at);
+        var results = status.last_results || [];
+        consoleBody.appendChild(consoleLine('scheduler', 'SCHEDULER',
+          (log.trigger === 'manual' ? '手动' : '定时') + '触发采集 · ' +
+          (results.length || 6) + ' 个端点 · 冷却 ' + Math.round((status.cooldown_seconds || 0) / 60) + ' 分钟', time));
+        results.forEach(function (r) {
+          var ok = r.status === 'ok';
+          consoleBody.appendChild(consoleLine('crawler', 'CRAWLER',
+            (ok ? '✓ ' : '! ') + r.endpoint + ' ' +
+            (ok ? '返回 ' + r.returned + ' 条' : '跳过：' + (r.reason || r.status)), clock(log.finished_at)));
+        });
+        consoleBody.appendChild(consoleLine('cleaner', 'CLEANER',
+          '✓ 入库完成 · 新增 ' + log.added + ' 条（重复 ' + log.duplicates + ' 条）', clock(log.finished_at)));
+        if (stats) {
+          consoleBody.appendChild(consoleLine('sentiment', 'SENTIMENT',
+            '规则词典判定 · 待判 ' + stats.kpi.sentiment_pending + ' 条（未跑模型）', clock(log.finished_at)));
+          consoleBody.appendChild(consoleLine('alert', 'ALERT',
+            '未处理预警 ' + stats.kpi.open_alerts + ' 条 · 本轮状态 ' + log.status, clock(log.finished_at)));
+        }
+        if (online) {
+          online.textContent = status.running
+            ? '采集中…'
+            : '流水线就绪 · ' + status.endpoints.length + ' 个端点 · 每 ' + status.interval_minutes + ' 分钟';
+        }
+      })
+      .catch(function () {
+        if (online) online.textContent = '状态读取失败';
+      });
+  }
+
+  /* ---------- 加载 ---------- */
+  function load(windowKey) {
+    currentWindow = windowKey || currentWindow;
+    fetch('/api/overview-stats?window=' + currentWindow, { headers: { accept: 'application/json' } })
       .then(function (r) { return r.json(); })
       .then(render)
       .catch(function (e) {
@@ -184,9 +300,12 @@
       });
   }
 
-  window.addEventListener('overview:refresh', function () {
-    load(host.getAttribute('data-window') || '14d');
-  });
+  if (windowSelect) {
+    windowSelect.value = currentWindow;
+    windowSelect.addEventListener('change', function () { load(windowSelect.value); });
+  }
 
-  load(host.getAttribute('data-window') || '14d');
+  window.addEventListener('overview:refresh', function () { load(currentWindow); });
+
+  load(currentWindow);
 })();

@@ -229,12 +229,25 @@ def insert_collect_log(trigger, endpoints, status, started_at, finished_at,
 def collect_status():
     with connect() as db:
         rows = [dict(r) for r in db.execute(
-            "SELECT id,trigger,endpoints,status,started_at,finished_at,added,duplicates,returned,error "
+            "SELECT id,trigger,endpoints,status,started_at,finished_at,added,duplicates,returned,error,report "
             "FROM collector_logs ORDER BY id DESC LIMIT 10")]
+    last_results = []
+    if rows:
+        raw = rows[0].pop("report", None)
+        if raw:
+            try:
+                report = json.loads(raw)
+                last_results = [
+                    {"endpoint": item.get("endpoint"), "status": item.get("status"),
+                     "reason": item.get("reason"), "returned": item.get("returned_count")}
+                    for item in report.get("results") or []
+                ]
+            except (TypeError, ValueError):
+                last_results = []
     return {"running": COLLECT_STATE["running"], "started_at": COLLECT_STATE["started_at"],
             "trigger": COLLECT_STATE["trigger"], "interval_minutes": COLLECT_INTERVAL_MIN,
             "cooldown_seconds": collect_cooldown_seconds(),
-            "endpoints": COLLECT_ENDPOINTS, "logs": rows}
+            "endpoints": COLLECT_ENDPOINTS, "logs": rows, "last_results": last_results}
 
 
 def run_collection(trigger="manual", lock_held=False):

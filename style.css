@@ -693,3 +693,122 @@ footer {
 .alert-level-info { color: #3730a3; background: #e0e7ff; }
 .alert-level-warn { color: #92400e; background: #fef3c7; }
 .alert-level-critical { color: #991b1b; background: #fee2e2; font-weight: 600; }
+
+/* ===== 参考站视觉（2026-10-18）：蓝白底、大卡片、深色 Agent 控制台 ===== */
+:root {
+  --ink: #1f2d3d;
+  --bg: #f2f5f9;
+  --panel: #ffffff;
+  --line: #e7edf4;
+  --line-soft: #eef3f8;
+  --muted: #8b98a8;
+  --accent: #1f8ef1;
+  --accent-strong: #1478d4;
+  --accent-soft: #e9f4fe;
+  --accent-line: #b6daf9;
+  --danger: #f04438;
+  --warn: #f59e0b;
+  --ok: #16a34a;
+}
+body { background: var(--bg); color: var(--ink); font-size: 14px; }
+.topbar { max-width: 1200px; padding: 0 20px; gap: 24px; }
+.brand-logo { width: 24px; height: 24px; }
+.brand-title { font-size: 16px; }
+.topbar .tabs { gap: 26px; }
+.topbar .tab { padding: 15px 0 13px; font-size: 14px; color: #3b4a5a; }
+.topbar .tab[aria-selected="true"] { color: var(--accent); border-bottom-color: var(--accent); }
+h2 { font-size: 18px; font-weight: 700; }
+.eyebrow { color: #9aa7b6; margin-bottom: 6px; }
+.panel {
+  max-width: 1200px; padding: 18px 20px; margin: 0 auto 14px;
+  border: 1px solid var(--line); border-radius: 10px;
+  box-shadow: 0 1px 2px rgba(16, 42, 67, 0.04);
+}
+.primary { background: var(--accent); border-radius: 6px; padding: 8px 16px; font-weight: 600; }
+.primary:hover { background: var(--accent-strong); }
+.secondary {
+  background: #fff; border: 1px solid var(--line); color: #41505f;
+  border-radius: 6px; padding: 7px 14px;
+}
+.secondary:hover { border-color: var(--accent-line); color: var(--accent); }
+input, select, textarea { border-radius: 6px; border-color: var(--line); }
+.table th { background: #fafcfe; border-bottom: 1px solid var(--line); color: #7c8998; }
+.table td { border-bottom: 1px solid var(--line-soft); }
+
+/* 页头：标题 + 更新时间 + 窗口/刷新 */
+.page-head {
+  max-width: 1200px; margin: 0 auto 14px; padding: 2px 2px 0;
+  display: flex; justify-content: space-between; align-items: flex-end; gap: 16px; flex-wrap: wrap;
+}
+.page-head h1 { font-size: 22px; margin: 0; letter-spacing: -0.01em; }
+.page-head .sub { margin: 6px 0 0; font-size: 12px; color: var(--muted); }
+.head-actions { display: flex; gap: 8px; align-items: center; }
+.head-actions select { height: 32px; padding: 0 10px; }
+.head-actions button { height: 32px; white-space: nowrap; }
+
+/* KPI 五卡 */
+.kpi-cards {
+  max-width: 1200px; margin: 0 auto 14px;
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px;
+}
+.kpi-card {
+  background: #fff; border: 1px solid var(--line); border-radius: 10px;
+  padding: 18px 12px 14px; text-align: center;
+  box-shadow: 0 1px 2px rgba(16, 42, 67, 0.04);
+}
+.kpi-card .num { font-size: 28px; font-weight: 700; line-height: 1.1; letter-spacing: -0.02em; }
+.kpi-card .num small { font-size: 13px; font-weight: 600; margin-left: 2px; }
+.kpi-card .label { margin-top: 8px; font-size: 12px; color: var(--muted); }
+.kpi-card.blue .num { color: #1f8ef1; }
+.kpi-card.green .num { color: #16a34a; }
+.kpi-card.red .num { color: #f04438; }
+.kpi-card.orange .num { color: #f59e0b; }
+
+/* Agent / 采集流水线控制台 */
+.agent-console {
+  max-width: 1200px; margin: 0 auto 16px; background: #16202e;
+  border-radius: 10px; overflow: hidden; box-shadow: 0 6px 20px rgba(16, 42, 67, 0.18);
+}
+.console-head {
+  display: flex; align-items: center; gap: 10px; padding: 10px 14px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06); color: #cfd8e3; font-size: 12px;
+}
+.console-head .dots { display: flex; gap: 6px; margin-right: 4px; }
+.console-head .dots i { width: 10px; height: 10px; border-radius: 50%; display: block; }
+.console-head .dots i:nth-child(1) { background: #ff5f56; }
+.console-head .dots i:nth-child(2) { background: #ffbd2e; }
+.console-head .dots i:nth-child(3) { background: #27c93f; }
+.console-head .title { font-weight: 600; color: #e6edf5; }
+.console-head .online { color: #34d399; font-size: 11px; }
+.console-head .spacer { flex: 1; }
+.console-btn {
+  background: #1f9d55; color: #fff; border: 0; border-radius: 5px;
+  padding: 6px 14px; font-size: 12px; font-weight: 600; cursor: pointer;
+}
+.console-btn:disabled { opacity: 0.55; cursor: progress; }
+.console-body {
+  height: 300px; overflow: auto; padding: 10px 14px;
+  font: 12px/1.8 Consolas, "Courier New", monospace; color: #c7d2de;
+}
+.console-line { display: flex; gap: 10px; white-space: pre-wrap; }
+.console-line .t { color: #5f7085; flex: 0 0 64px; }
+.log-tag { flex: 0 0 80px; font-weight: 700; font-size: 11px; letter-spacing: 0.04em; }
+.log-tag.scheduler { color: #60a5fa; }
+.log-tag.crawler { color: #34d399; }
+.log-tag.cleaner { color: #fbbf24; }
+.log-tag.sentiment { color: #c084fc; }
+.log-tag.alert { color: #f87171; }
+.console-line .m { color: #c7d2de; }
+.console-empty { color: #5f7085; margin: 6px 0; }
+
+/* 双图行 */
+.chart-two { max-width: 1200px; margin: 0 auto 14px; display: grid; grid-template-columns: 1.6fr 1fr; gap: 14px; }
+.chart-two .panel { margin: 0; }
+.chart-grid .panel { margin: 0; }
+.chart-two .chart-card { border: 0; padding: 0; background: transparent; }
+.chart-two .chart-grid { display: block; }
+
+@media (max-width: 900px) {
+  .kpi-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .chart-two { grid-template-columns: 1fr; }
+}

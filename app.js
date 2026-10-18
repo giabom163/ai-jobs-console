@@ -142,6 +142,13 @@ function show(message, error = false) {
   el.textContent = message || "";
   el.classList.toggle("error", !!error);
   el.classList.toggle("ok", !error && !!message);
+  clearTimeout(show._timer);
+  if (message && !error) {
+    show._timer = setTimeout(() => {
+      el.textContent = "";
+      el.classList.remove("ok");
+    }, 4000);
+  }
 }
 
 function setConnection(kind, text) {
@@ -1986,7 +1993,6 @@ async function load({keepNotice = false} = {}) {
     setWriteAvailability(true);
     state.loadedAt = new Date();
     setConnection("online", `在线 · 已读取本地数据（${fmtTime(state.loadedAt.toISOString())}）`);
-    if (!keepNotice) show("已从本地服务读取最新数据。");
   } catch (err) {
     invalidateData();
     if (err instanceof ApiError && err.kind === "offline") {
@@ -2221,7 +2227,11 @@ setInterval(() => {
   window.dispatchEvent(new Event("overview:refresh"));
 }, 30000);
 for (const id of ["#overview-reload", "#topics-reload", "#search-reload"]) {
-  $(id).addEventListener("click", () => { load(); loadP1(); });
+  $(id).addEventListener("click", () => {
+    load();
+    loadP1();
+    if (id === "#overview-reload") window.dispatchEvent(new Event("overview:refresh"));
+  });
 }
 $("#watch-reload").addEventListener("click", () => {
   load();
