@@ -48,6 +48,7 @@ if str(ROOT) not in sys.path:
 
 import server  # noqa: E402  复用已复核的粗略情感词典 classify
 import storage  # noqa: E402  复用项目证据库既有函数
+import relevance  # noqa: E402  性别对立粗筛
 
 COLLECTOR = "s1-opencli"
 DEFAULT_LIMIT = 3
@@ -608,6 +609,8 @@ def build_parser():
     parser.add_argument("--keyword", default=None,
                         help="关键词（仅 *-search 端点需要；单端点单次一个词）")
     parser.add_argument("--limit", type=int, default=DEFAULT_LIMIT, help=f"每个端点条数 1-{MAX_LIMIT}（默认 {DEFAULT_LIMIT}）")
+    parser.add_argument("--no-gender-filter", action="store_true",
+                        help="关闭性别对立相关度粗筛（默认只入库相关条目）")
     parser.add_argument("--dry-run", action="store_true",
                         help="只采集并打印映射结果：不打开/创建数据库，也不写节流账（只读账）")
     parser.add_argument("--group-id", default=None,
@@ -767,6 +770,16 @@ def main(argv=None):
         try:
             items, call = run_opencli(node, main_js, endpoint, effective, args.timeout, args.keyword)
             rows, previews = map_rows(endpoint, items)
+            if not args.no_gender_filter:
+                kept_rows, kept_previews, dropped = [], [], 0
+                for row, preview in zip(rows, previews):
+                    if relevance.is_relevant(row.get("title"), row.get("summary") or ""):
+                        kept_rows.append(row)
+                        kept_previews.append(preview)
+                    else:
+                        dropped += 1
+                rows, previews = kept_rows, kept_previews
+                result["filtered_out"] = dropped
         except CollectError as exc:
             signal = risk_signal(exc)
             result["status"] = "failed"
