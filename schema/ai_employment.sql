@@ -32,6 +32,11 @@ CREATE TABLE IF NOT EXISTS jobs (
   status TEXT NOT NULL DEFAULT 'open',  -- open / closed
   url TEXT,
   content_hash TEXT NOT NULL,
+  last_verified_at TEXT,
+  http_status INTEGER,
+  final_url TEXT,
+  authenticity_score REAL NOT NULL DEFAULT 0,
+  authenticity_level TEXT NOT NULL DEFAULT '待核验',
   UNIQUE(source, external_id)
 );
 
