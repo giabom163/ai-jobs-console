@@ -25,6 +25,8 @@ SCHEMA = ROOT / "schema" / "ai_employment.sql"
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0 Safari/537.36"
 
 BUILD_TERMS = ("machine learning", "ml engineer", "ai engineer", "research scientist",
+               "人工智能", "大模型", "算法工程师", "算法专家", "机器学习", "深度学习", "多模态",
+               "推荐算法", "搜索算法", "自动驾驶", "机器人", "具身智能", "智能驾驶",
                "applied ai", "llm", "genai", "generative ai", "deep learning", "nlp",
                "computer vision", "inference", "training", "pytorch", "tensorflow",
                "rag", "agent", "foundation model", "alignment", "interpretability")
@@ -50,7 +52,7 @@ def strip_html(value):
 def classify_ai(title, description="", department=""):
     """以岗位标题/部门为主；描述只做辅助，避免 AI 公司所有岗位都被判 build。"""
     title_text = f"{title or ''} {department or ''}".lower()
-    if re.search(r"\bai\b", title_text):
+    if "ai" in title_text or "人工智能" in title_text:
         return "build", 0.85, ["title:ai"]
     for tier, terms in (("build", BUILD_TERMS), ("adjacent", ADJACENT_TERMS),
                         ("exposed", EXPOSED_TERMS)):

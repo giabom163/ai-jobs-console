@@ -26,7 +26,7 @@ UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0 
 SOURCE_BASE = {
     "ats:greenhouse": 45, "ats:lever": 45, "ats:ashby": 45,
     "ats:workable": 45, "ats:smartrecruiters": 45, "ats:recruitee": 45,
-    "official": 35, "aggregator": 20, "platform": 10,
+    "official": 45, "aggregator": 20, "platform": 10,
 }
 ATS_HOSTS = ("greenhouse.io", "lever.co", "ashbyhq.com", "workable.com",
              "smartrecruiters.com", "recruitee.com")
@@ -37,10 +37,10 @@ def today_utc():
 
 
 def score(job, http_status=None, final_url="", company_domain="", cross_source=0):
-    base = SOURCE_BASE.get(job["source"].split(":")[0] + ":" + job["source"].split(":")[1]
-                           if ":" in job["source"] else job["source"], 0)
-    if job["source"].startswith("ats:"):
-        base = 45
+    source = job["source"] or ""
+    base = SOURCE_BASE.get(source, 0)
+    if not base and ":" in source:
+        base = SOURCE_BASE.get(source.split(":", 1)[0], 0)
     score = base
     host = urllib.parse.urlsplit(final_url or job["url"] or "").hostname or ""
     domain_match = bool(host and (any(h in host for h in ATS_HOSTS) or
