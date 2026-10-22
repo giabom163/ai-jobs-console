@@ -15,3 +15,8 @@ _last_run.json
 _verify500.json
 
 _verify500_meituan.json
+
+_backup-*.db
+_test_dedup.db
+_verify_domestic.json
+_verify500_second.json

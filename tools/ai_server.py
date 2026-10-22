@@ -23,17 +23,18 @@ def connect():
 def stats(con):
     def one(sql, args=()):
         return con.execute(sql, args).fetchone()[0]
-    total = one("SELECT count(*) FROM jobs")
+    total = one("SELECT count(*) FROM jobs WHERE status='open'")
     return {
         "total": total,
-        "open": one("SELECT count(*) FROM jobs WHERE status='open'"),
-        "build": one("SELECT count(*) FROM jobs WHERE ai_relevance='build'"),
-        "adjacent": one("SELECT count(*) FROM jobs WHERE ai_relevance='adjacent'"),
-        "verified": one("SELECT count(*) FROM jobs WHERE authenticity_level='已验证'"),
+        "open": total,
+        "merged": one("SELECT count(*) FROM jobs WHERE status='merged'"),
+        "build": one("SELECT count(*) FROM jobs WHERE status='open' AND ai_relevance='build'"),
+        "adjacent": one("SELECT count(*) FROM jobs WHERE status='open' AND ai_relevance='adjacent'"),
+        "verified": one("SELECT count(*) FROM jobs WHERE status='open' AND authenticity_level='已验证'"),
         "companies": one("SELECT count(*) FROM companies"),
         "today_new": one("SELECT count(*) FROM job_changes WHERE change_type='new' AND date(changed_at)=date('now')"),
         "levels": [dict(r) for r in con.execute(
-            "SELECT authenticity_level label,count(*) value FROM jobs GROUP BY authenticity_level ORDER BY value DESC")],
+            "SELECT authenticity_level label,count(*) value FROM jobs WHERE status='open' GROUP BY authenticity_level ORDER BY value DESC")],
         "top_companies": [dict(r) for r in con.execute(
             "SELECT c.name label,count(*) value FROM jobs j JOIN companies c ON c.id=j.company_id "
             "WHERE j.status='open' GROUP BY c.name ORDER BY value DESC LIMIT 8")],
@@ -130,7 +131,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json({
                     "generated_at": __import__("datetime").datetime.now().isoformat(timespec="seconds"),
                     "total": s["total"], "open": s["open"], "build": s["build"],
-                    "verified": s["verified"], "pending": s["total"] - s["verified"],
+                    "verified": s["verified"], "pending": s["total"] - s["verified"], "merged": s["merged"],
                     "today_new": s["today_new"], "companies": s["companies"],
                     "top_companies": s["top_companies"][:5],
                     "signals": con.execute("SELECT count(*) FROM signals").fetchone()[0],

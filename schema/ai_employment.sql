@@ -40,6 +40,9 @@ CREATE TABLE IF NOT EXISTS jobs (
   authenticity_level TEXT NOT NULL DEFAULT '待核验',
   domain_match INTEGER NOT NULL DEFAULT 0,
   cross_source INTEGER NOT NULL DEFAULT 0,
+  dedup_key TEXT,
+  duplicate_of TEXT,
+  merged_at TEXT,
   UNIQUE(source, external_id)
 );
 

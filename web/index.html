@@ -117,7 +117,7 @@ async function loadDashboard(){
   $('#levels').innerHTML=(d.levels||[]).map(x=>`<div class="bar"><span>${esc(x.label)}</span><span class="track"><i style="width:${x.value/max*100}%;background:${x.label==='已验证'?'#0f766e':x.label==='低可信'?'#b42318':'#1d4ed8'}"></i></span><b>${x.value}</b></div>`).join('')||'<div class="empty">暂无</div>';
   const cmax=Math.max(...(d.top_companies||[]).map(x=>x.value),1);
   $('#companies').innerHTML=(d.top_companies||[]).map(x=>`<div class="bar"><span>${esc(x.label)}</span><span class="track"><i style="width:${x.value/cmax*100}%"></i></span><b>${x.value}</b></div>`).join('')||'<div class="empty">暂无</div>';
-  $('#notes').innerHTML=`<div>• 今日新增：<b>${d.today_new}</b></div><div>• 已验证仅 ${d.verified} 条，其余为“可信/待核验”，需继续做 URL 校验。</div><div>• 数据源：${d.companies} 家公司，全部来自公开 ATS。</div>`;
+  $('#notes').innerHTML=`<div>• 今日新增：<b>${d.today_new}</b></div><div>• 已合并重复：<b>${d.merged||0}</b> 条（同公司/同岗位/同城市，保留最新）</div><div>• 已验证 ${d.verified} 条，其余为“待核验”，需继续做 URL 校验。</div><div>• 数据源：${d.companies} 家公司。</div>`;
 }
 function renderTrend(rows){
   if(!rows.length){$('#trend').innerHTML='<div class="empty">暂无趋势</div>';return;}
@@ -177,7 +177,7 @@ async function loadReport(){
     <div><b>生成时间：</b>${esc(d.generated_at)}</div>
     <div><b>岗位：</b>共 ${d.total} 条，在招 ${d.open} 条，AI build ${d.build} 条</div>
     <div><b>真实性：</b>已验证 ${d.verified} 条，待核验 ${d.pending} 条</div>
-    <div><b>今日新增：</b>${d.today_new} 条；监控公司 ${d.companies} 家；舆情信号 ${d.signals} 条</div>
+    <div><b>今日新增：</b>${d.today_new} 条；已合并重复 ${d.merged||0} 条；监控公司 ${d.companies} 家；舆情信号 ${d.signals} 条</div>
     <div><b>Top 公司：</b>${(d.top_companies||[]).map(x=>x.label+' '+x.value).join(' · ')}</div>
     <div style="margin-top:10px;color:#64748b">${esc(d.note)}</div></div>`;
 }
