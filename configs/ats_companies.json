@@ -1,0 +1,13 @@
+{
+  "companies": [
+    {"name": "Anthropic", "type": "greenhouse", "token": "anthropic", "enabled": true},
+    {"name": "OpenAI", "type": "ashby", "token": "openai", "enabled": true},
+    {"name": "Cohere", "type": "ashby", "token": "cohere", "enabled": true},
+    {"name": "Perplexity", "type": "ashby", "token": "perplexity", "enabled": true},
+    {"name": "Mistral", "type": "ashby", "token": "mistral.ai", "enabled": true},
+    {"name": "月之暗面", "type": "official", "token": "https://careers.kimi.com/", "enabled": false},
+    {"name": "智谱", "type": "official", "token": "https://www.zhipuai.cn/careers", "enabled": false},
+    {"name": "MiniMax", "type": "official", "token": "https://www.minimaxi.com/careers", "enabled": false},
+    {"name": "百川", "type": "official", "token": "https://www.baichuan-ai.com/", "enabled": false}
+  ]
+}
