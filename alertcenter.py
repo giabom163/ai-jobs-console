@@ -3,7 +3,8 @@
 口径说明（可审计）：
 - 命中对象是旧 RSS 材料表 records（keyword 匹配 title/summary；source 匹配 feeds.name；
   sentiment 匹配 records.sentiment），不是人工候选 p1_evidence。
-- 时间窗口口径与 storage.overview_stats 一致：coalesce(published_at, fetched_at)，缺时不补造。
+- 时间窗口口径与 storage.overview_stats 一致（严格）：只 time_quality=valid 的 published_at，
+  真实 [start, end)；缺发表时间或质量非 valid 的记录不参与，绝不用 fetched_at 兜底、不做字符串排序。
 - 冷却按规则维度（同规则最近一条告警的 last_seen + cooldown_minutes）判断；冷却期内不再新建。
 - 告警 ID 由 storage.digest 生成；同一时刻重复 evaluate 用 INSERT OR IGNORE 幂等，不重复计数。
 """
@@ -15,6 +16,7 @@ import threading
 import time
 
 import storage
+import activity
 
 MATCH_KINDS = ("keyword", "source", "sentiment")
 LEVELS = ("info", "warn", "critical")
@@ -83,18 +85,22 @@ def in_cooldown(db, rule, moment):
     return moment - datetime.fromisoformat(last[0]) < timedelta(minutes=cooldown)
 
 
-def rule_hits(db, rule, since):
-    """窗口内命中记录数 + 命中的 record id（前 EVIDENCE_SAMPLE 条）。"""
+def rule_hits(db, rule, start, end):
+    """窗口内命中记录数 + 命中的 record id（前 EVIDENCE_SAMPLE 条）。
+
+    严格发表时间窗口：只 time_quality=valid 且真实 [start, end)，与 storage.overview_stats 同一语义。
+    """
     where, args = match_clause(rule["match_kind"], rule["match_value"])
     if where is None:
         return None, []
-    base = (" FROM records r JOIN feeds f ON f.id=r.feed_id"
-            " WHERE coalesce(r.published_at,r.fetched_at)>=? AND " + where)
-    total = db.execute("SELECT count(*)" + base, (since,) + args).fetchone()[0]
+    rows = db.execute(
+        "SELECT r.id, r.published_at, r.time_quality FROM records r JOIN feeds f ON f.id=r.feed_id "
+        "WHERE " + where, args).fetchall()
+    selected, _, _ = activity.select(rows, start, end)
+    total = len(selected)
     if total <= 0:
         return total, []
-    ids = [row[0] for row in db.execute(
-        "SELECT r.id" + base + " ORDER BY r.id LIMIT ?", (since,) + args + (EVIDENCE_SAMPLE,))]
+    ids = sorted(row["id"] for row, _ in selected)[:EVIDENCE_SAMPLE]
     return total, ids
 
 
@@ -112,8 +118,8 @@ def evaluate(db, moment=None):
         if type(window) is not int or window < 1:
             window = 60
         checked += 1
-        since = (moment - timedelta(minutes=window)).isoformat()
-        total, ids = rule_hits(db, rule, since)
+        since = moment - timedelta(minutes=window)
+        total, ids = rule_hits(db, rule, since, moment)
         if not total or total < rule["threshold"]:
             continue
         if in_cooldown(db, rule, moment):

@@ -9,6 +9,8 @@
   var windowSelect = document.getElementById('dash-window');
   var updated = document.getElementById('dash-updated');
   var currentWindow = '24h';
+  var loadToken = 0;          // 每次 load 自增；只有最新一次请求的响应可以覆盖界面
+  var tiebaBody = null;       // 本次渲染的贴吧增量区容器
 
   var COLORS = ['#3b82f6', '#22c55e', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4', '#84cc16', '#f97316'];
 
@@ -37,11 +39,12 @@
 
   /* ---------- KPI 五卡 ---------- */
   function kpiCards(hostEl, kpi) {
+    var recordLabel = currentWindow === 'all' ? '全库记录' : '窗口内新发表记录';
     var items = [
-      ['记录总数', kpi.records, 'blue'],
-      ['今日新增', '+' + kpi.today_added, 'green'],
+      [recordLabel, kpi.records, 'blue'],
+      ['今日新采入库', '+' + kpi.today_added, 'green'],
       ['负面舆情', kpi.negative, 'red'],
-      ['活跃话题', kpi.active_topics === undefined ? '—' : kpi.active_topics, 'orange'],
+      ['活跃话题', (kpi.active_topics === undefined || kpi.active_topics === null) ? '—' : kpi.active_topics, 'orange'],
       ['未处理预警', kpi.open_alerts, 'red']
     ];
     items.forEach(function (it) {
@@ -207,12 +210,12 @@
     }
 
     var two = el('div', 'chart-two');
-    var trendBox = card('近7天舆情热度趋势', '按日统计，口径 published_at ?: fetched_at');
+    var trendBox = card('近7天舆情热度趋势', '按日统计，口径 published_at（time_quality=valid）');
     var trendTitle = currentWindow === '24h' ? '近24小时舆情热度趋势' : currentWindow === '48h' ? '近48小时舆情热度趋势' :
       (currentWindow === 'all' ? '全量舆情热度趋势' : '近' + currentWindow.replace('d', '') + '天舆情热度趋势');
     trendBox.box.querySelector('h3').textContent = trendTitle;
     trendBox.box.querySelector('.chart-note').textContent = (currentWindow === '24h' || currentWindow === '48h')
-      ? '按小时统计，口径 published_at ?: fetched_at' : '按日统计，口径 published_at ?: fetched_at';
+      ? '按小时统计，口径 published_at（time_quality=valid）' : '按日统计，口径 published_at（time_quality=valid）';
     var trendPanel = el('section', 'panel');
     trendPanel.appendChild(trendBox.box);
     trendChart(stats.trend, trendBox.body);
@@ -240,6 +243,15 @@
     grid.appendChild(platformPanel);
     grid.appendChild(topPanel);
     host.appendChild(grid);
+
+    // 独立贴吧增量区：与「窗口内新发表记录」口径不同，单独展示，不相加。
+    var tieba = card('贴吧 24 小时回复增量',
+      '仅贴吧来源原帖 · 同身份同口径精确计数（当前只读计数，待真实计数接入核验） · 显示「24 小时内已观测净增下界」，不是全站热度');
+    tiebaBody = tieba.body;
+    tiebaBody.appendChild(el('p', 'chart-empty', '正在读取贴吧增量…'));
+    var tiebaPanel = el('section', 'panel');
+    tiebaPanel.appendChild(tieba.box);
+    host.appendChild(tiebaPanel);
 
     var foot = el('p', 'chart-foot',
       '生成于 ' + fmtLocal(stats.generated_at) + ' · 覆盖口径 ' + stats.coverage +
@@ -294,7 +306,9 @@
           consoleBody.appendChild(consoleLine('sentiment', 'SENTIMENT',
             '规则词典判定 · 待判 ' + stats.kpi.sentiment_pending + ' 条；模型标注见检索卡片', clock(log.finished_at)));
           consoleBody.appendChild(consoleLine('topic', 'TOPIC',
-            '聚类事件 ' + (stats.kpi.active_topics || 0) + ' 个（≥2 条）', clock(log.finished_at)));
+            '聚类事件 ' + ((stats.kpi.active_topics === undefined || stats.kpi.active_topics === null)
+              ? '—' : stats.kpi.active_topics) + ' 个（≥2 条，全库口径；无法按发表时间窗口复算）',
+            clock(log.finished_at)));
           consoleBody.appendChild(consoleLine('alert', 'ALERT',
             '未处理预警 ' + stats.kpi.open_alerts + ' 条 · 本轮状态 ' + log.status, clock(log.finished_at)));
         }
@@ -311,16 +325,91 @@
       });
   }
 
+  /* ---------- 贴吧增量区 ---------- */
+  function countText(value) {
+    return (value === undefined || value === null) ? '—' : value;
+  }
+
+  function spanText(seconds) {
+    if (seconds === null || seconds === undefined) return '区间未知';
+    var hours = seconds / 3600;
+    if (hours >= 1) return hours.toFixed(1) + ' 小时';
+    return Math.max(1, Math.round(seconds / 60)) + ' 分钟';
+  }
+
+  function fillTieba(data) {
+    if (!tiebaBody) return;
+    tiebaBody.textContent = '';
+    var summary = (data && data.summary) || {};
+    var reasons = (data && data.reasons) || {};
+    var total = summary.records_total;
+    tiebaBody.appendChild(el('p', 'chart-note',
+      '合格 ' + countText(summary.qualified) + ' · 待核 ' + countText(summary.pending) +
+      '（其中无计数 ' + countText(reasons.no_observation) + '，是待核的子集，不与前两项相加）' +
+      ' · 贴吧原帖共 ' + countText(total)));
+    var items = (data && data.items) || [];
+    var qualifiedItems = items.filter(function (it) { return it.status === 'qualified'; });
+    if (!qualifiedItems.length) {
+      tiebaBody.appendChild(el('p', 'chart-empty',
+        total ? '暂无达到阈值的原帖（无计数或待积累）' : '暂无贴吧来源原帖'));
+    } else {
+      qualifiedItems.forEach(function (it) {
+        var row = el('div', 'bar-row');
+        row.appendChild(el('span', 'bar-label', it.label || '（原帖）'));
+        row.appendChild(el('span', 'bar-value', '24小时内已观测净增下界 +' + it.observed_delta));
+        tiebaBody.appendChild(row);
+      });
+    }
+    var win = (data && data.window) || {};
+    var fresh = (data && data.freshness) || {};
+    var sample = items.filter(function (it) { return it.observed_start && it.observed_end; })[0];
+    var text = '判定窗口 ' + fmtLocal(win.start) + ' ~ ' + fmtLocal(win.end) +
+      '（阈值 > ' + ((data && data.threshold) || 50) + '）';
+    if (sample) {
+      text += ' · 实际比较区间示例 ' + fmtLocal(sample.observed_start) + ' ~ ' + fmtLocal(sample.observed_end) +
+        '（' + spanText(sample.observed_span_seconds) + '，仅已观测下界，非精确 24h 总增量）';
+    }
+    text += ' · 新鲜度：最新观测 ' + (fresh.latest_observed_at ? fmtLocal(fresh.latest_observed_at) : '—') +
+      (fresh.latest_age_seconds === null || fresh.latest_age_seconds === undefined
+        ? '' : '（' + Math.round(fresh.latest_age_seconds / 60) + ' 分钟前，超过 ' +
+          (fresh.stale_minutes || 15) + ' 分钟只记待核）');
+    tiebaBody.appendChild(el('p', 'chart-note', text));
+  }
+
+  function tiebaError(message) {
+    if (!tiebaBody) return;
+    tiebaBody.textContent = '';
+    tiebaBody.appendChild(el('p', 'chart-empty', message));
+  }
+
+  function loadTieba(token) {
+    fetch('/api/tieba-activity', { headers: { accept: 'application/json' } })
+      .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+      .then(function (data) { if (token !== loadToken) return; fillTieba(data); })
+      .catch(function (e) { if (token !== loadToken) return; tiebaError('贴吧增量读取失败：' + e.message); });
+  }
+
   /* ---------- 加载 ---------- */
   function load(windowKey) {
     currentWindow = windowKey || currentWindow;
-    fetch('/api/overview-stats?window=' + currentWindow, { headers: { accept: 'application/json' } })
-      .then(function (r) { return r.json(); })
-      .then(render)
+    var requested = currentWindow;
+    var token = ++loadToken;               // 只有最新一次请求的响应可以覆盖界面
+    fetch('/api/overview-stats?window=' + encodeURIComponent(requested), { headers: { accept: 'application/json' } })
+      .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+      .then(function (stats) {
+        if (token !== loadToken) return;   // 旧窗口的晚到响应直接丢弃，不覆盖新窗口
+        render(stats);
+        loadTieba(token);
+      })
       .catch(function (e) {
+        if (token !== loadToken) return;
         host.textContent = '';
         host.appendChild(el('p', 'chart-empty', '总览聚合加载失败：' + e.message));
         host.hidden = false;
+        var board = document.getElementById('dash-kpis');
+        if (board) board.textContent = '';   // 清旧 KPI，不显示过期/假 0
+        if (updated) updated.textContent = '读取失败';
+        tiebaError('贴吧增量读取失败：' + e.message);   // 清旧数据，不显示假 0
       });
   }
 

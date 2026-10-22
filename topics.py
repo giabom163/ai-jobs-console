@@ -4,6 +4,8 @@
 """
 from __future__ import annotations
 
+from datetime import timedelta
+
 CATEGORIES = (
     ("彩礼/婚姻法", ("彩礼", "婚姻法", "结婚率", "婚房", "嫁妆", "离婚", "领证", "婚前")),
     ("性别对立/打拳", ("性别对立", "男女对立", "打拳", "拳师", "女拳", "男拳", "性别矛盾")),
@@ -41,16 +43,39 @@ def keywords(titles, topk=4):
         return []
 
 
-def _since(hours):
-    from datetime import datetime, timedelta, timezone
-    return (datetime.now(timezone.utc) - timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M:%S")
+def _select_rows(db, hours, now=None, with_feed=False):
+    """返回 `[(row, moment_or_None), ...]`。
+
+    - `hours` 为具体小时数：严格发表时间窗口，只 time_quality=valid 且真实 `[start, end)`，
+      绝不回退 fetched_at、不用原始字符串排序；
+    - `hours=None`（all）：**保留全部原始记录**（含 unknown/future），与 `storage.overview_stats` 的
+      all 全库母体一致；moment 取真实发表时刻（仅 valid），其余为 None，供排序时有效时刻在前、unknown 置后。
+    """
+    import activity
+    end = now.astimezone(activity.timezone.utc) if now is not None else activity.utc_now()
+    cols = ("r.title, r.summary, r.canonical_id, m.topic, r.published_at, r.time_quality")
+    if with_feed:
+        cols = ("r.title, r.summary, r.url, r.published_at, f.name, r.canonical_id, m.topic, r.time_quality")
+    join = " FROM records r JOIN feeds f ON f.id=r.feed_id" if with_feed else " FROM records r"
+    rows = db.execute("SELECT " + cols + join +
+                      " LEFT JOIN model_annotations m ON m.record_id=r.id").fetchall()
+    if hours is None:
+        return [(row, activity.valid_published(row)[0]) for row in rows]
+    start = end - timedelta(hours=int(hours))
+    return activity.select(rows, start, end)[0]
 
 
-def categories(db, hours=24):
-    """按最近 hours 小时分类；返回 [{name,count,records,keywords,examples}]。"""
-    rows = db.execute("SELECT r.title, r.summary, r.canonical_id, m.topic FROM records r "
-                      "LEFT JOIN model_annotations m ON m.record_id=r.id "
-                      "WHERE coalesce(r.published_at, r.fetched_at) >= ?", (_since(hours),)).fetchall()
+def _ordered_rows(pairs):
+    """排序：有效发表时刻降序在前，unknown/无法解析的稳定置后（不凭 fetched 伪发表）。"""
+    valid = sorted([p for p in pairs if p[1] is not None], key=lambda p: p[1], reverse=True)
+    unknown = [p for p in pairs if p[1] is None]
+    return [row for row, _ in valid + unknown]
+
+
+def categories(db, hours=24, now=None):
+    """按最近 hours 小时分类（严格发表时间窗口；hours=None 为 all，保留全库原始记录）；返回
+    [{name,count,records,keywords,examples}]。"""
+    rows = [row for row, _ in _select_rows(db, hours, now)]
     label_counts = {name: 0 for name in CATEGORY_NAMES}
     seen = {name: set() for name in CATEGORY_NAMES}
     titles = {name: [] for name in CATEGORY_NAMES}
@@ -77,16 +102,15 @@ def categories(db, hours=24):
     return {"categories": out, "total_contents": total, "basis": BASIS}
 
 
-def records_for_category(db, hours, category, limit=50):
-    """返回某个类别（或 __all__）下最近的内容（按 canonical_id 去重）。"""
+def records_for_category(db, hours, category, limit=50, now=None):
+    """返回某个类别（或 __all__）下的内容（按 canonical_id 去重）。
+
+    `hours` 为具体小时数时严格按发表时间窗口；`hours=None`（all）保留全部原始记录（含 unknown/future）。
+    排序：有效发表时刻降序在前，unknown/无法解析的稳定置后。`now` 固定窗口右边界。
+    """
     if category != "__all__" and category not in CATEGORY_NAMES:
         raise ValueError("category 不在白名单：" + "/".join(CATEGORY_NAMES + ("__all__",)))
-    rows = db.execute(
-        "SELECT r.title, r.summary, r.url, r.published_at, f.name, r.canonical_id, m.topic "
-        "FROM records r JOIN feeds f ON f.id=r.feed_id "
-        "LEFT JOIN model_annotations m ON m.record_id=r.id "
-        "WHERE coalesce(r.published_at, r.fetched_at) >= ? "
-        "ORDER BY coalesce(r.published_at, r.fetched_at) DESC LIMIT 5000", (_since(hours),)).fetchall()
+    rows = _ordered_rows(_select_rows(db, hours, now, with_feed=True))
     items, seen, total = [], set(), 0
     truncated = len(rows) >= 5000
     for row in rows:

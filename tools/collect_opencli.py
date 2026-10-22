@@ -212,8 +212,11 @@ ENDPOINTS = {
         "platform": "xiaohongshu",
         "feed_url": "https://www.xiaohongshu.com/search_result?keyword=",
         "default_group": "xiaohongshu-search",
-        "fields": {"title": "note_card.display_title", "url": "url", "summary": None,
-                   "source_id": "note_card.note_id", "published_at": None},
+        # 实测当前 OpenCLI 输出是**扁平** title/url（不是 note_card.*）；其 published_at
+        # 是**由 ID 派生的日期**，不得作为发布证据入有效库 → 一律 published_at=None。
+        # 若上游缺 title/url，map_rows 跳过该条；不从 ID 反推日期。
+        "fields": {"title": "title", "url": "url", "summary": None,
+                   "source_id": "id", "published_at": None},
         "summary_empty_when_same_as_title": False,
     },
 
@@ -347,6 +350,8 @@ def opencli_candidates(explicit):
     env = os.environ.get("OPENCLI_MAIN")
     if env:
         out.append(Path(env))
+    # 本轮实测的真实本机安装位置（先确认入口存在再使用，缺失再由 _first_file 判 None 报错）。
+    out.append(Path("D:/DSH/tools/opencli-1.8.8") / rel)
     profiles = Path.home() / ".dsh" / "profiles"
     if profiles.is_dir():
         out.extend(sorted((p / rel for p in profiles.iterdir()), reverse=True))

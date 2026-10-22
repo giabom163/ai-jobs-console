@@ -118,21 +118,9 @@ def publication(value):
         try:
             dt = parsedate_to_datetime(value)
         except (TypeError, ValueError, OverflowError):
-            m = re.fullmatch(r"(\d{1,2})月(\d{1,2})日\s*(\d{1,2}):(\d{2})", value)
-            if not m:
-                return None, "invalid"
-            tz = timezone(timedelta(hours=8))
-            now = datetime.now(tz)
-            month, day, hour, minute = map(int, m.groups())
-            try:
-                dt = datetime(now.year, month, day, hour, minute, tzinfo=tz)
-            except ValueError:
-                return None, "invalid"
-            if dt > now + timedelta(days=1):
-                try:
-                    dt = dt.replace(year=now.year - 1)
-                except ValueError:
-                    return None, "invalid"
+            # 缺年份的“10月18日12:30”之类无法证明真实年份：绝不用当前年份/跨年去猜，
+            # 一律保守判 invalid（相对时间、无时区日期、不完整年月同理），不伪 valid。
+            return None, "invalid"
     if dt.tzinfo is None or dt.utcoffset() is None:
         return None, "timezone_missing"
     try:
@@ -498,77 +486,123 @@ def data(db):
 
 # --- P1 总览聚合（只读，无网络、无模型） -------------------------------------------------------
 
-def overview_stats(db, window_days=None, window_hours=None):
+def overview_stats(db, window_days=None, window_hours=None, now=None):
     """总览大屏聚合：KPI + 每日趋势 + 平台分布 + 情感分布 + TOP 条目分组。
 
-    时间口径：published_at 优先，缺失时退回 fetched_at（time_quality=missing 的记录）；
-    窗口按该口径过滤，window_days=None 表示全量。不补零、不外推。
+    时间口径（严格）：只 `time_quality=valid` 且带时区的 `published_at`，窗口为真实 `[start, end)`；
+    绝不回退 `fetched_at`、不用原始字符串排序。无法解析发表时间的记录不计入窗口，单独计数
+    （`window.unknown_excluded`）。`window_days` 与 `window_hours` 同时为 None 时表示 all，保留全库。
+    `kpi.negative` 与 `kpi.records` 同窗口、同分母。不补零、不外推。
+
+    `now`（带时区 datetime，可选）用于固定窗口右边界，供同一次请求的多个聚合共用同一 now。
     """
-    from datetime import datetime, timedelta, timezone
+    import activity
 
-    since = None
+    end = now.astimezone(timezone.utc) if now is not None else activity.utc_now()
+    start = None
     if window_hours:
-        since = (datetime.now(timezone.utc) - timedelta(hours=int(window_hours))).strftime('%Y-%m-%dT%H:%M:%S')
+        start = end - timedelta(hours=int(window_hours))
     elif window_days:
-        since = (datetime.now(timezone.utc) - timedelta(days=int(window_days))).strftime('%Y-%m-%dT%H:%M:%S')
+        start = end - timedelta(days=int(window_days))
 
-    def clause(alias=''):
-        if since is None:
-            return '', ()
-        col = (lambda n: alias + n) if alias else (lambda n: n)
-        return (' WHERE coalesce(%s, %s) >= ?' % (col('published_at'), col('fetched_at')), (since,))
+    rows = list(db.execute(
+        "SELECT r.id, r.canonical_id, r.title, r.published_at, r.time_quality, r.sentiment, "
+        "f.name AS source, m.sentiment AS model_sentiment "
+        "FROM records r JOIN feeds f ON f.id=r.feed_id "
+        "LEFT JOIN model_annotations m ON m.record_id=r.id"))
+    selected, excluded, unknown_excluded = activity.select(rows, start, end)
+    # all（start=None）：调用层明确保留全库，含无法解析发表时间的记录；窗口模式只保留窗口内 valid 记录。
+    members = list(rows) if start is None else [row for row, _ in selected]
 
-    where, args = clause()
-    row = db.execute(
-        """SELECT count(*) records, count(DISTINCT canonical_id) canonical,
-                  coalesce(sum(published_at IS NULL),0) unknown_time,
-                  coalesce(sum(sentiment IS NULL OR sentiment='' OR sentiment LIKE '%待判%'),0) sentiment_pending
-           FROM records""" + where, args).fetchone()
-    kpi = dict(row)
-    kpi['unknown_time_ratio'] = round(kpi['unknown_time'] / kpi['records'], 4) if kpi['records'] else None
-    kpi['sentiment_pending_ratio'] = round(kpi['sentiment_pending'] / kpi['records'], 4) if kpi['records'] else None
+    records_total = len(members)
+    canonical = len({row['canonical_id'] for row in members})
+    sentiment_pending = sum(
+        1 for row in members if not row['sentiment'] or '待判' in (row['sentiment'] or ''))
+    negative = sum(
+        1 for row in members
+        if (row['model_sentiment'] if row['model_sentiment'] is not None else row['sentiment'])
+        in ('偏负面', '强负面'))
+    kpi = {'records': records_total, 'canonical': canonical, 'unknown_time': unknown_excluded,
+           'sentiment_pending': sentiment_pending, 'negative': negative}
+    # 分母用全库记录数：all 模式下 members 已含未知时间行，若再加 unknown_excluded 会重复计数。
+    kpi['unknown_time_ratio'] = round(unknown_excluded / len(rows), 4) if rows else None
+    kpi['sentiment_pending_ratio'] = round(sentiment_pending / records_total, 4) if records_total else None
+    # 明确口径：unknown_time/ratio 是**全库数据质量**（缺/非法发表时间的记录数），与窗口 records 不同分母。
+    kpi['unknown_time_basis'] = 'whole_database'
     kpi['feeds'] = db.execute("SELECT count(*) FROM feeds").fetchone()[0]
     last = db.execute("SELECT finished_at FROM collection_runs WHERE status='succeeded' "
                       "ORDER BY finished_at DESC LIMIT 1").fetchone()
     kpi['last_success_at'] = last[0] if last else None
 
     if window_hours:
-        fmt = '%m-%d %H:00' if int(window_hours) > 24 else '%H:00'
-        bucket = f"strftime('{fmt}', datetime(coalesce(published_at, fetched_at), '+8 hours'))"
+        label_fmt = '%m-%d %H:00' if int(window_hours) > 24 else '%H:00'
     else:
-        bucket = "date(coalesce(published_at, fetched_at), '+8 hours')"
-    trend = [dict(day=r[0], records=r[1], canonical=r[2]) for r in db.execute(
-        "SELECT " + bucket + " day, count(*) records, count(DISTINCT canonical_id) canonical "
-        "FROM records" + where + " GROUP BY day ORDER BY day", args)]
+        label_fmt = '%Y-%m-%d'
+    buckets = {}
+    for row, moment in selected:
+        key = moment.astimezone(activity.TZ).strftime(label_fmt)
+        entry = buckets.setdefault(key, {'records': 0, 'canonical': set()})
+        entry['records'] += 1
+        entry['canonical'].add(row['canonical_id'])
+    trend = [{'day': key, 'records': value['records'], 'canonical': len(value['canonical'])}
+             for key, value in sorted(buckets.items())]
 
-    pw, pa = clause('r.')
-    platforms = [dict(label=r[0], value=r[1]) for r in db.execute(
-        """SELECT f.name, count(*) c FROM records r JOIN feeds f ON f.id=r.feed_id""" + pw +
-        " GROUP BY f.name ORDER BY c DESC, f.name", pa)]
+    platform_counts = {}
+    for row in members:
+        platform_counts[row['source']] = platform_counts.get(row['source'], 0) + 1
+    platforms = [{'label': name, 'value': platform_counts[name]}
+                 for name in sorted(platform_counts, key=lambda n: (-platform_counts[n], n))]
 
-    sentiment = [dict(label=r[0] or '未标注', value=r[1]) for r in db.execute(
-        """SELECT coalesce(nullif(sentiment,''),'未标注') label, count(*) c
-           FROM records""" + where + " GROUP BY label ORDER BY c DESC, label", args)]
+    sentiment_counts = {}
+    for row in members:
+        label = row['sentiment'] or '未标注'
+        sentiment_counts[label] = sentiment_counts.get(label, 0) + 1
+    sentiment = [{'label': name, 'value': sentiment_counts[name]}
+                 for name in sorted(sentiment_counts, key=lambda n: (-sentiment_counts[n], n))]
 
-    groups = [dict(label=(r[0] or '(无标题)'), value=r[1], canonical_id=r[2]) for r in db.execute(
-        """SELECT min(title) label, count(*) c, canonical_id FROM records""" + where +
-        " GROUP BY canonical_id ORDER BY c DESC, label LIMIT 10", args)]
+    group_counts = {}
+    for row in members:
+        label = row['title'] or '(无标题)'
+        entry = group_counts.setdefault(row['canonical_id'], {'count': 0, 'label': label})
+        entry['count'] += 1
+        if label < entry['label']:
+            entry['label'] = label
+    groups = [{'label': value['label'], 'value': value['count'], 'canonical_id': cid}
+              for cid, value in sorted(group_counts.items(),
+                                       key=lambda kv: (-kv[1]['count'], kv[1]['label']))[:10]]
 
+    scope = 'all' if start is None else (f"{int(window_hours)}h" if window_hours else f"{int(window_days)}d")
     return {
         'schema_version': 'p1-v1',
-        'generated_at': datetime.now(timezone.utc).isoformat(timespec='seconds'),
+        'generated_at': end.isoformat(timespec='seconds'),
         'window_days': window_days,
-        'window_since': since,
+        'window_since': start.isoformat() if start else None,
+        'window': {
+            'scope': scope,
+            'start': start.isoformat() if start else None,
+            'end': end.isoformat(),
+            'time_basis': activity.TIME_BASIS,
+            'unknown_excluded': unknown_excluded,
+            'unknown_basis': 'whole_database',
+            'excluded': {key: value for key, value in excluded.items() if value},
+            'excluded_note': ('严格发表时间选择的排除分布：time_* 是无法归入任何发表时间窗口的记录；'
+                              'history/future 是落在窗口外的 valid 记录。与 kpi.records 同源但不相等。'),
+            'trend_basis': ('published_at (time_quality=valid) 且非未来；'
+                            'sum(trend.records) 不等于 all 的 kpi.records（未知/未来不入 trend）'),
+        },
         'kpi': kpi,
         'trend': trend,
         'platforms': platforms,
         'sentiment': sentiment,
         'top_groups': groups,
         'coverage': 'sample_only',
-        'time_basis': 'published_at ?: fetched_at',
+        'time_basis': activity.TIME_BASIS,
         'notes': [
             'top_groups 是按 canonical_id 的条目去重分组，不是语义事件聚类',
-            '时间缺失占比高时，trend 的日分布会偏向抓取日',
+            '时间口径严格：只统计 time_quality=valid 的 published_at，不用 fetched_at 兜底',
+            'kpi.unknown_time / unknown_time_ratio 是**全库数据质量**口径（缺/非法发表时间），与窗口 kpi.records 不同分母',
+            'window.excluded 是严格发表时间选择的排除分布（含窗口外的 history/future）；trend 只含有有效发表时间且非未来的记录，sum(trend.records) 不等于 all 的 kpi.records',
+            'all（scope=all）保留全库，含未知时间与未来记录，契约不变',
         ],
     }
 

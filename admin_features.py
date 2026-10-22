@@ -4,6 +4,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -14,6 +15,7 @@ import sqlite3
 
 import storage
 import pipeline
+import reporting
 
 ROOT = Path(__file__).resolve().parent
 DB = ROOT / "sentiment.db"
@@ -147,109 +149,145 @@ def _fmt_local(value):
     return (dt.astimezone(timezone(timedelta(hours=8)))).strftime("%Y-%m-%d %H:%M:%S")
 
 
-def generate_report(db, kind, trace_id=None, task_id=None):
-    if kind not in ("daily", "weekly", "monthly"):
-        raise ValueError("kind 必须是 daily / weekly / monthly")
-    now = datetime.now(timezone(timedelta(hours=8)))
-    if kind == "daily":
-        start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-        title = f"舆情日报 · {start.strftime('%Y-%m-%d')}"
-        window = 1
-    elif kind == "weekly":
-        start = (now - timedelta(days=7)).replace(hour=0, minute=0, second=0, microsecond=0)
-        title = f"舆情周报 · {start.strftime('%Y-%m-%d')} ~ {now.strftime('%Y-%m-%d')}"
-        window = 7
-    else:
-        start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-        title = f"舆情月报 · {start.strftime('%Y-%m')}"
-        window = 30
-
-    stats = storage.overview_stats(db, window)
-    window_days = 1 if kind == "daily" else 7
-    kpi = stats["kpi"]
-    platforms = stats["platforms"][:8]
-    sentiment = stats["sentiment"]
-    events = db.execute(
-        "SELECT label,records,platforms FROM events WHERE records >= 2 ORDER BY records DESC, label LIMIT 5"
-    ).fetchall()
-    alerts = db.execute(
-        "SELECT level, metrics, status, last_seen FROM alerts "
-        "WHERE status='open' ORDER BY last_seen DESC LIMIT 5").fetchall()
-
-    lines = [
-        f"# {title}",
-        "",
-        f"- 生成时间：{now.strftime('%Y-%m-%d %H:%M:%S')}（UTC+8）",
-        f"- 统计窗口：近 {window_days} 天（{_fmt_local(stats.get('window_since'))} 起）",
-        f"- 数据来源：本机采集库 sentiment.db（records / events / alerts）",
-        "",
-        "## 一、核心指标",
-        "",
-        "| 指标 | 数值 |",
-        "|---|---|",
-        f"| 记录总数 | {kpi['records']} 条 |",
-        f"| 去重条目 | {kpi['canonical']} 条 |",
-        f"| 来源数 | {kpi['feeds']} 个 |",
-        f"| 时间缺失 | {round((kpi['unknown_time_ratio'] or 0) * 100, 1)}% |",
-        f"| 情感待判 | {round((kpi['sentiment_pending_ratio'] or 0) * 100, 1)}% |",
-        f"| 最近成功采集 | {_fmt_local(kpi.get('last_success_at'))} |",
-        "",
-        "## 二、平台分布",
-        "",
-        "| 来源 | 记录数 |",
-        "|---|---|",
-    ]
-    lines += [f"| {p['label']} | {p['value']} |" for p in platforms] or ["| （无） | 0 |"]
-    lines += ["", "## 三、情感分布", "", "| 情感 | 条数 |", "|---|---|"]
-    lines += [f"| {s['label']} | {s['value']} |" for s in sentiment] or ["| （无） | 0 |"]
-    lines += ["", "## 四、热点事件（相似标题聚类，≥2 条）", ""]
-    if events:
-        lines += ["| 事件 | 条数 | 涉及来源 |", "|---|---|---|"]
-        for row in events:
-            platforms_text = ", ".join(json.loads(row["platforms"]) or []) or "—"
-            lines.append(f"| {row['label']} | {row['records']} | {platforms_text} |")
-    else:
-        lines.append("_本次未运行事件聚类，或没有 ≥2 条的聚类事件。_")
-    lines += ["", "## 五、未处理预警", ""]
-    if alerts:
-        lines += ["| 级别 | 命中 | 最近出现 |", "|---|---|---|"]
-        for row in alerts:
-            try:
-                metrics = json.loads(row["metrics"] or "{}")
-            except ValueError:
-                metrics = {}
-            lines.append(f"| {row['level']} | {metrics.get('hit_count', '—')} | {_fmt_local(row['last_seen'])} |")
-    else:
-        lines.append("_当前没有未处理预警。_")
-    lines += ["", "---", "",
-              "> 本报告由本机规则与统计自动生成，不代表人工结论；情感为词典规则粗筛，时间口径为 published_at ?: fetched_at。"]
-
-    body = "\n".join(lines) + "\n"
-    REPORTS_DIR.mkdir(parents=True, exist_ok=True)
-    # 同一天同 kind 固定一个 id：并发/重跑都收敛到同一行，不会重复建行
-    report_id = f"report-{kind}-{now.strftime('%Y%m%d')}"
-    path = REPORTS_DIR / f"{report_id}.md"
-    task_id = task_id or f"task-{report_id}"
-    task = pipeline.start(DB, "report", {"kind": kind, "report_id": report_id},
-                          trace_id=trace_id, task_id=task_id)
-    tmp = path.with_suffix(".md.tmp")
+def _ledger_path(db, db_path=None):
+    """pipeline 记账写回同一个库；显式传入优先，否则从连接读取真实文件路径。"""
+    if db_path:
+        return db_path
     try:
-        tmp.write_text(body, encoding="utf-8")
-        os.replace(tmp, path)          # 原子替换，失败时不会破坏已有报告
-        size = path.stat().st_size
+        for row in db.execute("PRAGMA database_list"):
+            if row[1] == "main" and row[2]:
+                return row[2]
+    except sqlite3.Error:
+        pass
+    return DB
+
+
+def _write_immutable(path, data):
+    """不可变产物：唯一临时文件 + 原子 no-overwrite 落位。
+
+    内容一致则不动；内容不同说明 ID 冲突，拒绝覆盖。并发下由硬链接 / O_EXCL
+    保证只有一个写入者成功，避免 exists + 固定 tmp + os.replace 的竞争覆盖。
+    """
+    if path.exists():
+        if path.read_bytes() == data:
+            return False
+        raise ValueError(f"报告产物已存在且内容不同，拒绝覆盖：{path.name}")
+    tmp = path.with_name(f"{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        with open(tmp, "xb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            os.link(tmp, path)          # 原子、不覆盖的落位
+        except FileExistsError:
+            if path.read_bytes() == data:
+                return False
+            raise ValueError(f"报告产物已存在且内容不同，拒绝覆盖：{path.name}")
+        except OSError:
+            # 文件系统不支持硬链接时退化为独占创建（同样不覆盖）
+            try:
+                with open(path, "xb") as handle:
+                    handle.write(data)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+            except FileExistsError:
+                if path.read_bytes() == data:
+                    return False
+                raise ValueError(f"报告产物已存在且内容不同，拒绝覆盖：{path.name}")
+    finally:
+        try:
+            os.unlink(tmp)
+        except FileNotFoundError:
+            pass
+    return True
+
+
+_NEW_REPORT_ID = re.compile(
+    r"report-(?:" + "|".join(re.escape(kind) for kind in reporting.KINDS) + r")-\d{6,8}-[0-9a-f]{10}")
+
+
+def _is_new_report_id(stem):
+    """报告文件名是否为新版结构：report-<kind>-<period>-<10 位十六进制内容哈希>。"""
+    return _NEW_REPORT_ID.fullmatch(stem) is not None
+
+
+def load_verified_report(md_path):
+    """读取报告 Markdown；存在同名 JSON 快照时校验两者一致后再返回。
+
+    新版报告（ID 形如 report-<kind>-<period>-<10 位哈希>）必须带同名 JSON 快照：
+    缺快照、JSON 损坏或 Markdown 被改动都不允许当作成功预览 / PDF / 下载。
+    只有确认的旧版报告（文件名不是新版 ID 结构）无 sidecar 时才原样返回以保持兼容。
+    """
+    path = Path(md_path)
+    body = path.read_text(encoding="utf-8")
+    sidecar = path.with_name(path.stem + ".json")
+    if not sidecar.exists():
+        if _is_new_report_id(path.stem):
+            raise ValueError("新版报告缺少同名 JSON 快照")
+        return body
+    if not sidecar.is_file():
+        # sidecar 位置存在但不是文件（如目录）：绝不当成旧报告放行
+        raise ValueError("报告快照路径不是文件")
+    try:
+        snapshot = json.loads(sidecar.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"报告快照无法解析：{exc}") from exc
+    if not isinstance(snapshot, dict):
+        raise ValueError("报告快照格式不正确")
+    digest = reporting.validate_snapshot(snapshot)
+    if snapshot.get("content_sha256") != digest:
+        raise ValueError("报告快照缺少有效内容哈希")
+    if reporting.render_markdown(snapshot) != body:
+        raise ValueError("报告 Markdown 与快照内容不一致")
+    return body
+
+
+def generate_report(db, kind, trace_id=None, task_id=None, db_path=None):
+    """统一报告入口：经发布闸门后持久化不可变 JSON 快照 + Markdown（不覆盖旧报告）。
+
+    只读取数，不触发采集/标注/模型；闸门异常时抛 ValueError，不写成功产物或报告行。
+    """
+    if kind not in reporting.KINDS:
+        raise ValueError("kind 必须是 daily / weekly / monthly")
+    ledger = _ledger_path(db, db_path)
+    task_id = task_id or ("task-report-" + uuid.uuid4().hex)
+    task = pipeline.start(ledger, "report", {"kind": kind}, trace_id=trace_id, task_id=task_id)
+    try:
+        snapshot, markdown, report_id = reporting.build_report(db, kind)
+        REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+        md_path = REPORTS_DIR / f"{report_id}.md"
+        json_path = REPORTS_DIR / f"{report_id}.json"
+        md_bytes = markdown.encode("utf-8")
+        json_bytes = json.dumps(snapshot, ensure_ascii=False, sort_keys=True,
+                                indent=1).encode("utf-8")
+        # 先写快照再写 Markdown：任一步失败都不会留下可被当作旧报告预览的孤儿 Markdown。
+        _write_immutable(json_path, json_bytes)
+        _write_immutable(md_path, md_bytes)
+        # 落位后回读校验，确认两产物一致且未被并发覆盖，再写成功行。
+        if md_path.read_bytes() != md_bytes or json_path.read_bytes() != json_bytes:
+            raise ValueError("报告产物落位校验失败")
+        stored = json.loads(json_path.read_text(encoding="utf-8"))
+        if reporting.validate_snapshot(stored) != stored.get("content_sha256"):
+            raise ValueError("报告快照落位校验失败")
+        if reporting.render_markdown(stored) != md_path.read_text(encoding="utf-8"):
+            raise ValueError("报告 Markdown 与快照内容不一致")
+        size = md_path.stat().st_size
+        sample_total = snapshot["counts"]["sample_total"]
+        summary = f"{sample_total} 条原帖线索 / {len(snapshot['topics'])} 类议题"
         with db:
             db.execute(
-                "INSERT OR REPLACE INTO reports(id,kind,title,period_start,period_end,created_at,"
+                "INSERT OR IGNORE INTO reports(id,kind,title,period_start,period_end,created_at,"
                 "size_bytes,path,summary) VALUES(?,?,?,?,?,?,?,?,?)",
-                (report_id, kind, title, start.isoformat(), now.isoformat(),
-                 storage.now(), size, str(path), f"{kpi['records']} 条记录 / {len(events)} 个事件"))
+                (report_id, kind, snapshot["title"], snapshot["window"]["start"],
+                 snapshot["window"]["end"], storage.now(), size, str(md_path), summary))
     except Exception as exc:
-        tmp.unlink(missing_ok=True)    # 只清理临时文件，旧报告保持可用
-        pipeline.fail(DB, task["id"], exc)
+        pipeline.fail(ledger, task["id"], exc)
         raise
-    pipeline.finish(DB, task["id"], {"id": report_id, "size": size})
-    return {"id": report_id, "kind": kind, "title": title, "size_bytes": size,
-            "created_at": storage.now(), "path": str(path)}
+    pipeline.finish(ledger, task["id"], {"id": report_id, "size": size, "sample": sample_total})
+    return {"id": report_id, "kind": kind, "title": snapshot["title"], "size_bytes": size,
+            "created_at": snapshot["generated_at"], "path": str(md_path),
+            "snapshot_path": str(json_path), "sample_total": sample_total}
 
 
 # ---------- 事件聚类 ----------

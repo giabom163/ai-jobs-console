@@ -23,11 +23,13 @@ from pathlib import Path
 import storage
 import analysis
 import alertcenter
+import activity
 import admin_features
 import pipeline
 import orchestrator
 import crawl_jobs
 import topics
+import reporting
 
 ROOT = Path(__file__).resolve().parent
 DB = ROOT / "sentiment.db"
@@ -418,15 +420,86 @@ EDGE_CANDIDATES = (
 _PDF_LOCK = threading.Lock()
 
 
+def _safe_report_href(value):
+    """报告内链接只允许不含认证信息、空白与控制字符的 http(s) URL。"""
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    if not value or len(value) > 2048:
+        return None
+    if any(ch.isspace() for ch in value):
+        return None
+    if any(ch in value for ch in '<>"\\'):
+        return None
+    try:
+        parts = urllib.parse.urlsplit(value)
+    except ValueError:
+        return None
+    if parts.scheme.lower() not in ("http", "https") or not parts.hostname:
+        return None
+    if parts.username or parts.password:
+        return None
+    return value
+
+
 def markdown_to_html(title, body):
-    """轻量 Markdown → HTML：标题/列表/表格/引用，够打印即可。"""
+    """轻量 Markdown → HTML：标题/列表/表格/引用 + 安全 http(s) 链接，够预览与打印即可。
+
+    链接由本模块自己解析（支持 URL 中的括号），标签与正文一律 HTML 转义；
+    反斜杠转义（\\[ \\] \\( \\) \\\\）按字面量输出，因此标题里注入的 Markdown 链接
+    不会变成伪链接。
+    """
     import html as _html
+    escapes = set("\\[]()")
+
+    def inline(raw):
+        parts, buf = [], []
+        index, length = 0, len(raw)
+        while index < length:
+            char = raw[index]
+            if char == "\\" and index + 1 < length and raw[index + 1] in escapes:
+                buf.append(raw[index + 1])
+                index += 2
+                continue
+            if char == "[":
+                close = raw.find("](", index + 1)
+                if close != -1:
+                    cursor, depth, url_chars = close + 2, 1, []
+                    while cursor < length:
+                        current = raw[cursor]
+                        if current == "(":
+                            depth += 1
+                        elif current == ")":
+                            depth -= 1
+                            if depth == 0:
+                                break
+                        url_chars.append(current)
+                        cursor += 1
+                    label = raw[index + 1:close]
+                    if cursor < length and raw[cursor] == ")":
+                        href = _safe_report_href("".join(url_chars))
+                        if href and "[" not in label and "]" not in label:
+                            if buf:
+                                parts.append(_html.escape("".join(buf)))
+                                buf = []
+                            parts.append('<a href="' + _html.escape(href, quote=True) +
+                                         '" target="_blank" rel="noreferrer">' +
+                                         _html.escape(label) + "</a>")
+                            index = cursor + 1
+                            continue
+            buf.append(char)
+            index += 1
+        if buf:
+            parts.append(_html.escape("".join(buf)))
+        return "".join(parts)
+
     out = ["<!doctype html><html><head><meta charset='utf-8'>",
            f"<title>{_html.escape(title)}</title>",
            "<style>body{font-family:'Microsoft YaHei',sans-serif;margin:36px;line-height:1.7;color:#222}"
            "h1{font-size:24px}h2{font-size:18px;border-bottom:1px solid #ddd;padding-bottom:4px}"
            "table{border-collapse:collapse;width:100%;margin:8px 0}td,th{border:1px solid #ccc;padding:6px 8px;text-align:left}"
-           "th{background:#f2f5f9}li{margin:4px 0}blockquote{color:#666;border-left:3px solid #ccc;margin:8px 0;padding-left:12px}</style>",
+           "th{background:#f2f5f9}li{margin:4px 0}a{color:#1b6cd6}"
+           "blockquote{color:#666;border-left:3px solid #ccc;margin:8px 0;padding-left:12px}</style>",
            "</head><body>"]
     in_ul = False
 
@@ -444,7 +517,7 @@ def markdown_to_html(title, body):
         out.append("<table>")
         for index, cells in enumerate(table):
             tag = "th" if index == 0 else "td"
-            out.append("<tr>" + "".join(f"<{tag}>{_html.escape(c)}</{tag}>" for c in cells) + "</tr>")
+            out.append("<tr>" + "".join(f"<{tag}>{inline(c)}</{tag}>" for c in cells) + "</tr>")
         out.append("</table>")
         table.clear()
 
@@ -464,19 +537,19 @@ def markdown_to_html(title, body):
             if not in_ul:
                 out.append("<ul>")
                 in_ul = True
-            out.append(f"<li>{_html.escape(text[2:])}</li>")
+            out.append(f"<li>{inline(text[2:])}</li>")
             continue
         close_ul()
         if text.startswith("# "):
-            out.append(f"<h1>{_html.escape(text[2:])}</h1>")
+            out.append(f"<h1>{inline(text[2:])}</h1>")
         elif text.startswith("## "):
-            out.append(f"<h2>{_html.escape(text[3:])}</h2>")
+            out.append(f"<h2>{inline(text[3:])}</h2>")
         elif text.startswith("### "):
-            out.append(f"<h3>{_html.escape(text[4:])}</h3>")
+            out.append(f"<h3>{inline(text[4:])}</h3>")
         elif text.startswith("> "):
-            out.append(f"<blockquote>{_html.escape(text[2:])}</blockquote>")
+            out.append(f"<blockquote>{inline(text[2:])}</blockquote>")
         else:
-            out.append(f"<p>{_html.escape(text)}</p>")
+            out.append(f"<p>{inline(text)}</p>")
     flush_table()
     close_ul()
     out.append("</body></html>")
@@ -694,6 +767,10 @@ class Handler(BaseHTTPRequestHandler):
             if not md_path.is_file():
                 return self.send(404, {"error": "报告文件缺失"})
             try:
+                admin_features.load_verified_report(md_path)
+            except ValueError as exc:
+                return self.send(409, {"error": f"报告校验失败：{exc}"})
+            try:
                 pdf = report_pdf(md_path, row["title"])
             except FileNotFoundError:
                 return self.send(501, {"error": "本机未找到 Edge/Chrome，无法导出 PDF"})
@@ -709,12 +786,12 @@ class Handler(BaseHTTPRequestHandler):
             path = Path(row["path"])
             if not path.is_file():
                 return self.send(404, {"error": "报告文件缺失（数据库有记录但文件不存在）"})
-            body = path.read_text(encoding="utf-8")
-            from html import escape
-            page = ("<!doctype html><meta charset='utf-8'><title>" + escape(row["title"]) +
-                    "</title><style>body{max-width:900px;margin:32px auto;font:14px/1.7 system-ui;"
-                    "background:#f7f9fc;color:#1f2d3d}pre{white-space:pre-wrap;background:#fff;padding:24px;"
-                    "border:1px solid #e7edf4;border-radius:10px}</style><pre>" + escape(body) + "</pre>")
+            try:
+                body = admin_features.load_verified_report(path)
+            except ValueError as exc:
+                return self.send(409, {"error": f"报告校验失败：{exc}"})
+            # 预览与 PDF 复用同一份持久化 Markdown 和同一个安全渲染器
+            page = markdown_to_html(row["title"], body)
             return self.send(200, page.encode("utf-8"), "text/html; charset=utf-8")
         if path.startswith("/api/reports/") and path.endswith("/download"):
             report_id = path[len("/api/reports/"):-len("/download")]
@@ -725,7 +802,11 @@ class Handler(BaseHTTPRequestHandler):
             path = Path(row["path"])
             if not path.is_file():
                 return self.send(404, {"error": "报告文件缺失（数据库有记录但文件不存在）"})
-            return self.send(200, path.read_bytes(), "text/markdown; charset=utf-8")
+            try:
+                body = admin_features.load_verified_report(path)
+            except ValueError as exc:
+                return self.send(409, {"error": f"报告校验失败：{exc}"})
+            return self.send(200, body.encode("utf-8"), "text/markdown; charset=utf-8")
         if path == "/api/events":
             query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query, keep_blank_values=True)
             raw = (query.get("limit", ["50"])[0] or "").strip()
@@ -879,18 +960,24 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 raise ValueError("window 只接受 all / 24h / 7d / 14d / 30d")
             with connect() as db:
-                stats = storage.overview_stats(db, days, hours)
+                end = activity.utc_now()
+                stats = storage.overview_stats(db, days, hours, now=end)
+                # 今日新采：单独保留抓取口径（fetched_at），与发表时间窗口口径分开标注。
                 stats["kpi"]["today_added"] = db.execute(
                     "SELECT count(*) FROM records WHERE fetched_at >= ?",
                     (today_start_iso(),)).fetchone()[0]
-                stats["kpi"]["negative"] = db.execute(
-                    "SELECT count(*) FROM records r LEFT JOIN model_annotations m ON m.record_id=r.id "
-                    "WHERE COALESCE(m.sentiment,r.sentiment) IN ('偏负面','强负面')").fetchone()[0]
                 stats["kpi"]["open_alerts"] = db.execute(
                     "SELECT count(*) FROM alerts WHERE status='open'").fetchone()[0]
-                stats["kpi"]["active_topics"] = admin_features.active_topics(db)
-                stats["categories"] = topics.categories(db, 24 if hours else max(1, (days or 30) * 24))["categories"]
+                # 活跃话题来自 events 全库聚类，无法按严格发表时间窗口复算：明确置空，不伪全库。
+                stats["kpi"]["active_topics"] = None
+                stats["kpi"]["active_topics_basis"] = "window_unavailable"
+                # 分类与总览同口径、同 now 边界：all 走全库（hours=None），不静默回退 30 天。
+                cat_hours = hours if hours else (days * 24 if days else None)
+                stats["categories"] = topics.categories(db, cat_hours, now=end)["categories"]
             return self.send(200, stats)
+        if path == "/api/tieba-activity":
+            with connect() as db:
+                return self.send(200, activity.tieba_activity(db))
         if path == "/api/data":
             with connect() as db:
                 result = storage.data(db)
@@ -1224,6 +1311,8 @@ if __name__ == "__main__":
                         help="每个端点每轮条数 1–50（默认 20）")
     parser.add_argument("--opencli", default=None,
                         help="OpenCLI 的 dist/src/main.js 路径；默认查 D:\\DSH\\tools\\opencli-1.8.8")
+    parser.add_argument("--no-background-jobs", action="store_true",
+                        help="不启动采集 scheduler、关键词 crawl worker 与预警 scheduler（默认行为不变）")
     args = parser.parse_args()
     if not 1 <= args.limit <= 100:
         parser.error("--limit 必须为 1–100；首次使用 --limit 3")
@@ -1245,8 +1334,13 @@ if __name__ == "__main__":
                "collect_limit": COLLECT_LIMIT,
                "collect_endpoints": COLLECT_ENDPOINTS,
                "opencli_main": OPENCLI_MAIN,
+               "no_background_jobs": bool(args.no_background_jobs),
+               "background_jobs": (not args.no_background_jobs),
+               "reporting_module": str(Path(reporting.__file__).resolve()),
+               "admin_features_module": str(Path(admin_features.__file__).resolve()),
                "loaded_sha256": {name: storage.digest((ROOT / name).read_bytes())
-                                 for name in ("server.py", "storage.py", "analysis.py")},
+                                 for name in ("server.py", "storage.py", "analysis.py",
+                                              "reporting.py", "admin_features.py")},
                "analysis_module": str(Path(analysis.__file__).resolve()), "production_adapter": ("rule:" + analysis.SENTIMENT_RULE) if not os.environ.get(analysis.PRODUCTION_KEY_ENV) else ("model:" + analysis.PRODUCTION_MODEL)}
     if port_in_use(HOST, PORT):
         print(f"端口 {HOST}:{PORT} 已被占用：已有实例在运行。请先停止旧进程再启动。",
@@ -1263,7 +1357,7 @@ if __name__ == "__main__":
             analysis.recover(db)
             # 一次性迁移：首次启动把 10-17 冒烟规则打开，之后尊重用户的启停选择
             seeded = db.execute("SELECT value FROM settings WHERE key='alerts_seeded'").fetchone()
-            if seeded is None:
+            if seeded is None and not args.no_background_jobs:
                 with db:
                     db.execute("UPDATE alert_rules SET enabled=1")
                     db.execute("INSERT INTO settings(key,value,updated_at) VALUES('alerts_seeded','true',?)",
@@ -1296,9 +1390,13 @@ if __name__ == "__main__":
                 orchestrator.recover(db, RUNTIME["started_at"])
         except Exception as exc:
             print(f"orchestrator 启动恢复失败：{exc}", file=sys.stderr, flush=True)
-        alertcenter.start_scheduler(DB)
-        start_collection_scheduler()
-        start_crawl_worker()
+        if args.no_background_jobs:
+            print("已按 --no-background-jobs 禁用采集调度、关键词采集与预警调度；"
+                  "仅保留 HTTP 查询与用户主动报告操作。", flush=True)
+        else:
+            alertcenter.start_scheduler(DB)
+            start_collection_scheduler()
+            start_crawl_worker()
         print(f"本地舆情面板：http://{HOST}:{PORT}（手动批次上限 {LIMIT}；"
               f"自动采集 {COLLECT_INTERVAL_MIN} 分钟/轮，0=关闭；Ctrl+C 停止）", flush=True)
         server.serve_forever()
