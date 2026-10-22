@@ -62,7 +62,7 @@ def score(job, http_status=None, final_url=""):
             pass
     score = max(0, min(100, score))
     level = "已验证" if score >= 90 else "可信" if score >= 70 else "待核验" if score >= 50 else "低可信"
-    if http_status is None and level == "已验证":
+    if http_status is None:
         level = "待核验"
     return score, level
 
@@ -102,7 +102,8 @@ def main():
     stats = {"checked": 0, "verified": 0, "errors": 0, "scored": 0}
     with con:
         for job in rows:
-            status, final = None, ""
+            status = job["http_status"] if args.score_only else None
+            final = (job["final_url"] or "") if args.score_only else ""
             if not args.score_only:
                 status, final = check(job["url"])
                 stats["checked"] += 1
