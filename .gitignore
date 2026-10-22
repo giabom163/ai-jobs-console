@@ -1,4 +1,4 @@
-__pycache__/
+﻿__pycache__/
 *.pyc
 sentiment.db
 sentiment.db-*
@@ -8,3 +8,8 @@ events/
 reports/
 
 .collector-throttle-search.json
+
+ai_jobs.db
+ai_jobs.db-*
+_last_run.json
+_verify500.json
