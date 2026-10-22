@@ -12,6 +12,7 @@ import json
 import sqlite3
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -97,6 +98,7 @@ def main():
     parser.add_argument("--limit", type=int, default=50)
     parser.add_argument("--score-only", action="store_true")
     parser.add_argument("--json-out", default="")
+    parser.add_argument("--workers", type=int, default=16)
     args = parser.parse_args()
     con = sqlite3.connect(args.db)
     con.row_factory = sqlite3.Row
@@ -107,11 +109,13 @@ def main():
     if not args.score_only:
         rows = rows[:max(1, args.limit)]
     stats = {"checked": 0, "verified": 0, "errors": 0, "scored": 0}
-    for i, job in enumerate(rows, 1):
-        status = job["http_status"] if args.score_only else None
-        final = (job["final_url"] or "") if args.score_only else ""
+    if args.score_only:
+        results = [((job["http_status"], job["final_url"] or "")) for job in rows]
+    else:
+        with ThreadPoolExecutor(max_workers=max(1, min(args.workers, 32))) as pool:
+            results = list(pool.map(lambda job: check(job["url"]), rows))
+    for i, (job, (status, final)) in enumerate(zip(rows, results), 1):
         if not args.score_only:
-            status, final = check(job["url"])
             stats["checked"] += 1
             if status and status < 400:
                 stats["verified"] += 1
@@ -124,11 +128,9 @@ def main():
                     "last_verified_at=?,http_status=?,final_url=?,domain_match=?,cross_source=? WHERE id=?",
                     (sc, level, datetime.now(timezone.utc).isoformat(), status, final,
                      domain_match, cross, job["id"]))
-        if i % 10 == 0:
+        if i % 20 == 0:
             con.commit()
         stats["scored"] += 1
-        if not args.score_only:
-            time.sleep(0.08)
     con.commit()
     out = json.dumps(stats, ensure_ascii=False)
     if args.json_out:
