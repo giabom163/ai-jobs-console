@@ -124,9 +124,10 @@ def connect(db_path):
 def upsert_company(con, company):
     cid = "company-" + re.sub(r"[^a-z0-9]+", "-", company["name"].lower()).strip("-")
     con.execute(
-        "INSERT INTO companies(id,name,ats_type,board_token,watchlist,created_at) VALUES(?,?,?,?,1,?) "
-        "ON CONFLICT(id) DO UPDATE SET name=excluded.name,ats_type=excluded.ats_type,board_token=excluded.board_token",
-        (cid, company["name"], company["type"], company["token"], now()))
+        "INSERT INTO companies(id,name,ats_type,board_token,watchlist,domain,created_at) VALUES(?,?,?,?,1,?,?) "
+        "ON CONFLICT(id) DO UPDATE SET name=excluded.name,ats_type=excluded.ats_type,"
+        "board_token=excluded.board_token,domain=excluded.domain",
+        (cid, company["name"], company["type"], company["token"], company.get("domain"), now()))
     return cid
 
 
@@ -229,6 +230,9 @@ def main():
                         "VALUES(?,?,?,?,?,?)",
                         (job_id, now(), "open", content_hash, job["location"],
                          json.dumps(job["raw"], ensure_ascii=False)[:20000]))
+            con.execute("INSERT INTO job_evidence(job_id,source,url,seen_at) VALUES(?,?,?,?) "
+                        "ON CONFLICT(job_id,source) DO UPDATE SET url=excluded.url,seen_at=excluded.seen_at",
+                        (job_id, f"ats:{company['type']}", job["url"], now()))
 
         stale = con.execute(
             "SELECT id,external_id,content_hash FROM jobs WHERE company_id=? AND status='open'",

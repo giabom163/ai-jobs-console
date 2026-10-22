@@ -52,6 +52,8 @@ footer{text-align:center;color:var(--muted);font-size:11px;padding:26px 0}
   <nav>
     <button data-view="dashboard" class="active">总览</button>
     <button data-view="jobs">岗位库</button>
+    <button data-view="signals">就业舆情</button>
+    <button data-view="report">日报</button>
     <button data-view="sources">数据源</button>
   </nav>
 </header>
@@ -83,6 +85,14 @@ footer{text-align:center;color:var(--muted);font-size:11px;padding:26px 0}
       <table><thead><tr><th>公司</th><th>岗位</th><th>地点</th><th>AI</th><th>真实性</th><th>首次发现</th><th>状态</th></tr></thead><tbody id="jobs-body"></tbody></table>
       <div class="pager"><button onclick="pageJobs(-1)">上一页</button><button onclick="pageJobs(1)">下一页</button></div>
     </div>
+  </section>
+
+  <section id="view-signals" hidden>
+    <div class="panel"><h2>就业舆情 / 裁员信号</h2><p style="font-size:12px;color:#64748b">当前接入 AIHOT RSS；裁员信号源待接。</p><div id="signals-list"></div></div>
+  </section>
+
+  <section id="view-report" hidden>
+    <div class="panel"><h2>今日日报</h2><div id="report-body"></div></div>
   </section>
 
   <section id="view-sources" hidden>
@@ -157,6 +167,20 @@ async function openJob(id){
   $('#drawer').classList.add('open');
 }
 function closeDrawer(){$('#drawer').classList.remove('open');}
+async function loadSignals(){
+  const d=await api('/api/signals');
+  $('#signals-list').innerHTML=(d.items||[]).map(x=>`<div class="event" style="display:flex;gap:10px;padding:10px 0;border-bottom:1px solid #eef3f9"><span class="badge none">${esc(x.tag)}</span><div><a href="${esc(x.url)}" target="_blank" rel="noreferrer" style="color:#172033;text-decoration:none;font-weight:600">${esc(x.title)}</a><div style="font-size:12px;color:#64748b;margin-top:4px">${esc(x.source)} · ${esc((x.published_at||'').slice(0,16))}</div></div></div>`).join('')||'<div class="empty">暂无信号</div>';
+}
+async function loadReport(){
+  const d=await api('/api/report');
+  $('#report-body').innerHTML=`<div class="kv" style="font-size:13px;line-height:2">
+    <div><b>生成时间：</b>${esc(d.generated_at)}</div>
+    <div><b>岗位：</b>共 ${d.total} 条，在招 ${d.open} 条，AI build ${d.build} 条</div>
+    <div><b>真实性：</b>已验证 ${d.verified} 条，待核验 ${d.pending} 条</div>
+    <div><b>今日新增：</b>${d.today_new} 条；监控公司 ${d.companies} 家；舆情信号 ${d.signals} 条</div>
+    <div><b>Top 公司：</b>${(d.top_companies||[]).map(x=>x.label+' '+x.value).join(' · ')}</div>
+    <div style="margin-top:10px;color:#64748b">${esc(d.note)}</div></div>`;
+}
 async function loadSources(){
   const d=await api('/api/sources');
   $('#sources-body').innerHTML=d.items.map(s=>`<tr><td>${esc(s.name)}</td><td>${esc(s.ats_type)}</td><td>${s.jobs}</td><td>${s.verified||0}</td><td>${esc((s.last_seen||'').slice(0,16))}</td></tr>`).join('');
@@ -169,8 +193,10 @@ async function init(){
 }
 document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{
   document.querySelectorAll('nav button').forEach(x=>x.classList.remove('active'));b.classList.add('active');
-  ['dashboard','jobs','sources'].forEach(v=>$('#view-'+v).hidden=(v!==b.dataset.view));
+  ['dashboard','jobs','signals','report','sources'].forEach(v=>$('#view-'+v).hidden=(v!==b.dataset.view));
   if(b.dataset.view==='jobs')loadJobs(0);
+  if(b.dataset.view==='signals')loadSignals();
+  if(b.dataset.view==='report')loadReport();
   if(b.dataset.view==='sources')loadSources();
 });
 init().catch(e=>{document.querySelector('main').innerHTML='<div class="empty">加载失败：'+esc(e.message)+'</div>';});

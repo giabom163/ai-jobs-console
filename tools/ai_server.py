@@ -114,6 +114,28 @@ class Handler(BaseHTTPRequestHandler):
                 changes = [dict(r) for r in con.execute(
                     "SELECT change_type,changed_at,note FROM job_changes WHERE job_id=? ORDER BY changed_at DESC LIMIT 10", (jid,))]
                 return self.send_json({"job": dict(row), "snapshots": snaps, "changes": changes})
+            if path == "/api/signals":
+                con = connect()
+                tag = (query.get("tag", [""])[0] or "").strip()
+                sql = "SELECT id,title,url,source,published_at,summary,tag FROM signals"
+                args = []
+                if tag:
+                    sql += " WHERE tag=?"
+                    args.append(tag)
+                sql += " ORDER BY published_at DESC LIMIT 50"
+                return self.send_json({"items": [dict(r) for r in con.execute(sql, args)]})
+            if path == "/api/report":
+                con = connect()
+                s = stats(con)
+                return self.send_json({
+                    "generated_at": __import__("datetime").datetime.now().isoformat(timespec="seconds"),
+                    "total": s["total"], "open": s["open"], "build": s["build"],
+                    "verified": s["verified"], "pending": s["total"] - s["verified"],
+                    "today_new": s["today_new"], "companies": s["companies"],
+                    "top_companies": s["top_companies"][:5],
+                    "signals": con.execute("SELECT count(*) FROM signals").fetchone()[0],
+                    "note": "真实性为来源可信度；已验证仅代表 apply URL 当日校验通过，不代表雇主承诺。",
+                })
             if path == "/api/sources":
                 con = connect()
                 rows = con.execute(
