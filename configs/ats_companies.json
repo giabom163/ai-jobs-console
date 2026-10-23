@@ -1,6 +1,20 @@
 {
   "companies": [
     {
+      "name": "xAI",
+      "type": "greenhouse",
+      "token": "xai",
+      "enabled": true,
+      "domain": "x.ai"
+    },
+    {
+      "name": "Scale AI",
+      "type": "greenhouse",
+      "token": "scaleai",
+      "enabled": true,
+      "domain": "scale.com"
+    },
+    {
       "name": "Anthropic",
       "type": "greenhouse",
       "token": "anthropic",

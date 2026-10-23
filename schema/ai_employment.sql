@@ -28,8 +28,11 @@ CREATE TABLE IF NOT EXISTS jobs (
   skills_json TEXT,
   ai_relevance TEXT,          -- build / adjacent / exposed / none
   ai_confidence REAL,
+  ai_reason TEXT,             -- 判定依据（词典命中/职能排除），便于复核
   first_seen TEXT NOT NULL,
   last_seen TEXT NOT NULL,
+  posted_at TEXT,             -- 岗位发布时间（来源给出的发布时间/首次刷新）
+  updated_at TEXT,            -- 来源最近一次刷新时间
   status TEXT NOT NULL DEFAULT 'open',  -- open / closed
   url TEXT,
   content_hash TEXT NOT NULL,
@@ -43,6 +46,10 @@ CREATE TABLE IF NOT EXISTS jobs (
   dedup_key TEXT,
   duplicate_of TEXT,
   merged_at TEXT,
+  liveness TEXT,              -- active / expired / uncertain（页面存活判定）
+  liveness_code TEXT,
+  liveness_reason TEXT,
+  liveness_checked_at TEXT,
   UNIQUE(source, external_id)
 );
 

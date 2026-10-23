@@ -22,19 +22,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 SCHEMA = ROOT / "schema" / "ai_employment.sql"
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0 Safari/537.36"
 
-BUILD_TERMS = ("machine learning", "ml engineer", "ai engineer", "research scientist",
-               "人工智能", "大模型", "算法工程师", "算法专家", "机器学习", "深度学习", "多模态",
-               "推荐算法", "搜索算法", "自动驾驶", "机器人", "具身智能", "智能驾驶",
-               "applied ai", "llm", "genai", "generative ai", "deep learning", "nlp",
-               "computer vision", "inference", "training", "pytorch", "tensorflow",
-               "rag", "agent", "foundation model", "alignment", "interpretability")
-ADJACENT_TERMS = ("data engineer", "data scientist", "mlops", "gpu", "infrastructure",
-                  "platform engineer", "ai product", "solutions architect", "forward deployed",
-                  "analytics", "research engineer")
-EXPOSED_TERMS = ("customer support", "content writer", "copywriter", "translator",
-                 "data entry", "operations associate", "virtual assistant", "moderator")
 SKILL_TERMS = ("python", "pytorch", "tensorflow", "jax", "cuda", "kubernetes", "aws",
                "gcp", "azure", "sql", "spark", "ray", "transformers", "llm", "rag",
                "reinforcement learning", "distributed systems", "typescript", "go")
@@ -50,16 +41,10 @@ def strip_html(value):
 
 
 def classify_ai(title, description="", department=""):
-    """以岗位标题/部门为主；描述只做辅助，避免 AI 公司所有岗位都被判 build。"""
-    title_text = f"{title or ''} {department or ''}".lower()
-    if "ai" in title_text or "人工智能" in title_text:
-        return "build", 0.85, ["title:ai"]
-    for tier, terms in (("build", BUILD_TERMS), ("adjacent", ADJACENT_TERMS),
-                        ("exposed", EXPOSED_TERMS)):
-        hits = [t for t in terms if t in title_text]
-        if hits:
-            return tier, min(1.0, 0.6 + 0.1 * len(hits)), ["title:" + ",".join(hits[:3])]
-    return "none", 0.2, []
+    """统一走 tools/ai_lexicon.classify（单一事实源），返回 (tier, conf, evidence)。"""
+    from tools.ai_lexicon import classify
+    tier, conf, reason = classify(title, description, department)
+    return tier, conf, [reason]
 
 
 def extract_skills(title, description):
@@ -141,6 +126,7 @@ def main():
     parser.add_argument("--only", default="", help="comma-separated company names")
     parser.add_argument("--reclassify", action="store_true", help="只重算已有岗位的 AI 相关度")
     parser.add_argument("--json-out", default="", help="把统计写到 UTF-8 JSON 文件，避免控制台编码问题")
+    parser.add_argument("--since", default="", help="只收该日期之后发布的岗位；默认近 90 天且不早于 2026-06-01")
     args = parser.parse_args()
 
     if args.reclassify:
@@ -154,6 +140,7 @@ def main():
         print(json.dumps({"reclassified": len(rows)}, ensure_ascii=False))
         return
 
+    since = args.since or max("2026-06-01", (datetime.now(timezone.utc) - __import__("datetime").timedelta(days=90)).date().isoformat())
     companies = json.loads(Path(args.config).read_text(encoding="utf-8"))["companies"]
     if args.only:
         wanted = {x.strip().lower() for x in args.only.split(",")}
@@ -161,7 +148,7 @@ def main():
     companies = [c for c in companies if c.get("enabled")]
 
     con = None if args.dry_run else connect(args.db)
-    stats = {"companies": 0, "fetched": 0, "new": 0, "changed": 0, "closed": 0, "failed": []}
+    stats = {"companies": 0, "fetched": 0, "new": 0, "changed": 0, "closed": 0, "skipped_old": 0, "failed": []}
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
     for company in companies:
@@ -184,6 +171,10 @@ def main():
             seen.add(ext)
             title = job["title"].strip()
             desc = job["description"][:20000]
+            posted_at = (job.get("published_at") or "")[:10] or None
+            if since and posted_at and posted_at < since:
+                stats["skipped_old"] += 1
+                continue
             content_hash = hashlib.sha256(
                 f"{title}\n{job['location']}\n{desc}".encode("utf-8")).hexdigest()
             existing = con.execute(
@@ -204,9 +195,11 @@ def main():
             if existing:
                 con.execute(
                     "UPDATE jobs SET title=?,location=?,description=?,skills_json=?,ai_relevance=?,"
-                    "ai_confidence=?,last_seen=?,status='open',url=?,content_hash=? WHERE id=?",
+                    "ai_confidence=?,last_seen=?,status='open',url=?,content_hash=?,"
+                    "posted_at=COALESCE(?,posted_at),updated_at=? WHERE id=?",
                     (title, job["location"], desc, json.dumps(skills, ensure_ascii=False),
-                     tier, confidence, now(), job["url"], content_hash, job_id))
+                     tier, confidence, now(), job["url"], content_hash,
+                     posted_at, now(), job_id))
                 con.execute("INSERT INTO job_changes(job_id,change_type,changed_at,old_hash,new_hash,note) "
                             "VALUES(?,?,?,?,?,?)",
                             (job_id, "changed", now(), existing["content_hash"], content_hash,
@@ -216,11 +209,12 @@ def main():
             else:
                 con.execute(
                     "INSERT INTO jobs(id,source,external_id,company_id,title,location,remote,description,"
-                    "skills_json,ai_relevance,ai_confidence,first_seen,last_seen,status,url,content_hash) "
-                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    "skills_json,ai_relevance,ai_confidence,first_seen,last_seen,status,url,content_hash,"
+                    "posted_at,updated_at) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,'open',?,?,?,?)",
                     (job_id, f"ats:{company['type']}", ext, cid, title, job["location"],
                      job["remote"], desc, json.dumps(skills, ensure_ascii=False), tier, confidence,
-                     now(), now(), "open", job["url"], content_hash))
+                     now(), now(), job["url"], content_hash, posted_at, now()))
                 con.execute("INSERT INTO job_changes(job_id,change_type,changed_at,new_hash,note) "
                             "VALUES(?,?,?,?,?)",
                             (job_id, "new", now(), content_hash, ",".join(evidence[:3])))
@@ -269,3 +263,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
