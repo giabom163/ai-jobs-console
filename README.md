@@ -1,56 +1,62 @@
-# 舆情观察台
+# AI 岗位核查台
 
-本地性别议题舆情分析 Demo，默认仅监听 `127.0.0.1:8790`。当前已有多来源采集适配、规则分层和模型标注工具；它们各自的落地、运行及验收状态必须分开核对。
+公开岗位的聚合与核查：采集公开招聘页面里的 AI 研发 / AI 支撑岗位，按规则判定是否真属于 AI，核验链接存活，最后发布成静态站。
 
-接手和日常推进先读 [Agent 执行入口](docs/agent-operations.md)。当前数字、未完成项与注意事项由 Agent 维护，用户无需逐项盯守。当前状态不以本 README 的早期功能描述为准。
+- 线上站：https://giabom.online
+- 站点仓库：https://github.com/giabom163/ai-console-site
+- 本仓库：数据流水线 + 规则 + 导出（https://github.com/giabom163/ai-jobs-console）
 
-## 启动
+> 旧「舆情观察台」（性别议题监测）已下线并清除，代码只保留在归档仓库
+> `giabom163/sentiment-monitor` 与本仓库历史提交里，不再参与运行。
 
-```powershell
-python -B .\server.py --limit 3 --no-background-jobs
+## 目录
+
+```
+ai_jobs.db            主库（SQLite，含 jobs / companies / job_changes / job_snapshots）
+tools/ai_lexicon.py   AI 判定词典与分级规则（唯一事实源）
+tools/collect_*.py    采集：美团关键词、ATS（Greenhouse / Ashby）
+tools/reclassify_jobs.py  按词典重算 + 剔除 none
+tools/dedup_jobs.py   去重
+tools/liveness.py     三态存活判定（active / uncertain / expired）
+tools/prune_jobs.py   存活复检 → closed / stale
+tools/verify_jobs.py  URL 校验 + 真实性打分
+tools/export_console.py   导出站点静态数据（当前使用）
+tools/ai_server.py    本地 API 服务（127.0.0.1:8792）
+web/index.html        核查台前端源码
 ```
 
-用浏览器打开控制台打印的地址（`http://127.0.0.1:8790/`）。必须通过该地址访问：后端强制校验 `Origin`/`Host`，用 `file://` 或其它端口打开时写操作会被 403 拒绝。数据库 `sentiment.db` 会在项目目录首次启动时创建。按 Ctrl+C 停止服务。
-
-## 四个视图
-
-以下为早期基础版本的界面与能力说明，供历史参考；其中“无模型/无社交接口/无后台任务”等描述不代表当前源码。当前服务具备后台调度代码，上述启动命令显式禁用；不得据旧说明启动默认调度。
-
-1. **来源与导入**：查看全表分母、规范记录数、未知时间数量与占比、来源数、列表上限；添加公开 RSS 来源、保存关键词、把 JSON 记录导入所选来源（`POST /api/import`，遵守 `manual_limit`）、手动刷新来源。
-2. **原文与证据**：按来源 / 时间质量 / 关键词 / 情感筛选记录，展示规范记录ID、来源、原文与内容哈希、去重原因、时间质量；点“查看证据详情”读取 `GET /api/records/{id}` 的原文快照（服务端会重新校验哈希）。
-3. **报告模板**：包含 M3 证据包和人工复核入口；生产适配器未配置时明确阻塞。样本报告只按键值拼装一份**明确标注未复核的样本模板**，列出各来源与时间质量、全表分母与列表上限，不生成结论、不触发预警。
-4. **运行状态**：查看采集批次列表与 `GET /api/runs/{id}` 详情、读取 `GET /api/runtime` 运行时信息，并列明尚未接入的能力。
-
-顶部连接条在页面读取或点击“重新读取数据”时区分“在线 / 后端错误 / 离线”，失败时不显示缓存数据冒充在线；HTTP 状态码（如 401/422/409）与服务端错误文本原样显示。
-
-接口映射与未实现能力详见 [docs/M2-ui-mapping.md](docs/M2-ui-mapping.md)。
-
-## 功能与边界
-
-- 添加公开 RSS/Atom 来源，手动刷新按编号排列的前 limit 个来源，每源最多 limit 条，响应上限 2 MB。首次限制为 3；扩大前需明确授权。
-- SQLite 保存来源、规范记录和批次；完全相同正文合并规范记录并保留各来源；同源相同原文重复导入不新增记录。
-- 缺失、非法或无时区发布时间保留为未知，抓取时间独立保存。原文 JSON 快照保存到 `snapshots/` 并回读核验哈希。
-- 关键词配置保存在本地，当前没有接入自动筛选。页面筛选栏关键词只临时筛选已载入的记录。
-- 正面/负面标签使用内置中英文词典粗略判断，属未复核初筛提示，不代表准确情感分析。
-- 列表最多显示 500 条、批次最多 100 条，均为接口上限；全表总量以 `stats.record_count` 为准，不能用展示条数冒充总量。
-- 无登录态、社交平台接口、后台定时任务、云端同步或模型调用。
-
-## 当前限制与未接入能力
-
-来源地址由操作者提供；抓取前会解析并拦截非公网 IP，重定向时再次检查目标。仍不要将服务暴露到公网；当前没有来源删除、导出、用户权限或长期运行守护功能。
-
-以下能力**尚未接入**，界面明确标注、不编造：自动事件聚类、可靠热度预警 / 通知 / 推送、生产模型调用与用量、批次取消 / 中止、导出 / 删除 / 权限。
-
-## M0–M3 状态
-
-M1 三条样本、事务回滚和恢复检查已通过；M2 的真实浏览器证据详情、错误、离线恢复和运行时展示已有 DOM/截图。M3 的证据、状态机、请求保留槽与三组隔离反例检查通过；生产模型 HTTP 适配、DSH 对 M3 的独立核查和真实来源闭环仍 BLOCKED。不能宣布完整监测系统完成。M3 字段、恢复及候选限制详见 [docs/M3-contract.md](docs/M3-contract.md)。详见 [docs/M0-M1-contract.md](docs/M0-M1-contract.md)、[docs/M2-ui-mapping.md](docs/M2-ui-mapping.md) 和 [schemas/import.schema.json](schemas/import.schema.json)。
-
-旧 items 数据原样保留且不自动迁移；接口报告 `legacy_items_pending`，不能把旧回填日期当作真实发布时间。
-
-隔离样本检查（用户已授权本项目小范围自动测试；不访问网络、不改产品数据库；本轮已执行）：
+## 日常流水线
 
 ```powershell
-python -B .\tools\manual_m1_check.py --limit 3 --work-dir 'C:\Users\Lenovo\Documents\Codex\2026-10-15\c-users-lenovo-appdata-local-temp\work\m1-manual'
+python tools\collect_meituan.py --keywords "算法,大模型,机器学习,AI Agent,计算机视觉,自然语言处理" --limit 400
+python tools\collect_ats.py
+python tools\reclassify_jobs.py --exclude-none
+python tools\dedup_jobs.py
+python tools\prune_jobs.py --limit 1500 --workers 6
+python tools\verify_jobs.py --limit 800 --workers 6
+python tools\export_console.py --out <站点仓库>\public\console-data.json
 ```
 
-输出 `result.json` 仅证明本地样本；不能替代 M3 的生产真实路径与独立审查。小范围自动测试以本项目 AGENTS.md 为准；服务启动和采集仍按各自授权执行。
+## 判定口径（摘要）
+
+- 时间窗：只收 `posted_at >= 2026-06-01`。
+- build：强 AI 词 + 研发动作；adjacent：强 AI 词 + 产品/运营/评测，或 AI 相邻技术词；其余 none（状态 excluded，不物理删除）。
+- 排除职能岗（招聘/人事/人力/财务/税务/法务/销售/商务/渠道/客服…）、「（AI 驱动）」类限定语、机器人硬件。
+- 商业化/合规/负责人/经理/TPM 归 adjacent（标注 `business:`），不算研发。
+- 存活三态：`uncertain` 永不判死；美团走详情接口，ATS 用「缺席即关闭」。
+
+完整规则、部署与回滚见站点仓库的 `docs/交接报告-AI就业核查台-20261023.md`。
+
+## 本地查看
+
+```powershell
+.\launch_ai_jobs.cmd
+```
+
+打开 http://127.0.0.1:8792/ （只读服务）。
+
+## 边界
+
+- 只覆盖 8 家来源，美团占比高，不代表全市场。
+- 「已验证」只代表链接当日可访问，不代表岗位真实或仍在招聘。
+- 数据靠手动跑流水线，没有定时任务。
