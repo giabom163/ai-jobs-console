@@ -10,6 +10,16 @@ AI_SCOPES = {'ai_role', 'ai_team', 'ai_impact', 'ai_company_other'}
 TAGS = {'hiring': '招聘线索', 'layoff': '裁员线索', 'shrink': '缩招线索', 'freeze': '停招线索'}
 
 
+def storage_status(con):
+    tables={r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    legacy=con.execute('SELECT count(*) FROM signals').fetchone()[0] if 'signals' in tables else 0
+    if 'discovery_documents' not in tables:
+        return dict(storage_status='not_initialized',approved_count=0,pending_count=0,last_ingested_at=None,legacy_archived_count=legacy,note='就业线索存储尚未初始化；历史条目未自动转为已核实信息。')
+    counts=dict(con.execute('SELECT review_status,count(*) FROM discovery_documents GROUP BY review_status'))
+    last=con.execute('SELECT max(last_seen) FROM discovery_documents').fetchone()[0]
+    return dict(storage_status='ready' if last else 'empty',approved_count=counts.get('approved',0),pending_count=counts.get('pending',0),last_ingested_at=last,legacy_archived_count=legacy,note='已复核内容与待核验线索分开；待核验原文只供本地复核。' if last else '存储已初始化，尚无新线索；不代表没有就业事件。')
+
+
 def parse_time(value):
     if not value:
         return None
@@ -63,6 +73,8 @@ def list_signals(con, *, review='approved', since=None, until=None, category=Non
         if d['category'] not in EVENT_TYPES:
             continue
         evidence = json.loads(d['evidence_json'])
+        if review=='approved' and not (evidence.get('source_verified') is True and evidence.get('fetch_received') is True and evidence.get('source_field')=='content'):
+            continue
         result.append({
             'id': d['id'], 'title': d['title'], 'url': d['url'],
             'source': d['source'], 'published_at': d['published_at'],

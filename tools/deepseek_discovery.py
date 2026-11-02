@@ -94,6 +94,7 @@ def candidate(item, query, *, fetched=False):
         'ai': {'text': ai.group(), 'start': sentence.start()+ai.start(), 'end': sentence.start()+ai.end()},
         'employment': {'text': sentence.group().strip(), 'start': sentence.start(), 'end': sentence.end()},
         'fetch_received': fetched, 'source_verified': False,
+        'fetch_receipt': item.get('_fetch_receipt') if fetched and field=='content' else None,
     }
     # Offsets refer to the exact stored text, including sentence whitespace.
     evidence['employment']['text'] = sentence.group()
@@ -117,7 +118,12 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 class DirectClient:
-    def __init__(self, key, run_dir, *, max_requests=2, state_dir=STATE_DIR, allow_paid=False):
+    def __init__(self, key, run_dir, *, max_requests=3, state_dir=STATE_DIR, allow_paid=False):
+        if not 1 <= max_requests <= 9:
+            raise ValueError('task request budget must be 1..9 and is further capped by project/source limits')
+        sys.path.insert(0,str(ROOT))
+        from tools.request_policy import RequestBudget
+        self.request_budget=RequestBudget(limit=max_requests)
         self.key, self.run_dir = key, run_dir
         self.allow_paid = allow_paid
         self.max_requests, self.used = max_requests, 0
@@ -152,23 +158,29 @@ class DirectClient:
                 continue
             self.state.execute('UPDATE budget SET last_started=? WHERE id=1', (current,))
             self.state.commit()
-            self.used += 1
             return
 
     def post(self, action, payload):
         if datetime.now(TZ) >= PAID_FROM and not self.allow_paid:
             raise RuntimeError('free period ended; no request dispatched without --allow-paid')
         target = payload.get('url') if action == 'fetch' else None
+        request = urllib.request.Request(API+action, data=json.dumps(payload).encode(), method='POST',
+            headers={'Authorization': 'Bearer '+self.key, 'Content-Type': 'application/json',
+                     'User-Agent': 'ai-employment-monitor/direct-discovery-v1'})
+        self.request_budget.authorize(request, source_id='deepseek_discovery', operation=action)
+        if target:
+            host=urllib.parse.urlsplit(public_url(target)).hostname or ''
+            if any(host==h or host.endswith('.'+h) for h in ('zhipin.com','zhaopin.com','58.com')):
+                raise RuntimeError('platform permission required; proxy fetch is not an alternate route')
         self.reserve(target)
         call = {'action': action, 'endpoint': API+action, 'started_at': now(), 'input': payload,
                 'input_sha256': hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode()).hexdigest()}
         self.calls.append(call)
-        request = urllib.request.Request(API+action, data=json.dumps(payload).encode(), method='POST',
-            headers={'Authorization': 'Bearer '+self.key, 'Content-Type': 'application/json',
-                     'User-Agent': 'ai-employment-monitor/direct-discovery-v1'})
+        dispatch_before=self.request_budget.requests
         try:
             try:
-                with self.opener.open(request, timeout=35) as response:
+                with self.request_budget.open(request, timeout=35,allow_redirects=False,
+                                              source_id='deepseek_discovery',operation=action) as response:
                     status, body = response.status, response.read(8*1024*1024+1)
             except urllib.error.HTTPError as error:
                 status, body = error.code, error.read(8*1024*1024+1)
@@ -176,7 +188,7 @@ class DirectClient:
             # Preserve response content, except any accidental credential echo.
             safe = raw.replace(self.key, '[REDACTED]')
             call.update(http_status=status, finished_at=now(), credential_echo_redacted=safe != raw)
-            path = self.run_dir / f'{self.used:02d}-{action}-response.txt'
+            path = self.run_dir / f'{self.request_budget.requests:02d}-{action}-response.txt'
             path.write_text(safe, encoding='utf-8')
             call['response_file'] = str(path)
             call['response_sha256'] = hashlib.sha256(path.read_bytes()).hexdigest()
@@ -199,6 +211,10 @@ class DirectClient:
         except Exception as error:
             call.update(finished_at=now(), error=str(error).replace(self.key, '[REDACTED]'))
             raise
+        finally:
+            self.used=self.request_budget.requests
+            call['dispatched']=self.request_budget.requests>dispatch_before
+            call['network_requests']=self.request_budget.requests-dispatch_before
 
     def close(self):
         self.state.close()
@@ -207,29 +223,41 @@ class DirectClient:
 def save_candidates(db_path, items):
     if not db_path.is_file():
         raise ValueError('--db must point to an existing project database')
-    con = sqlite3.connect(db_path)
+    sys.path.insert(0,str(ROOT))
+    from tools.ingestion_contract import begin_batch,finish_batch,abort_batch
+    con = sqlite3.connect('file:'+db_path.resolve().as_posix()+'?mode=rw',uri=True)
+    batch=None
     try:
-        con.executescript((ROOT / 'schema' / 'deepseek_discovery.sql').read_text(encoding='utf-8'))
-        with con:
-            for item in items:
-                if hashlib.sha256(item['content'].encode()).hexdigest() != item['content_sha256']:
-                    raise ValueError('candidate content hash mismatch')
-                if item['id'] != 'discovery-' + hashlib.sha256(item['url'].encode()).hexdigest()[:24]:
-                    raise ValueError('candidate ID mismatch')
-                if public_url(item['url']) != item['url'] or item['category'] not in {'hiring','layoff','shrink','freeze'}:
-                    raise ValueError('invalid candidate URL/category')
-                for span in [item['evidence']['ai'], item['evidence']['employment']]:
-                    start, end = span['start'], span['end']
-                    if not isinstance(start,int) or not isinstance(end,int) or not 0 <= start < end <= len(item['content']) or item['content'][start:end] != span['text']:
-                        raise ValueError('evidence span does not match the stored source')
-                fields = ['id','url','title','source','published_at','date_basis','content','content_sha256','query','category','claim_status']
-                stamp = now()
-                columns = fields + ['first_seen','last_seen','evidence_json']
-                values = [item[k] for k in fields] + [stamp, stamp, json.dumps(item['evidence'], ensure_ascii=False)]
-                updates = ','.join(f'{k}=excluded.{k}' for k in fields if k not in {'id','url'})
-                con.execute('INSERT INTO discovery_documents ('+','.join(columns)+') VALUES ('+','.join('?' for _ in columns)+') '
-                    'ON CONFLICT(url) DO UPDATE SET '+updates+",last_seen=excluded.last_seen,evidence_json=excluded.evidence_json,"
-                    "review_status='pending',ai_scope='pending',liveness='unknown',last_verified_at=NULL", values)
+        batch=begin_batch(con,'discovery_import',hashlib.sha256(json.dumps(items,ensure_ascii=False,sort_keys=True).encode()).hexdigest())
+        batch['document_ids']=[item['id'] for item in items]
+        for item in items:
+            if hashlib.sha256(item['content'].encode()).hexdigest() != item['content_sha256']:
+                raise ValueError('candidate content hash mismatch')
+            if item['id'] != 'discovery-' + hashlib.sha256(item['url'].encode()).hexdigest()[:24]:
+                raise ValueError('candidate ID mismatch')
+            if public_url(item['url']) != item['url'] or item['category'] not in {'hiring','layoff','shrink','freeze'}:
+                raise ValueError('invalid candidate URL/category')
+            for span in [item['evidence']['ai'], item['evidence']['employment']]:
+                start, end = span['start'], span['end']
+                if not isinstance(start,int) or not isinstance(end,int) or not 0 <= start < end <= len(item['content']) or item['content'][start:end] != span['text']:
+                    raise ValueError('evidence span does not match the stored source')
+            fields = ['id','url','title','source','published_at','date_basis','content','content_sha256','query','category','claim_status']
+            stamp = now()
+            columns = fields + ['first_seen','last_seen','evidence_json']
+            values = [item[k] for k in fields] + [stamp, stamp, json.dumps(item['evidence'], ensure_ascii=False)]
+            old=con.execute('SELECT content_sha256 FROM discovery_documents WHERE url=?',(item['url'],)).fetchone()
+            if old and old[0]==item['content_sha256']:
+                con.execute('UPDATE discovery_documents SET last_seen=? WHERE url=?',(stamp,item['url']))
+                continue
+            updates = ','.join(f'{k}=excluded.{k}' for k in fields if k not in {'id','url'})
+            con.execute('INSERT INTO discovery_documents ('+','.join(columns)+') VALUES ('+','.join('?' for _ in columns)+') '
+                'ON CONFLICT(url) DO UPDATE SET '+updates+",last_seen=excluded.last_seen,evidence_json=excluded.evidence_json,"
+                "review_status='pending',ai_scope='pending',liveness='unknown',last_verified_at=NULL", values)
+        facts=finish_batch(con,batch);con.commit()
+        return facts
+    except BaseException as error:
+        if batch:abort_batch(con,batch,error)
+        raise
     finally:
         con.close()
 
@@ -241,8 +269,9 @@ def main():
     parser.add_argument('--kind', choices=['hiring','changes'], default='hiring')
     parser.add_argument('--since', help='Beijing start date inclusive; default 30 days for hiring, 7 for changes')
     parser.add_argument('--until', help='Beijing end date, exclusive; default tomorrow')
-    parser.add_argument('--limit', type=int, default=3, choices=range(1,4), help='At most 3 search results/candidates')
-    parser.add_argument('--max-requests', type=int, choices=[1,2], default=2)
+    parser.add_argument('--limit', type=int, default=3, choices=range(1,16), help='At most 15 search results/candidates; start with 3')
+    parser.add_argument('--max-requests', type=int, choices=range(1,10), default=3,
+                        help='Per-run budget; effective limit is the minimum of task, project and source limits')
     parser.add_argument('--fetch-first', action='store_true', help='Fetch only the first result if its content is absent')
     parser.add_argument('--fetch-url', help='One explicit public source URL instead of a search')
     parser.add_argument('--write-db', action='store_true', help='Append provisional documents, never jobs or approved events')
@@ -308,7 +337,7 @@ def main():
     try:
         if target:
             page = client.post('fetch', {'url':target})
-            items = [{'url':target, 'title':page.get('title'), 'content':page.get('content')}]
+            items = [{'url':target, 'title':page.get('title'), 'content':page.get('content'),'_fetch_receipt':dict(client.calls[-1])}]
         else:
             data = client.post('search', {'query':query, 'count':args.limit, 'need_content':True})
             items = data.get('results')
@@ -319,7 +348,7 @@ def main():
                 url = public_url(items[0].get('url',''))
                 try:
                     page = client.post('fetch', {'url':url})
-                    items[0] = dict(items[0], content=page['content'], _fetched=True)
+                    items[0] = dict(items[0], content=page['content'], _fetched=True,_fetch_receipt=dict(client.calls[-1]))
                 except Exception as error:
                     report['errors'].append(str(error).replace(key, '[REDACTED]'))
         seen = set()
@@ -350,7 +379,7 @@ def main():
         report['status'] = 'FAIL'
         return_code = 1
     finally:
-        report.update(finished_at=now(), network_requests=client.used, calls=client.calls)
+        report.update(finished_at=now(), network_requests=client.request_budget.requests, calls=client.calls)
         path = run_dir/'run.json'
         path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
         client.close()

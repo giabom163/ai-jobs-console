@@ -65,68 +65,15 @@ def priority(source: str) -> int:
 
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--db", default=str(DB))
-    parser.add_argument("--threshold", type=float, default=0.62)
-    args = parser.parse_args()
-    con = sqlite3.connect(args.db)
-    con.row_factory = sqlite3.Row
-    rows = con.execute("SELECT j.*,c.name company FROM jobs j JOIN companies c ON c.id=j.company_id "
-                       "WHERE j.status='open' AND j.duplicate_of IS NULL").fetchall()
-    groups = defaultdict(list)
-    for j in rows:
-        key = f"{j['company_id']}|{norm_title(j['title'])}|{norm_city(j['location'])}"
-        groups[key].append(j)
-
-    merged = 0
-    with con:
-        for key, items in groups.items():
-            if not items:
-                continue
-            # exact same URL always merges
-            by_url = defaultdict(list)
-            for j in items:
-                if j["url"]:
-                    by_url[j["url"]].append(j)
-            remaining = []
-            for url, same in by_url.items():
-                if len(same) > 1:
-                    same.sort(key=lambda x: (x["last_seen"] or "", priority(x["source"])), reverse=True)
-                    keep = same[0]
-                    for dup in same[1:]:
-                        merge(con, keep, dup)
-                        merged += 1
-                    remaining.append(keep)
-                else:
-                    remaining.append(same[0])
-            # similar descriptions within same title/city
-            remaining.sort(key=lambda x: (x["last_seen"] or "", priority(x["source"])), reverse=True)
-            kept = []
-            for j in remaining:
-                target = None
-                for k in kept:
-                    if similarity(j["description"] or "", k["description"] or "") >= args.threshold:
-                        target = k
-                        break
-                if target:
-                    merge(con, target, j)
-                    merged += 1
-                else:
-                    kept.append(j)
-            for j in kept:
-                con.execute("UPDATE jobs SET dedup_key=? WHERE id=?",
-                            (hashlib.sha1(key.encode()).hexdigest()[:16], j["id"]))
-    print(json.dumps({"merged": merged, "open": con.execute("SELECT count(*) FROM jobs WHERE status='open'").fetchone()[0]}, ensure_ascii=False))
+    try:
+        from .dedup_candidates import main as preview
+    except ImportError:
+        from dedup_candidates import main as preview
+    return preview()
 
 
-def merge(con, keep, dup):
-    con.execute("INSERT OR IGNORE INTO job_evidence(job_id,source,url,seen_at) "
-                "SELECT ?,source,url,seen_at FROM job_evidence WHERE job_id=?",
-                (keep["id"], dup["id"]))
-    con.execute("DELETE FROM job_evidence WHERE job_id=?", (dup["id"],))
-    con.execute("UPDATE jobs SET status='merged',duplicate_of=?,merged_at=? WHERE id=?",
-                (keep["id"], datetime.now(timezone.utc).isoformat(), dup["id"]))
-    con.execute("UPDATE jobs SET last_seen=MAX(last_seen,?) WHERE id=?", (dup["last_seen"], keep["id"]))
+def merge(*args, **kwargs):
+    raise RuntimeError('Automatic merge disabled; use apply_reviewed_merges with a reviewed manifest')
 
 
 if __name__ == "__main__":

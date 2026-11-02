@@ -81,127 +81,16 @@ def cities(value: str) -> set[str]:
     return {norm_city(p) for p in parts if norm_city(p)}
 
 
-def merge(con, keep, dup, reason: str):
-    con.execute("INSERT OR IGNORE INTO job_evidence(job_id,source,url,seen_at) "
-                "SELECT ?,source,url,seen_at FROM job_evidence WHERE job_id=?",
-                (keep["id"], dup["id"]))
-    con.execute("DELETE FROM job_evidence WHERE job_id=?", (dup["id"],))
-    con.execute("UPDATE jobs SET status='merged',duplicate_of=?,merged_at=?,ai_reason=? WHERE id=?",
-                (keep["id"], datetime.now(timezone.utc).isoformat(),
-                 f"merged:{reason}", dup["id"]))
-    con.execute("UPDATE jobs SET last_seen=MAX(last_seen,?) WHERE id=?", (dup["last_seen"], keep["id"]))
+def merge(*args, **kwargs):
+    raise RuntimeError('Automatic merge disabled; use apply_reviewed_merges with a reviewed manifest')
 
 
 def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--db", default=str(DB))
-    ap.add_argument("--same-title-threshold", type=float, default=0.62)
-    ap.add_argument("--cross-title-threshold", type=float, default=0.95)
-    ap.add_argument("--candidate", type=float, default=0.55)
-    ap.add_argument("--dry-run", action="store_true")
-    ap.add_argument("--json-out", default="")
-    args = ap.parse_args()
-
-    con = sqlite3.connect(args.db)
-    con.row_factory = sqlite3.Row
-    rows = con.execute(
-        "SELECT j.*,c.name company FROM jobs j JOIN companies c ON c.id=j.company_id "
-        "WHERE j.status='open' AND j.duplicate_of IS NULL").fetchall()
-
-    cache: dict[str, set[str]] = {}
-
-    def desc_set(jid, text):
-        if jid not in cache:
-            cache[jid] = shingles(text or "")
-        return cache[jid]
-
-    stats = {"open_before": len(rows), "merged_same_title": 0, "merged_cross_title": 0,
-             "pairs_checked": 0, "samples": [], "dry_run": args.dry_run}
-
-    # ---------- A. 同公司 + 同标题 + 同城市 ----------
-    groups = defaultdict(list)
-    for r in rows:
-        groups[(r["company_id"], tight_title(r["title"]), norm_city(r["location"]))].append(r)
-    alive = {}
-    with con:
-        for key, items in groups.items():
-            items.sort(key=lambda x: (x["last_seen"] or "", priority(x["source"])), reverse=True)
-            kept = []
-            for j in items:
-                target = None
-                for k in kept:
-                    same_url = j["url"] and j["url"] == k["url"]
-                    if same_url or exact_jaccard(desc_set(j["id"], j["description"]),
-                                                 desc_set(k["id"], k["description"])) >= args.same_title_threshold:
-                        target = k
-                        break
-                if target:
-                    stats["merged_same_title"] += 1
-                    if len(stats["samples"]) < 12:
-                        stats["samples"].append({"type": "same-title", "keep": target["title"],
-                                                 "drop": j["title"], "company": j["company"]})
-                    if not args.dry_run:
-                        merge(con, target, j, "same-title")
-                else:
-                    kept.append(j)
-            for j in kept:
-                alive[j["id"]] = j
-
-    # ---------- B. 同公司内跨标题 ----------
-    by_company = defaultdict(list)
-    for j in alive.values():
-        by_company[j["company_id"]].append(j)
-
-    for cid, items in by_company.items():
-        sigs = {j["id"]: fingerprint(j["description"] or "") for j in items}
-        for i in range(len(items)):
-            for k in range(i + 1, len(items)):
-                a, b = items[i], items[k]
-                if a["id"] not in alive or b["id"] not in alive:
-                    continue
-                if estimate(sigs[a["id"]], sigs[b["id"]]) < args.candidate:
-                    continue
-                stats["pairs_checked"] += 1
-                same_title = tight_title(a["title"]) == tight_title(b["title"])
-                same_url = a["url"] and a["url"] == b["url"]
-                if not same_url and not (cities(a["location"]) & cities(b["location"])):
-                    continue
-                sim = exact_jaccard(desc_set(a["id"], a["description"]),
-                                    desc_set(b["id"], b["description"]))
-                need = args.same_title_threshold if same_title else args.cross_title_threshold
-                ta, tb = tight_title(a["title"]), tight_title(b["title"])
-                contained = ta in tb or tb in ta
-                pa, pb = parens(a["title"]), parens(b["title"])
-                if pa or pb:
-                    if pa != pb:
-                        continue
-                if not same_title and not contained:
-                    continue
-                if sim < need:
-                    continue
-                keep, drop = (a, b) if (a["last_seen"] or "", priority(a["source"])) >= \
-                                          (b["last_seen"] or "", priority(b["source"])) else (b, a)
-                if keep["id"] not in alive or drop["id"] not in alive:
-                    continue
-                stats["merged_cross_title"] += 1
-                if len(stats["samples"]) < 12:
-                    stats["samples"].append({"type": "cross-title", "keep": keep["title"],
-                                             "drop": drop["title"], "sim": round(sim, 3),
-                                             "company": drop["company"]})
-                if not args.dry_run:
-                    merge(con, keep, drop, "near-dup")
-                alive.pop(drop["id"], None)
-
-        con.commit()
-
-    stats["open_after"] = len(alive) if args.dry_run else con.execute(
-        "SELECT count(*) FROM jobs WHERE status='open'").fetchone()[0]
-    text = json.dumps(stats, ensure_ascii=False, indent=1)
-    if args.json_out:
-        Path(args.json_out).write_text(text, encoding="utf-8")
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-    print(text)
-    con.close()
+    try:
+        from .dedup_candidates import main as preview
+    except ImportError:
+        from dedup_candidates import main as preview
+    return preview()
 
 
 if __name__ == "__main__":
