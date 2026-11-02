@@ -1,55 +1,6 @@
 {
   "companies": [
     {
-      "name": "xAI",
-      "type": "greenhouse",
-      "token": "xai",
-      "enabled": true,
-      "domain": "x.ai"
-    },
-    {
-      "name": "Scale AI",
-      "type": "greenhouse",
-      "token": "scaleai",
-      "enabled": true,
-      "domain": "scale.com"
-    },
-    {
-      "name": "Anthropic",
-      "type": "greenhouse",
-      "token": "anthropic",
-      "enabled": true,
-      "domain": "anthropic.com"
-    },
-    {
-      "name": "OpenAI",
-      "type": "ashby",
-      "token": "openai",
-      "enabled": true,
-      "domain": "openai.com"
-    },
-    {
-      "name": "Cohere",
-      "type": "ashby",
-      "token": "cohere",
-      "enabled": true,
-      "domain": "cohere.com"
-    },
-    {
-      "name": "Perplexity",
-      "type": "ashby",
-      "token": "perplexity",
-      "enabled": true,
-      "domain": "perplexity.ai"
-    },
-    {
-      "name": "Mistral",
-      "type": "ashby",
-      "token": "mistral.ai",
-      "enabled": true,
-      "domain": "mistral.ai"
-    },
-    {
       "name": "百度",
       "type": "official",
       "token": "https://talent.baidu.com/",

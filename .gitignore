@@ -20,3 +20,15 @@ _backup-*.db
 _test_dedup.db
 _verify_domestic.json
 _verify500_second.json
+
+.request-cooldown.json
+
+.request-cooldown.json.*.tmp
+
+.request-cooldown.lock
+.request-scheduler.json
+.request-scheduler.lock
+.request-scheduler.json.*.tmp
+
+.wrangler/
+site/
