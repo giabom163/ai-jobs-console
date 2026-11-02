@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI 岗位核查台 · 自动化采集监控后台</title>
+  <style>
+    :root {
+      --bg: #0f172a;
+      --card-bg: #1e293b;
+      --border: #334155;
+      --primary: #3b82f6;
+      --primary-hover: #2563eb;
+      --success: #10b981;
+      --warning: #f59e0b;
+      --danger: #ef4444;
+      --text: #f8fafc;
+      --text-muted: #94a3b8;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+      padding: 24px;
+    }
+    .container { max-width: 1200px; margin: 0 auto; }
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 24px;
+      padding-bottom: 16px;
+      border-bottom: 1px solid var(--border);
+    }
+    header h1 { font-size: 20px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+    header a { color: var(--primary); text-decoration: none; font-size: 14px; font-weight: 500; }
+    header a:hover { text-decoration: underline; }
+    
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 16px;
+      margin-bottom: 24px;
+    }
+    .card {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 16px;
+    }
+    .card .title { font-size: 13px; color: var(--text-muted); text-transform: uppercase; margin-bottom: 6px; }
+    .card .value { font-size: 24px; font-weight: 700; }
+    .status-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 14px;
+      padding: 2px 8px;
+      border-radius: 9999px;
+      background: rgba(16, 185, 129, 0.15);
+      color: var(--success);
+    }
+    .status-badge.running {
+      background: rgba(59, 130, 246, 0.15);
+      color: var(--primary);
+      animation: pulse 2s infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+
+    .actions-bar {
+      display: flex;
+      gap: 12px;
+      margin-bottom: 24px;
+      background: var(--card-bg);
+      padding: 16px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      align-items: center;
+    }
+    button.btn {
+      background: var(--primary);
+      color: #fff;
+      border: none;
+      padding: 10px 18px;
+      border-radius: 6px;
+      font-weight: 600;
+      font-size: 14px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      transition: background 0.2s;
+    }
+    button.btn:hover:not(:disabled) { background: var(--primary-hover); }
+    button.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    button.btn-secondary { background: var(--border); }
+    button.btn-secondary:hover:not(:disabled) { background: #475569; }
+
+    .layout-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 24px;
+    }
+    @media (max-width: 900px) {
+      .layout-grid { grid-template-columns: 1fr; }
+    }
+
+    h2 { font-size: 16px; font-weight: 600; margin-bottom: 12px; display: flex; align-items: center; justify-content: space-between; }
+    
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--border); }
+    th { color: var(--text-muted); font-weight: 500; }
+    tr:last-child td { border-bottom: none; }
+    .source-name { font-weight: 600; }
+
+    .log-container {
+      background: #020617;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px;
+      height: 380px;
+      overflow-y: auto;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 12px;
+      color: #cbd5e1;
+    }
+    .log-line { margin-bottom: 4px; white-space: pre-wrap; word-break: break-all; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1><span>⚡</span> AI 岗位核查台 · 自动化采集监控后台</h1>
+      <a href="/" target="_blank">👉 前往岗位全景大盘 (/)</a>
+    </header>
+
+    <div class="stats-grid">
+      <div class="card">
+        <div class="title">管道调度状态</div>
+        <div class="value">
+          <span id="pipeline-status-badge" class="status-badge">
+            <span class="dot"></span>
+            <span id="pipeline-status-text">空闲 (IDLE)</span>
+          </span>
+        </div>
+      </div>
+      <div class="card">
+        <div class="title">库内岗位总数</div>
+        <div class="value" id="stat-total-jobs">--</div>
+      </div>
+      <div class="card">
+        <div class="title">待审候选岗位 (Review)</div>
+        <div class="value" id="stat-review-jobs" style="color: var(--warning);">--</div>
+      </div>
+      <div class="card">
+        <div class="title">调度配额使用</div>
+        <div class="value" id="stat-sched-usage">--</div>
+      </div>
+    </div>
+
+    <div class="actions-bar">
+      <button id="btn-trigger" class="btn" onclick="triggerPipeline()">
+        <span>▶</span> 立即运行一轮全量自动化管道
+      </button>
+      <button class="btn btn-secondary" onclick="fetchStatus()">
+        <span>🔄</span> 刷新监控数据
+      </button>
+      <span id="action-tip" style="font-size: 13px; color: var(--text-muted); margin-left: auto;"></span>
+    </div>
+
+    <div class="layout-grid">
+      <div class="card">
+        <h2>多源数据采集与健康状态</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>数据来源</th>
+              <th>岗位存量</th>
+              <th>最新观测时间</th>
+            </tr>
+          </thead>
+          <tbody id="source-table-body">
+            <tr><td colspan="3" style="text-align: center; color: var(--text-muted);">正在加载数据...</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="card">
+        <h2>
+          <span>实时运行控制台日志</span>
+          <span id="log-status" style="font-size: 12px; color: var(--text-muted); font-weight: normal;">自动轮询中</span>
+        </h2>
+        <div class="log-container" id="log-box">
+          <div class="log-line" style="color: var(--text-muted);">等待日志输出...</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    async function fetchStatus() {
+      try {
+        const res = await fetch('/api/admin/status');
+        if (!res.ok) throw new Error('status error: ' + res.status);
+        const data = await res.json();
+        
+        // 更新卡片
+        document.getElementById('stat-total-jobs').innerText = data.total_jobs.toLocaleString();
+        document.getElementById('stat-review-jobs').innerText = (data.status_counts.review || 0).toLocaleString();
+        
+        const sched = data.scheduler || {};
+        document.getElementById('stat-sched-usage').innerText = `${sched.used || 0} / ${sched.limit || 15} 次`;
+
+        const badge = document.getElementById('pipeline-status-badge');
+        const badgeText = document.getElementById('pipeline-status-text');
+        const triggerBtn = document.getElementById('btn-trigger');
+
+        if (data.pipeline_running) {
+          badge.className = 'status-badge running';
+          badgeText.innerText = '采集运行中 (RUNNING)';
+          triggerBtn.disabled = true;
+        } else {
+          badge.className = 'status-badge';
+          badgeText.innerText = '空闲就绪 (IDLE)';
+          triggerBtn.disabled = false;
+        }
+
+        // 更新表格
+        const tbody = document.getElementById('source-table-body');
+        if (data.source_stats && data.source_stats.length > 0) {
+          tbody.innerHTML = data.source_stats.map(s => {
+            const timeStr = s.last_seen ? s.last_seen.slice(0, 19).replace('T', ' ') : '从未';
+            return `
+              <tr>
+                <td class="source-name">${s.source}</td>
+                <td><strong>${s.count}</strong> 条</td>
+                <td style="color: var(--text-muted); font-family: monospace;">${timeStr}</td>
+              </tr>
+            `;
+          }).join('');
+        }
+      } catch (err) {
+        console.error('Fetch status failed:', err);
+      }
+    }
+
+    async function fetchLogs() {
+      try {
+        const res = await fetch('/api/admin/pipeline/logs');
+        if (!res.ok) return;
+        const data = await res.json();
+        const box = document.getElementById('log-box');
+        if (data.logs && data.logs.length > 0) {
+          box.innerHTML = data.logs.map(line => `<div class="log-line">${line.replace(/</g, '&lt;')}</div>`).join('');
+          box.scrollTop = box.scrollHeight;
+        }
+      } catch (err) {
+        console.error('Fetch logs failed:', err);
+      }
+    }
+
+    async function triggerPipeline() {
+      const btn = document.getElementById('btn-trigger');
+      const tip = document.getElementById('action-tip');
+      btn.disabled = true;
+      tip.innerText = '正在派发采集任务...';
+      try {
+        const res = await fetch('/api/admin/pipeline/trigger', { method: 'POST' });
+        const data = await res.json();
+        if (res.ok) {
+          tip.innerText = '任务已启动 (PID: ' + data.pid + ')';
+          fetchStatus();
+        } else {
+          tip.innerText = '启动失败: ' + (data.error || '未知错误');
+          btn.disabled = false;
+        }
+      } catch (err) {
+        tip.innerText = '网络异常: ' + err.message;
+        btn.disabled = false;
+      }
+    }
+
+    // 初始化与轮询
+    fetchStatus();
+    fetchLogs();
+    setInterval(fetchStatus, 3000);
+    setInterval(fetchLogs, 2500);
+  </script>
+</body>
+</html>

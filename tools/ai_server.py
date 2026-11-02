@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import subprocess
+import sys
 import threading
 import urllib.parse
 from datetime import datetime, timedelta, timezone
@@ -39,6 +41,9 @@ TZ = timezone(timedelta(hours=8))
 _payload_lock = threading.Lock()
 _payload_cache = None
 _payload_cache_signature = None
+_pipeline_proc = None
+_pipeline_lock = threading.Lock()
+PIPELINE_LOG_FILE = Path.home() / '.codex' / 'documents' / 'ai-jobs-validation-20261102' / 'pipeline-live.log'
 
 
 def default_since():
@@ -116,6 +121,22 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def do_POST(self):
+        u = urllib.parse.urlsplit(self.path)
+        path = u.path
+        global _pipeline_proc
+        if path == '/api/admin/pipeline/trigger':
+            with _pipeline_lock:
+                if _pipeline_proc is not None and _pipeline_proc.poll() is None:
+                    return self.send_json({'error': 'pipeline is already running', 'pid': _pipeline_proc.pid}, 409)
+                PIPELINE_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+                log_fh = open(PIPELINE_LOG_FILE, 'w', encoding='utf-8')
+                py = sys.executable
+                daemon_py = ROOT / 'tools' / 'pipeline_daemon.py'
+                _pipeline_proc = subprocess.Popen([py, '-B', str(daemon_py), '--once'], stdout=log_fh, stderr=subprocess.STDOUT)
+                return self.send_json({'status': 'dispatched', 'pid': _pipeline_proc.pid, 'started_at': datetime.now(TZ).isoformat()})
+        return self.send_json({'error': 'not found'}, 404)
+
     def do_GET(self):
         u = urllib.parse.urlsplit(self.path)
         path, query = u.path, urllib.parse.parse_qs(u.query)
@@ -129,6 +150,45 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if path == '/api/employment-events':
                 return self.send_json(event_payload(query))
+            if path == '/admin' or path == '/admin/':
+                admin_html = WEB / 'admin' / 'index.html'
+                if not admin_html.exists():
+                    return self.send_json({'error': 'admin panel html not found'}, 404)
+                body = admin_html.read_bytes()
+                self.send_response(200)
+                self.send_header('Content-Type', 'text/html; charset=utf-8')
+                self.send_header('Content-Length', str(len(body)))
+                self.end_headers()
+                return self.wfile.write(body)
+            if path == '/api/admin/status':
+                con = connect()
+                try:
+                    counts = dict(con.execute('SELECT status, count(*) FROM jobs GROUP BY status').fetchall())
+                    source_stats = [dict(r) for r in con.execute('SELECT source, count(*) as count, max(last_seen) as last_seen FROM jobs GROUP BY source ORDER BY count DESC').fetchall()]
+                    total_jobs = con.execute('SELECT count(*) FROM jobs').fetchone()[0]
+                finally:
+                    con.close()
+                sched_path = ROOT / '.request-scheduler.json'
+                sched_state = json.loads(sched_path.read_text('utf-8')) if sched_path.exists() else {}
+                running = (_pipeline_proc is not None and _pipeline_proc.poll() is None)
+                return self.send_json({
+                    'total_jobs': total_jobs,
+                    'status_counts': counts,
+                    'source_stats': source_stats,
+                    'scheduler': sched_state,
+                    'pipeline_running': running,
+                    'server_time': datetime.now(TZ).isoformat(),
+                })
+            if path == '/api/admin/pipeline/logs':
+                logs = []
+                if PIPELINE_LOG_FILE.exists():
+                    try:
+                        with open(PIPELINE_LOG_FILE, 'r', encoding='utf-8', errors='ignore') as f:
+                            logs = f.readlines()[-100:]
+                    except Exception:
+                        pass
+                running = (_pipeline_proc is not None and _pipeline_proc.poll() is None)
+                return self.send_json({'running': running, 'logs': logs})
             if path in {"/api/stats", "/api/jobs", "/api/report", "/api/sources"}:
                 normalized_filters(query)
             if path == "/api/stats":
