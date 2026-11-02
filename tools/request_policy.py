@@ -22,6 +22,22 @@ else:
 APPROVED_ENDPOINTS = {
     ('official:meituan', 'detail'): ('POST', 'zhaopin.meituan.com', '/api/official/job/getJobDetail'),
     ('official:meituan', 'list'): ('POST', 'zhaopin.meituan.com', '/api/official/job/getJobList'),
+    ('official:tencent', 'detail'): ('GET', 'careers.tencent.com', '/tencentcareer/api/post/ByPostId'),
+    ('official:tencent', 'list'): ('GET', 'careers.tencent.com', '/tencentcareer/api/post/Query'),
+}
+
+# Verified Tencent domestic city IDs (China countryId=1)
+TENCENT_DOMESTIC_CITY_IDS = {
+    '1',   # Shenzhen
+    '2',   # Beijing
+    '3',   # Shanghai
+    '4',   # Guangzhou
+    '5',   # Chengdu
+    '9',   # Hangzhou
+    '11',  # Wuhan
+    '12',  # Xi'an
+    '17',  # Nanjing
+    '25',  # Xiamen
 }
 
 
@@ -65,6 +81,27 @@ def _validate_endpoint(request, source_id, operation, location, external_id):
             code = str(item.get('code') or '')
             if not is_domestic_only(name) or not code.startswith('001'):
                 raise SourceBlocked('city ' + name + ' (' + code + ') is not proven Mainland-only')
+    if source_id == 'official:tencent' and operation == 'list':
+        qs = urllib.parse.parse_qs(parsed.query)
+        country_id = qs.get('countryId')
+        if not country_id or country_id != ['1']:
+            raise SourceBlocked('official:tencent list request requires explicit countryId=1 (Mainland China)')
+        area = qs.get('area')
+        if area and area != ['cn']:
+            raise SourceBlocked('official:tencent list request area must be cn')
+        city_id = qs.get('cityId')
+        if city_id and city_id[0]:
+            for cid in city_id[0].split(','):
+                cid_strip = cid.strip()
+                if cid_strip and cid_strip not in TENCENT_DOMESTIC_CITY_IDS:
+                    raise SourceBlocked('cityId ' + cid_strip + ' is not in proven Mainland city whitelist')
+    if source_id == 'official:tencent' and operation == 'detail':
+        qs = urllib.parse.parse_qs(parsed.query)
+        post_id = qs.get('postId')
+        if not post_id or not post_id[0] or not post_id[0].isdigit():
+            raise SourceBlocked('official:tencent detail requires valid numeric postId')
+        if external_id and str(post_id[0]) != str(external_id):
+            raise SourceBlocked('official:tencent detail postId does not match external_id')
     return parsed.hostname
 
 
