@@ -22,9 +22,12 @@
 from __future__ import annotations
 
 import re
+import hashlib
 import unicodedata
 import urllib.error
 import urllib.request
+from datetime import datetime, timezone, date
+from .request_policy import DEFAULT_BUDGET
 
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")
@@ -80,7 +83,7 @@ def _deadline_passed(text: str, today: str):
     if not m:
         return None
     try:
-        iso = f"{int(m.group(1)):04d}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
+        iso = date(int(m.group(1)),int(m.group(2)),int(m.group(3))).isoformat()
     except ValueError:
         return None
     return iso if iso < today else None
@@ -123,7 +126,9 @@ def classify(status: int | None, requested_url: str, final_url: str,
     return "uncertain", "no_apply_control", "有正文但未识别到投递入口"
 
 
-def fetch_and_classify(url: str, today: str, timeout: int = 20):
+def fetch_and_classify(url: str, today: str, timeout: int = 20, budget=None,
+                       source_id=None, location=None, external_id=None):
+    budget = budget or DEFAULT_BUDGET
     """GET 页面并判定；跟随重定向，记录最终 URL 与状态码。"""
     req = urllib.request.Request(url, headers={
         "User-Agent": UA,
@@ -131,13 +136,16 @@ def fetch_and_classify(url: str, today: str, timeout: int = 20):
         "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
     })
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with budget.open(req, timeout=timeout, source_id=source_id, operation='liveness',
+                         location=location, external_id=external_id) as resp:
             raw = resp.read(600_000)
             try:
                 body = raw.decode("utf-8", "replace")
             except Exception:  # noqa: BLE001
                 body = raw.decode("gbk", "replace")
             verdict, code, reason = classify(resp.status, url, resp.geturl(), body, today)
+            if code == "bot_wall":
+                budget.stop(url, code)
             return {"verdict": verdict, "code": code, "reason": reason,
                     "http_status": resp.status, "final_url": resp.geturl()}
     except urllib.error.HTTPError as exc:
@@ -152,39 +160,93 @@ def fetch_and_classify(url: str, today: str, timeout: int = 20):
 MEITUAN_DETAIL = "https://zhaopin.meituan.com/api/official/job/getJobDetail"
 
 
-def meituan_detail(job_union_id: str, timeout: int = 20):
-    """美团官方详情接口：data 为空 = 岗位已下线（权威信号，不受 SPA 影响）。"""
-    import json as _json
-    body = _json.dumps({"jobUnionId": str(job_union_id)}).encode()
-    req = urllib.request.Request(MEITUAN_DETAIL, data=body, headers={
-        "User-Agent": UA, "Content-Type": "application/json",
-        "Referer": "https://zhaopin.meituan.com/web/position"})
+# No numeric jobStatus mapping is asserted without source documentation.
+MEITUAN_STATUS_MAP = {}
+
+
+def _meituan_epoch_ms(value):
+    """Parse an official millisecond timestamp without substituting another date."""
+    if value in (None, ''):
+        return None
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            payload = _json.loads(resp.read().decode("utf-8"))
+        return datetime.fromtimestamp(float(value) / 1000, timezone.utc).isoformat()
+    except (TypeError, ValueError, OverflowError, OSError):
+        return None
+
+
+def classify_meituan_payload(payload, job_union_id):
+    base = {'http_status': 200, 'final_url': MEITUAN_DETAIL}
+    def result(verdict, code, reason, **extra):
+        return dict(base, verdict=verdict, code=code, reason=reason, **extra)
+    if not isinstance(payload, dict):
+        return result('uncertain', 'invalid_response', '详情响应不是对象')
+    data = payload.get('data')
+    message = str(payload.get('message') or '')
+    if data is None and any(x in message.lower() for x in ('下线', '不存在', 'not found')):
+        return result('expired', 'meituan_gone', message, identity_request=str(job_union_id))
+    if not isinstance(data, dict) or not data:
+        return result('uncertain', 'meituan_empty', '未收到可核对的详情对象')
+    returned_id = str(data.get('jobUnionId') or '')
+    if returned_id != str(job_union_id):
+        return result('uncertain', 'identity_mismatch', '返回岗位ID与请求不一致')
+    if not data.get('name') or not (data.get('jobDuty') or data.get('jobRequirement')):
+        return result('uncertain', 'incomplete_detail', '详情缺标题或职责/要求')
+    code = str(data.get('jobStatus') or '')
+    verdict = MEITUAN_STATUS_MAP.get(code, 'uncertain')
+    return result(verdict, 'job_status:' + code if verdict != 'uncertain' else 'job_status_unmapped:' + code,
+                  '详情身份与正文匹配；招聘状态枚举尚待来源证据确认' if verdict == 'uncertain' else '来源状态已映射',
+                  presence='confirmed', source_status_raw=code,
+                  source_status_mapped=MEITUAN_STATUS_MAP.get(code),
+                  published_at=_meituan_epoch_ms(data.get('firstPostTime')),
+                  source_updated_at=_meituan_epoch_ms(data.get('refreshTime')),
+                  date_evidence={
+                      'source_job_id': str(job_union_id),
+                      'published_at': {'field': 'firstPostTime', 'raw': data.get('firstPostTime'),
+                                       'parsed': _meituan_epoch_ms(data.get('firstPostTime'))},
+                      'source_updated_at': {'field': 'refreshTime', 'raw': data.get('refreshTime'),
+                                            'parsed': _meituan_epoch_ms(data.get('refreshTime'))},
+                      'source_status': {'field': 'jobStatus', 'raw': code, 'mapped': code in MEITUAN_STATUS_MAP},
+                  },
+                  snapshot={'kind': 'official_job_detail', 'payload': data,
+                            'requested_job_id': str(job_union_id)})
+
+
+def meituan_detail(job_union_id: str, timeout: int = 20, budget=None, location=None):
+    import json
+    budget = budget or DEFAULT_BUDGET
+    body = json.dumps({'jobUnionId': str(job_union_id)}).encode()
+    req = urllib.request.Request(MEITUAN_DETAIL, data=body, headers={
+        'User-Agent': UA, 'Content-Type': 'application/json',
+        'Referer': 'https://zhaopin.meituan.com/web/position'})
+    try:
+        with budget.open(req, timeout=timeout, source_id='official:meituan', operation='detail',
+                         location=location, external_id=job_union_id) as resp:
+            raw = resp.read(1_000_001)
+            if len(raw) > 1_000_000:
+                raise ValueError('oversized detail response')
+            payload = json.loads(raw.decode('utf-8'))
+            if _first(BOT_WALL, raw.decode('utf-8', 'replace')):
+                budget.stop(MEITUAN_DETAIL, 'bot_wall')
+                return dict(verdict='uncertain', code='bot_wall', reason='来源要求安全校验', http_status=resp.status, final_url=MEITUAN_DETAIL)
+            result=classify_meituan_payload(payload,job_union_id)
+            result['response_sha256']=hashlib.sha256(raw).hexdigest()
+            snapshot=result.setdefault('snapshot',{'kind':'source_verification','requested_job_id':str(job_union_id)})
+            snapshot.update(response_text=raw.decode('utf8'),response_sha256=result['response_sha256'],url=MEITUAN_DETAIL)
+            return result
     except urllib.error.HTTPError as exc:
-        return {"verdict": "uncertain", "code": f"http_{exc.code}",
-                "reason": f"HTTP {exc.code}", "http_status": exc.code, "final_url": ""}
-    except Exception as exc:  # noqa: BLE001
-        return {"verdict": "uncertain", "code": "fetch_error", "reason": str(exc)[:200],
-                "http_status": None, "final_url": ""}
-
-    data = payload.get("data")
-    message = (payload.get("message") or "").strip()
-    if data:
-        status_code = str(data.get("jobStatus") or "")
-        return {"verdict": "active", "code": f"job_status:{status_code or 'unknown'}",
-                "reason": f"详情接口返回岗位：{data.get('name', '')}", "http_status": 200,
-                "final_url": ""}
-    if "下线" in message or "不存在" in message or "not found" in message.lower():
-        return {"verdict": "expired", "code": "meituan_gone", "reason": message,
-                "http_status": 200, "final_url": ""}
-    return {"verdict": "uncertain", "code": "meituan_empty", "reason": message or "空响应",
-            "http_status": 200, "final_url": ""}
+        return dict(verdict='uncertain', code='http_' + str(exc.code), reason='来源HTTP错误，不等于岗位关闭', http_status=exc.code, final_url=MEITUAN_DETAIL)
+    except Exception as exc:
+        return dict(verdict='uncertain', code='fetch_error', reason=type(exc).__name__, http_status=None, final_url=MEITUAN_DETAIL)
 
 
-def check_job(source: str, external_id: str, url: str, today: str):
-    """按来源选择判定方式：美团走详情接口，其余走页面文本判定。"""
-    if source == "official:meituan" and external_id:
-        return meituan_detail(external_id)
-    return fetch_and_classify(url, today)
+def check_job(source: str, external_id: str, url: str, today: str, budget=None, location=None):
+    budget = budget or DEFAULT_BUDGET
+    before = budget.requests
+    if source == 'official:meituan' and external_id:
+        result = meituan_detail(external_id, budget=budget, location=location)
+    else:
+        result = fetch_and_classify(url, today, budget=budget, source_id=source,
+                                    location=location, external_id=external_id)
+    result['attempted'] = budget.requests > before
+    result['checked_at'] = datetime.now(timezone.utc).isoformat() if result['attempted'] else None
+    return result

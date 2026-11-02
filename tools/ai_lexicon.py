@@ -23,7 +23,7 @@ import re
 
 # —— 强技术词：出现即说明岗位本身在做 AI ——
 STRONG_TERMS = (
-    "算法", "大模型", "机器学习", "深度学习", "强化学习", "自然语言处理", "计算机视觉",
+    "算法", "大模型", "人工智能", "机器学习", "深度学习", "强化学习", "自然语言处理", "计算机视觉",
     "多模态", "aigc", "生成式", "具身智能", "自动驾驶", "智能驾驶", "无人配送",
     "视觉生成", "视频生成", "世界模型", "基座模型", "智能体", "大语言模型",
     "推荐算法", "搜索算法", "广告算法", "风控算法", "运筹优化", "知识图谱",
@@ -100,6 +100,26 @@ def classify(title: str, description: str = "", department: str = ""):
     # 先剥掉"（AI 驱动）"这类限定语，只看岗位本体
     stripped = QUALIFIER_RE.sub("", raw_title)
     head = _norm(stripped) + _norm(department)
+    body = _norm(description)
+
+    # Explicitly reviewed negative cases: a generic computer/control job does
+    # not become an AI job just because it mentions AI tools or coding agents.
+    if '飞控算法' in head and 'ai工具应用' in body and not re.search(r'机器学习|深度学习|强化学习|大模型|神经网络|machine learning|deep learning', body):
+        return "none", 0.8, "non_ai:飞控岗位仅提及AI工具，未见AI研发或直接支撑职责"
+    if '核心全栈agent工程师' in head and '供给方向' in head and 'ai coding' in body and '外卖供给方向核心系统建设' in body:
+        return "none", 0.8, "non_ai:普通业务系统开发，Agent用于辅助编程"
+    if 'ai组织转型' in head and '组织发展' in head and '人力资源' in body:
+        return "none", 0.8, "function:人力资源组织发展，非AI研发或直接支撑"
+    if 'ai组织发展专家' in head and 'ai工具在组织诊断' in body:
+        return "none", 0.8, "function:组织发展岗位使用AI工具辅助"
+    if '搜推/流量策略产品经理' in head and '借助ai工具提升数据洞察效率' in body:
+        return "none", 0.8, "non_ai:流量策略岗位使用AI工具辅助，未见明确AI模型职责"
+    if '用户搜推策略运营专家' in head and '运用 ai 工具' in body:
+        return "none", 0.8, "non_ai:流量运营岗位使用AI工具辅助，未见明确AI模型职责"
+
+    # TTS evaluation management is AI-adjacent only with direct model evaluation evidence.
+    if "评测项目经理" in head and "tts" in head and "模型评测需求" in body and "模型能力定位" in body:
+        return "adjacent", 0.8, "body:模型评测与能力迭代+title:TTS评测项目经理"
 
     strong = _hits(head, STRONG_TERMS)
     token = AI_TOKEN_RE.search(head)

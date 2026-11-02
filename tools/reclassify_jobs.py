@@ -1,76 +1,49 @@
-#!/usr/bin/env python
-"""按 AI 岗位词典重算相关度；可选把非 AI 岗位标记为 excluded（不物理删除）。
-
-用法：
-  python tools/reclassify_jobs.py --dry-run          # 只看分布，不改库
-  python tools/reclassify_jobs.py                    # 只重写 ai_relevance/ai_confidence/ai_reason
-  python tools/reclassify_jobs.py --exclude-none     # 非 AI 岗 status='excluded'（前端默认不展示）
-"""
-from __future__ import annotations
-
+"""Bounded AI reclassification; preview by default, explicit --apply to write."""
 import argparse
-import collections
 import json
 import sqlite3
 import sys
 from pathlib import Path
-
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
-from tools.ai_lexicon import classify  # noqa: E402
-
-
-def ensure_column(con):
-    cols = {r[1] for r in con.execute("PRAGMA table_info(jobs)")}
-    if "ai_reason" not in cols:
-        con.execute("ALTER TABLE jobs ADD COLUMN ai_reason TEXT")
-        con.commit()
+from datetime import datetime, timezone
+ROOT=Path(__file__).resolve().parent.parent
+sys.path.insert(0,str(ROOT))
+from tools.ingestion_contract import standard_fields, begin_batch, finish_batch, abort_batch
+from tools.job_states import STATUSES, classification_state
 
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--db", default=str(ROOT / "ai_jobs.db"))
-    parser.add_argument("--dry-run", action="store_true")
-    parser.add_argument("--exclude-none", action="store_true")
-    parser.add_argument("--json-out", default="")
-    args = parser.parse_args()
+    ap=argparse.ArgumentParser(description=__doc__)
+    ap.add_argument('--db',type=Path,default=ROOT/'ai_jobs.db')
+    ap.add_argument('--limit',type=int,default=3)
+    group=ap.add_mutually_exclusive_group()
+    group.add_argument('--apply',action='store_true')
+    group.add_argument('--dry-run',action='store_true')
+    ap.add_argument('--exclude-none',action='store_true')
+    ap.add_argument('--status',action='append',choices=sorted(STATUSES))
+    ap.add_argument('--json-out',type=Path)
+    args=ap.parse_args()
+    if not 1<=args.limit<=15:ap.error('limit must be 1..15')
+    states=args.status or ['open','review','verification_pending']
+    con=sqlite3.connect('file:'+args.db.resolve().as_posix()+('?mode=rw' if args.apply else '?mode=ro'),uri=True)
+    con.row_factory=sqlite3.Row
+    batch=None;result={'mode':'apply' if args.apply else 'preview','records':[]}
+    try:
+        if args.apply:batch=begin_batch(con,'reclassification')
+        rows=con.execute('SELECT * FROM jobs WHERE status IN ('+','.join('?' for _ in states)+') ORDER BY id LIMIT ?',[*states,args.limit]).fetchall()
+        for row in rows:
+            derived=standard_fields(row['title'],row['description'] or '',row['department'] or '')
+            state=classification_state(row['status'],derived['ai_relevance']) if args.exclude_none else row['status']
+            result['records'].append(dict(id=row['id'],before_tier=row['ai_relevance'],after_tier=derived['ai_relevance'],before_status=row['status'],after_status=state,reason=derived['ai_reason']))
+            if args.apply:
+                con.execute('UPDATE jobs SET normalized_title=?,ai_relevance=?,ai_confidence=?,ai_reason=?,status=? WHERE id=?',(derived['normalized_title'],derived['ai_relevance'],derived['ai_confidence'],derived['ai_reason'],state,row['id']))
+                con.execute('INSERT INTO job_changes(job_id,change_type,changed_at,note) VALUES(?,?,?,?)',(row['id'],'reclassified',datetime.now(timezone.utc).isoformat(),json.dumps(result['records'][-1],ensure_ascii=False)))
+        if batch:
+            result['batch']=finish_batch(con,batch);con.commit()
+    except BaseException as error:
+        if batch:abort_batch(con,batch,error)
+        raise
+    finally:con.close()
+    if args.json_out:args.json_out.write_text(json.dumps(result,ensure_ascii=False,indent=2),encoding='utf8')
+    print(json.dumps(result,ensure_ascii=True))
 
-    con = sqlite3.connect(args.db)
-    con.row_factory = sqlite3.Row
-    if not args.dry_run:
-        ensure_column(con)
-
-    rows = con.execute(
-        "SELECT id,title,description,location FROM jobs WHERE status='open'").fetchall()
-    buckets = collections.Counter()
-    samples = {"build": [], "adjacent": [], "none": []}
-    updates = []
-    for r in rows:
-        tier, conf, reason = classify(r["title"], r["description"] or "")
-        buckets[tier] += 1
-        if len(samples[tier]) < 12:
-            samples[tier].append({"title": r["title"], "reason": reason, "conf": round(conf, 2)})
-        updates.append((tier, conf, reason, r["id"]))
-
-    result = {"open": len(rows), "counts": dict(buckets),
-              "ai_total": buckets["build"] + buckets["adjacent"],
-              "samples": samples}
-    if not args.dry_run:
-        with con:
-            con.executemany("UPDATE jobs SET ai_relevance=?,ai_confidence=?,ai_reason=? WHERE id=?",
-                            updates)
-            if args.exclude_none:
-                cur = con.execute(
-                    "UPDATE jobs SET status='excluded' WHERE status='open' AND ai_relevance='none'")
-                result["excluded"] = cur.rowcount
-        result["written"] = len(updates)
-
-    text = json.dumps(result, ensure_ascii=False, indent=1)
-    if args.json_out:
-        Path(args.json_out).write_text(text, encoding="utf-8")
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-    print(text if not args.json_out else text[:1200])
-
-
-if __name__ == "__main__":
-    main()
+if __name__=='__main__':main()
