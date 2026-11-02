@@ -4,15 +4,30 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 import urllib.parse
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 if __package__:
-    from .employment_signals import list_signals
+    from .employment_signals import list_signals, storage_status
+    from .job_geography import is_domestic_only, is_mixed_location, is_unknown_location
+    from .job_fields import register_read_view, recent_since
+    from .export_console import build as build_payload
+    from .job_taxonomy import enrich_job
+    from .job_details import source_details, duplicate_records
+    from .employment_events import event_payload
+    from .job_catalog import normalized_filters, select_jobs, summarize_jobs
 else:
-    from employment_signals import list_signals
+    from employment_signals import list_signals, storage_status
+    from job_geography import is_domestic_only, is_mixed_location, is_unknown_location
+    from job_fields import register_read_view, recent_since
+    from export_console import build as build_payload
+    from job_taxonomy import enrich_job
+    from job_details import source_details, duplicate_records
+    from employment_events import event_payload
+    from job_catalog import normalized_filters, select_jobs, summarize_jobs
 
 ROOT = Path(__file__).resolve().parent.parent
 DB = ROOT / "ai_jobs.db"
@@ -21,99 +36,73 @@ HOST, PORT = "127.0.0.1", 8792
 AI_TIERS = "('build','adjacent')"
 DATE_FLOOR = "2026-06-01"
 TZ = timezone(timedelta(hours=8))
+_payload_lock = threading.Lock()
+_payload_cache = None
+_payload_cache_signature = None
 
 
 def default_since():
-    return DATE_FLOOR
+    return recent_since()
 
 
 def connect():
     con = sqlite3.connect(f"file:{DB}?mode=ro", uri=True)
     con.row_factory = sqlite3.Row
+    con.create_function("is_domestic_only", 1, is_domestic_only, deterministic=True)
+    con.create_function("is_mixed_location", 1, is_mixed_location, deterministic=True)
+    con.create_function("is_unknown_location", 1, is_unknown_location, deterministic=True)
+    register_read_view(con)
     return con
 
 
-def stats(con, since=None):
-    def one(sql, args=()):
-        return con.execute(sql, args).fetchone()[0]
-    if since == "all":
-        since = "1970-01-01"
-    since = since or default_since()
-    win = f"j.status='open' AND j.ai_relevance IN {AI_TIERS} AND substr(j.posted_at,1,10) >= ?"
-    return {
-        "generated_at": datetime.now(TZ).isoformat(timespec="seconds"),
-        "window_since": "全部时间" if since == "1970-01-01" else since,
-        "ai_total": one(f"SELECT count(*) FROM jobs j WHERE {win}", (since,)),
-        "ai_all": one(f"SELECT count(*) FROM jobs j WHERE j.status='open' AND j.ai_relevance IN {AI_TIERS}"),
-        "total": one(f"SELECT count(*) FROM jobs j WHERE {win}", (since,)),
-        "open": one(f"SELECT count(*) FROM jobs j WHERE {win}", (since,)),
-        "build": one(f"SELECT count(*) FROM jobs j WHERE {win} AND j.ai_relevance='build'", (since,)),
-        "adjacent": one(f"SELECT count(*) FROM jobs j WHERE {win} AND j.ai_relevance='adjacent'", (since,)),
-        "excluded": one("SELECT count(*) FROM jobs WHERE status='excluded'"),
-        "closed": one("SELECT count(*) FROM jobs WHERE status='closed'"),
-        "stale": one("SELECT count(*) FROM jobs WHERE status='stale'"),
-        "liveness_checked": one(f"SELECT count(*) FROM jobs j WHERE {win} AND COALESCE(j.liveness,'') != ''", (since,)),
-        "merged": one("SELECT count(*) FROM jobs WHERE status='merged'"),
-        "verified": one(f"SELECT count(*) FROM jobs j WHERE {win} AND j.authenticity_level='已验证'", (since,)),
-        "companies": one(f"SELECT count(DISTINCT j.company_id) FROM jobs j WHERE {win}", (since,)),
-        "today_new": one("SELECT count(DISTINCT c.job_id) FROM job_changes c JOIN jobs j ON j.id=c.job_id "
-                         f"WHERE c.change_type='new' AND date(c.changed_at,'+8 hours')=date('now','+8 hours') "
-                         f"AND j.ai_relevance IN {AI_TIERS} AND substr(j.posted_at,1,10) >= ?", (since,)),
-        "levels": [dict(r) for r in con.execute(
-            f"SELECT j.authenticity_level label,count(*) value FROM jobs j WHERE {win} "
-            "GROUP BY j.authenticity_level ORDER BY value DESC", (since,))],
-        "top_companies": [dict(r) for r in con.execute(
-            f"SELECT c.name label,count(*) value FROM jobs j JOIN companies c ON c.id=j.company_id "
-            f"WHERE {win} GROUP BY c.name ORDER BY value DESC LIMIT 8", (since,))],
-        "top_roles": [dict(r) for r in con.execute(
-            f"SELECT j.title label,count(*) value FROM jobs j WHERE {win} "
-            "GROUP BY j.title ORDER BY value DESC LIMIT 8", (since,))],
-        "trend": [dict(r) for r in con.execute(
-            "SELECT date(c.changed_at,'+8 hours') day,count(DISTINCT CASE WHEN c.change_type='new' THEN c.job_id END) new_jobs,"
-            "count(DISTINCT CASE WHEN c.change_type='closed' THEN c.job_id END) closed_jobs "
-            "FROM job_changes c JOIN jobs j ON j.id=c.job_id "
-            f"WHERE date(c.changed_at,'+8 hours') BETWEEN date('now','+8 hours','-13 day') AND date('now','+8 hours') AND j.ai_relevance IN {AI_TIERS} "
-            "AND substr(j.posted_at,1,10) >= ? GROUP BY day ORDER BY day", (since,))],
-    }
+def _database_signature():
+    signature = []
+    for path in (DB, Path(str(DB) + "-wal")):
+        try:
+            stat = path.stat()
+            signature.append((str(path), stat.st_mtime_ns, stat.st_size))
+        except FileNotFoundError:
+            signature.append((str(path), None, None))
+    return tuple(signature)
 
 
-def jobs(con, q, company, ai, level, status, limit, offset, since=None):
-    if since == "all":
-        since = None
-    elif since is None:
-        since = default_since()
-    where, args = ["j.status = ?"], [status or "open"]
-    if status == "open":
-        where.append(f"j.ai_relevance IN {AI_TIERS}")
-    if since:
-        where.append("substr(j.posted_at,1,10) >= ?")
-        args.append(since)
-    if q:
-        where.append("(j.title LIKE ? OR c.name LIKE ? OR j.description LIKE ?)")
-        args += [f"%{q}%", f"%{q}%", f"%{q}%"]
-    if company:
-        where.append("c.name = ?")
-        args.append(company)
-    if ai == "ai":
-        where.append(f"j.ai_relevance IN {AI_TIERS}")
-    elif ai:
-        where.append("j.ai_relevance = ?")
-        args.append(ai)
-    if level:
-        where.append("j.authenticity_level = ?")
-        args.append(level)
-    clause = " WHERE " + " AND ".join(where)
-    base = (" FROM jobs j JOIN companies c ON c.id=j.company_id" + clause)
-    total = con.execute("SELECT count(*)" + base, args).fetchone()[0]
-    rows = con.execute(
-        "SELECT j.id,j.title,c.name company,j.location,j.remote,j.salary_min,j.salary_max,"
-        "j.currency,j.ai_relevance,j.ai_reason,j.liveness,j.liveness_reason,j.posted_at,"
-        "j.authenticity_score,j.authenticity_level,j.status,"
-        "j.first_seen,j.last_seen,j.url,j.source" + base +
-        " ORDER BY COALESCE(j.posted_at,'') DESC, j.first_seen DESC LIMIT ? OFFSET ?",
-        args + [limit, offset]).fetchall()
-    return {"total": total, "limit": limit, "offset": offset, "since": since,
-            "items": [dict(r) for r in rows]}
+def get_payload(con):
+    """Reuse the read-only export across API routes until SQLite files change."""
+    global _payload_cache, _payload_cache_signature
+    signature = _database_signature()
+    if _payload_cache is not None and signature == _payload_cache_signature:
+        return _payload_cache
+    with _payload_lock:
+        signature = _database_signature()
+        if _payload_cache is not None and signature == _payload_cache_signature:
+            return _payload_cache
+        payload = build_payload(con)
+        final_signature = _database_signature()
+        if signature == final_signature:
+            _payload_cache = payload
+            _payload_cache_signature = final_signature
+        else:
+            _payload_cache = None
+            _payload_cache_signature = None
+        return payload
+
+
+def stats(con, since=None, query=None):
+    filters = normalized_filters(query or {'since': [since or '']})
+    payload = get_payload(con)
+    rows = select_jobs(payload['jobs'], filters)
+    review_filters = dict(filters, status='review')
+    review_rows = select_jobs(payload['jobs'], review_filters)
+    return summarize_jobs(rows, payload['stats'], filters, review_rows)
+
+
+def jobs(con, q, company, ai, level, status, limit, offset, since=None, query=None):
+    filters = normalized_filters(query or {k: [v or ''] for k, v in
+        dict(q=q, company=company, ai=ai, level=level, status=status, since=since).items()})
+    payload = get_payload(con)
+    rows = select_jobs(payload['jobs'], filters)
+    return {'total': len(rows), 'limit': limit, 'offset': offset, 'since': filters['since'],
+            'date_basis': 'first_seen', 'meta': payload['meta'], 'items': rows[offset:offset+limit]}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -131,10 +120,20 @@ class Handler(BaseHTTPRequestHandler):
         u = urllib.parse.urlsplit(self.path)
         path, query = u.path, urllib.parse.parse_qs(u.query)
         since = (query.get("since", [""])[0] or "").strip() or None
+        if since and since != 'all':
+            try:
+                datetime.strptime(since, '%Y-%m-%d')
+            except ValueError:
+                return self.send_json({'error':'invalid date'},400)
+        con = None
         try:
+            if path == '/api/employment-events':
+                return self.send_json(event_payload(query))
+            if path in {"/api/stats", "/api/jobs", "/api/report", "/api/sources"}:
+                normalized_filters(query)
             if path == "/api/stats":
                 con = connect()
-                return self.send_json(stats(con, since))
+                return self.send_json(stats(con, since, query))
             if path == "/api/jobs":
                 con = connect()
                 return self.send_json(jobs(
@@ -144,12 +143,12 @@ class Handler(BaseHTTPRequestHandler):
                     (query.get("level", [""])[0] or "").strip(),
                     (query.get("status", [""])[0] or "open").strip(),
                     min(100, max(1, int(query.get("limit", ["50"])[0]))),
-                    max(0, int(query.get("offset", ["0"])[0])), since))
+                    max(0, int(query.get("offset", ["0"])[0])), since, query))
             if path.startswith("/api/jobs/"):
                 con = connect()
                 jid = path.split("/")[-1]
                 row = con.execute(
-                    "SELECT j.*,c.name company FROM jobs j JOIN companies c ON c.id=j.company_id WHERE j.id=?",
+                    "SELECT j.*,c.name company FROM job_records j JOIN companies c ON c.id=j.company_id WHERE j.id=? AND is_domestic_only(j.location)=1",
                     (jid,)).fetchone()
                 if not row:
                     return self.send_json({"error": "not found"}, 404)
@@ -157,7 +156,9 @@ class Handler(BaseHTTPRequestHandler):
                     "SELECT seen_at,status,location FROM job_snapshots WHERE job_id=? ORDER BY seen_at DESC LIMIT 10", (jid,))]
                 changes = [dict(r) for r in con.execute(
                     "SELECT change_type,changed_at,note FROM job_changes WHERE job_id=? ORDER BY changed_at DESC LIMIT 10", (jid,))]
-                return self.send_json({"job": dict(row), "snapshots": snaps, "changes": changes})
+                job = enrich_job(dict(row), source_details(con,jid).get(jid))
+                job['duplicate_records'] = duplicate_records(con,jid).get(jid,[])
+                return self.send_json({"job": job, "snapshots": snaps, "changes": changes})
             if path == "/api/signals":
                 con = connect()
                 try:
@@ -166,14 +167,15 @@ class Handler(BaseHTTPRequestHandler):
                         since=since, until=query.get("until", [None])[0],
                         category=query.get("category", [None])[0],
                         limit=query.get("limit", ["50"])[0])
+                    storage=storage_status(con)
                 except ValueError as error:
                     return self.send_json({"error": str(error)}, 400)
                 finally:
                     con.close()
-                return self.send_json({"items": items})
+                return self.send_json({"items": items,"storage":storage})
             if path == "/api/report":
                 con = connect()
-                s = stats(con, since)
+                s = stats(con, since, query)
                 return self.send_json({
                     "generated_at": datetime.now(TZ).isoformat(timespec="seconds"),
                     "window_since": s["window_since"],
@@ -181,29 +183,40 @@ class Handler(BaseHTTPRequestHandler):
                     "adjacent": s["adjacent"], "verified": s["verified"],
                     "pending": s["ai_total"] - s["verified"], "excluded": s["excluded"],
                     "closed": s["closed"], "merged": s["merged"], "today_new": s["today_new"],
-                    "companies": s["companies"],
+                    "companies": s["companies"], "intern": s["intern"], "regular": s["regular"],
+                    "unknown": s["unknown"], "other_employment": s["other_employment"],
                     "top_companies": s["top_companies"][:5],
                     "signals": len(list_signals(con, review="approved", limit=200)),
                     "signal_candidates": len(list_signals(con, review="pending", limit=200)),
-                    "note": "在招岗位按页面窗口统计；今日新增按北京时间统计窗口内入库事件。"
+                    "note": "岗位记录按首次发现时间筛选，来源发布时间独立保存；今日新增按北京时间统计当前筛选内首次入库的唯一岗位。"
                             "链接核验通过仅代表最近一次 URL 核验通过，不保证当前仍可投递；剔除、合并、关闭及长期未见为库内累计。",
                 })
             if path == "/api/sources":
                 con = connect()
-                rows = con.execute(
-                    "SELECT c.name,c.ats_type,count(j.id) jobs,max(j.last_seen) last_seen,"
-                    "sum(CASE WHEN j.authenticity_level='已验证' AND j.ai_relevance IN ('build','adjacent') "
-                    "THEN 1 ELSE 0 END) verified FROM companies c "
-                    "LEFT JOIN jobs j ON j.company_id=c.id AND j.status='open' "
-                    f"AND j.ai_relevance IN {AI_TIERS} AND substr(j.posted_at,1,10) >= ? "
-                    "GROUP BY c.id ORDER BY c.name",
-                    ("1970-01-01" if since == "all" else (since or default_since()),)).fetchall()
-                return self.send_json({"items": [dict(r) for r in rows]})
+                try:
+                    payload = get_payload(con)
+                finally:
+                    con.close()
+                filters = normalized_filters(query)
+                rows = select_jobs(payload['jobs'], filters)
+                review_rows = select_jobs(payload['jobs'], dict(filters, status='review'))
+                items = []
+                for source in payload['sources']:
+                    selected = [j for j in rows if j['company_id'] == source['company_id']]
+                    pending = [j for j in review_rows if j['company_id'] == source['company_id']]
+                    items.append(dict(source, jobs=len(selected), pending_review=len(pending),
+                        verified=sum(isinstance(j.get('http_status'), int) and 200 <= j['http_status'] < 300 for j in selected),
+                        last_seen=max((j['last_seen'] for j in selected if j.get('last_seen')), default=None)))
+                return self.send_json({'items': items,'health':payload['source_health']})
             # static
+            static_root = WEB
+            if path.startswith('/_preview/'):
+                static_root = ROOT / 'site'
+                path = path[len('/_preview'):]
             if path == "/":
                 path = "/index.html"
-            target = (WEB / path.lstrip("/")).resolve()
-            if not str(target).startswith(str(WEB.resolve())) or not target.is_file():
+            target = (static_root / path.lstrip("/")).resolve()
+            if not target.is_relative_to(static_root.resolve()) or not target.is_file():
                 return self.send_json({"error": "not found"}, 404)
             ctype = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
                      ".css": "text/css; charset=utf-8"}.get(target.suffix, "application/octet-stream")
@@ -213,8 +226,13 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
+        except ValueError as exc:
+            self.send_json({"error": str(exc)}, 400)
         except Exception as exc:  # noqa: BLE001
             self.send_json({"error": str(exc)}, 500)
+        finally:
+            if con is not None:
+                con.close()
 
 
 def main():
