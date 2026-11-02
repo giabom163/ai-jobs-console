@@ -33,12 +33,26 @@ CREATE TABLE IF NOT EXISTS jobs (
   last_seen TEXT NOT NULL,
   posted_at TEXT,             -- 岗位发布时间（来源给出的发布时间/首次刷新）
   updated_at TEXT,            -- 来源最近一次刷新时间
-  status TEXT NOT NULL DEFAULT 'open',  -- open / closed
+  published_at TEXT,          -- 明确首次发布时间；不从刷新/获取时间回填
+  source_updated_at TEXT,     -- 来源明确更新时间，与本地处理时间分开
+  application_start TEXT,
+  application_deadline TEXT,
+  source_status TEXT,         -- 来源声明；unknown/listed/open/closed，非真实性结论
+  source_status_raw TEXT,
+  department TEXT,
+  requisition_id TEXT,
+  last_checked_at TEXT,       -- 具体岗位来源最后检查时间；不等于仍在招
+  date_evidence_json TEXT,
+  status TEXT NOT NULL DEFAULT 'review',  -- open/review/verification_pending/closed/excluded/merged/stale (see tools/job_states.py)
   url TEXT,
   content_hash TEXT NOT NULL,
   last_verified_at TEXT,
   http_status INTEGER,
   final_url TEXT,
+  presence_status TEXT,       -- source ID/content presence, not a hiring-state claim
+  presence_checked_at TEXT,
+  source_response_sha256 TEXT,
+  scored_at TEXT,             -- local scoring time; never a source observation
   authenticity_score REAL NOT NULL DEFAULT 0,
   authenticity_level TEXT NOT NULL DEFAULT '待核验',
   domain_match INTEGER NOT NULL DEFAULT 0,
@@ -107,3 +121,31 @@ CREATE TABLE IF NOT EXISTS signals (
   summary TEXT,
   tag TEXT
 );
+
+CREATE TABLE IF NOT EXISTS source_registry (
+  source_id TEXT PRIMARY KEY,
+  source_key TEXT NOT NULL UNIQUE,
+  name TEXT NOT NULL,
+  source_type TEXT NOT NULL,
+  enabled INTEGER,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS crawler_runs (
+  run_id TEXT PRIMARY KEY,
+  source_id TEXT NOT NULL REFERENCES source_registry(source_id),
+  run_kind TEXT NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('running','succeeded','partial','failed','preview','interrupted')),
+  started_at TEXT NOT NULL,
+  completed_at TEXT,
+  request_count INTEGER NOT NULL DEFAULT 0 CHECK(request_count >= 0),
+  records_seen INTEGER NOT NULL DEFAULT 0 CHECK(records_seen >= 0),
+  records_added INTEGER NOT NULL DEFAULT 0 CHECK(records_added >= 0),
+  records_updated INTEGER NOT NULL DEFAULT 0 CHECK(records_updated >= 0),
+  error_summary TEXT,
+  details_json TEXT NOT NULL DEFAULT '{}'
+);
+
+CREATE INDEX IF NOT EXISTS crawler_runs_source_started
+  ON crawler_runs(source_id, started_at DESC);

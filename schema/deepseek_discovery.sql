@@ -23,3 +23,14 @@ CREATE TABLE IF NOT EXISTS discovery_documents (
 );
 CREATE INDEX IF NOT EXISTS discovery_review_date
     ON discovery_documents(review_status, published_at);
+
+CREATE TABLE IF NOT EXISTS discovery_reviews (
+    id TEXT PRIMARY KEY,
+    document_id TEXT NOT NULL REFERENCES discovery_documents(id),
+    batch_id TEXT NOT NULL,
+    reviewer TEXT NOT NULL,
+    reviewed_at TEXT NOT NULL,
+    content_sha256 TEXT NOT NULL,
+    before_json TEXT NOT NULL,
+    decision_json TEXT NOT NULL
+);
