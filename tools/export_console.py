@@ -65,7 +65,7 @@ def build(con) -> dict:
         f"COALESCE(((j.source='official:meituan' AND "
         f"date(j.source_updated_at,'+8 hours') >= '{DATE_FLOOR}') OR "
         f"(j.source!='official:meituan' AND "
-        f"date({source_date},'+8 hours') >= '{DATE_FLOOR}')),0)=1"
+        f"({source_date} IS NULL OR date({source_date},'+8 hours') >= '{DATE_FLOOR}'))),0)=1"
     )
     base = (
         f"is_domestic_only(j.location)=1 AND j.ai_relevance IN {AI_TIERS} "
@@ -249,7 +249,7 @@ def build(con) -> dict:
     return {"employment_events": load_events(), "job_events": events, "meta": {"schema_version": 3, "taxonomy_version": VERSION,
                      "roles": ROLES, "employment_types": EMPLOYMENT, "cities": CITIES,
                       "date_basis": "first_seen",
-                      "source_date_basis": "public listings require source date >= 2026-06-01; non-Meituan uses source_updated_at, published_at, or posted_at; Meituan requires official source_updated_at; missing/older dates remain review-only",
+                      "source_date_basis": "public listings require source date >= 2026-06-01 when present; Meituan requires official source_updated_at; older dates remain review-only",
                      "default_window_days": 30, "display_timezone": "Asia/Shanghai",
                      "supported_statuses": ["listed", "open", "review"],
                      "status_semantics": {"listed": "默认公开结果仅含 open；review 单独筛选", "open": "历史已收录，不等于来源当前确认在招", "review": "待复核来源记录，不计入默认公开总数", "verification_pending": "保留待核验，不计入默认公开总数"},
