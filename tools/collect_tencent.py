@@ -31,8 +31,9 @@ sys.path.insert(0, str(ROOT))
 from tools.ai_lexicon import classify  # noqa: E402
 from tools.job_geography import is_domestic_only  # noqa: E402
 from tools.job_fields import ensure_columns as ensure_source_columns, save_source_fields  # noqa: E402
-from tools.request_policy import RequestBudget, DEFAULT_BUDGET, TENCENT_DOMESTIC_CITY_IDS  # noqa: E402
+from tools.request_policy import RequestBudget, DEFAULT_BUDGET, TENCENT_DOMESTIC_CITY_IDS  # noqa: E402, SourceBlocked
 from tools.ingestion_contract import standard_fields, validate_record, begin_batch, finish_batch, abort_batch, record_external_failure  # noqa: E402
+from tools.collection_cursor import prepare_page, commit_checkpoint
 from tools.source_runs import start_run, finish_run  # noqa: E402
 
 API = "https://careers.tencent.com/tencentcareer/api/post/Query"
@@ -236,9 +237,16 @@ def main():
     parser.add_argument("--ai-only", action="store_true", default=True)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--json-out")
+    parser.add_argument('--max-requests', type=int, default=3)
+    parser.add_argument('--authorization-limit', type=int, default=9)
+    parser.add_argument('--source-limit', type=int, default=200)
+    parser.add_argument('--cursor-file', default=str(ROOT / '.collection-cursors.json'))
+    parser.add_argument('--refresh', action='store_true', help='Explicitly rescan page one; do not advance discovery cursor')
     args = parser.parse_args()
 
-    budget = RequestBudget(limit=args.limit)
+    if not 1 <= args.limit <= 15 or not 1 <= args.page_size <= 15:
+        parser.error('record limit and page size must be 1..15; start with --limit 3')
+    budget = RequestBudget(limit=args.max_requests, authorization_limit=args.authorization_limit, source_limit=args.source_limit)
     stats = {
         "source": "official:tencent",
         "limit": args.limit,
@@ -267,33 +275,28 @@ def main():
 
     try:
         keywords = [k.strip() for k in args.keywords.split(",") if k.strip()]
-        for kw in keywords:
-            if stats["seen"] >= args.limit:
-                break
-            fetch_size = min(args.page_size, args.limit - stats["seen"])
-            data = fetch(page=1, size=fetch_size, keyword=kw, city_id=args.cities, budget=budget)
-            posts = data.get("Posts") or []
-            for item in posts[:args.limit - stats["seen"]]:
-                ext = str(item.get("PostId") or "")
-                if not ext or ext in seen_ids:
+        staged_raw, checkpoint, cursor_info = prepare_page(
+            args.cursor_file, 'official:tencent', keywords, {'cities': args.cities}, args.page_size, args.limit,
+            lambda kw, page, size: fetch(page=page, size=size, keyword=kw, city_id=args.cities, budget=budget).get('Posts') or [],
+            refresh=args.refresh)
+        stats['cursor'] = cursor_info
+        for item, observed_at in staged_raw:
+            ext = str(item.get('PostId') or '')
+            if not ext or ext in seen_ids:
+                continue
+            seen_ids.add(ext)
+            stats['seen'] += 1
+            if args.ai_only:
+                desc = item.get('Responsibility') or ''
+                dept = f"{item.get('BGName') or ''}/{item.get('CategoryName') or ''}".strip('/')
+                if standard_fields(item.get('RecruitPostName') or '', desc, dept)['ai_relevance'] == 'none':
+                    stats['skipped_non_ai'] = stats.get('skipped_non_ai', 0) + 1
                     continue
-                seen_ids.add(ext)
-                stats["seen"] += 1
-                if args.ai_only:
-                    desc = item.get("Responsibility") or ""
-                    bg = item.get("BGName") or ""
-                    cat = item.get("CategoryName") or ""
-                    dept = f"{bg}/{cat}".strip("/")
-                    sf = standard_fields(item.get("RecruitPostName") or "", desc, dept)
-                    if sf["ai_relevance"] == "none":
-                        stats["skipped_non_ai"] = stats.get("skipped_non_ai", 0) + 1
-                        continue
-                staged.append((item, now()))
+            staged.append((item, observed_at))
 
         if not args.dry_run:
             con = sqlite3.connect("file:" + Path(args.db).resolve().as_posix() + "?mode=rw", uri=True)
             con.row_factory = sqlite3.Row
-            ensure_source_columns(con)
             batch = begin_batch(con, "tencent_bounded_list")
             cid = TENCENT_COMPANY_ID
             con.execute(
@@ -312,6 +315,13 @@ def main():
             batch["request_events"] = budget.events
             stats["batch"] = finish_batch(con, batch)
             con.commit()
+            try:
+                commit_checkpoint(checkpoint)
+            except (ValueError, OSError) as cursor_error:
+                stats['cursor_error'] = str(cursor_error)
+                stats['cursor_committed'] = False
+            else:
+                stats['cursor_committed'] = True
 
         if run_id:
             finish_run(
@@ -341,6 +351,7 @@ def main():
                 pass
         stats["errors"].append(type(exc).__name__)
         stats["error_message"] = str(exc)
+        stats["status"] = "blocked" if isinstance(exc, SourceBlocked) or getattr(exc, "code", None) in (401, 403, 429) else "failed"
         stats["rolled_back"] = bool(con)
     finally:
         if con:

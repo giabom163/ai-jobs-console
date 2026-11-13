@@ -2,6 +2,7 @@
 import time
 import json
 import os
+import re
 from uuid import uuid4
 from email.utils import parsedate_to_datetime
 from pathlib import Path
@@ -11,19 +12,45 @@ import urllib.parse
 import urllib.request
 if __package__:
     from .request_scheduler import SharedScheduler, SchedulingBlocked
+    from .request_limits import MAX_ROUND_REQUESTS, DEFAULT_TASK_REQUESTS, DEFAULT_AUTHORIZATION_REQUESTS, MIN_HOST_INTERVAL, request_count
     from .job_geography import is_domestic_only
 else:
     from request_scheduler import SharedScheduler, SchedulingBlocked
+    from request_limits import MAX_ROUND_REQUESTS, DEFAULT_TASK_REQUESTS, DEFAULT_AUTHORIZATION_REQUESTS, MIN_HOST_INTERVAL, request_count
     from job_geography import is_domestic_only
 
 
 # Only this ID-specific official detail endpoint is currently eligible.
 # List endpoints whose Mainland China request scope is unproven remain absent.
 APPROVED_ENDPOINTS = {
+    ('social:v2ex', 'fetch'): ('GET', 'www.v2ex.com', 'regex:^/t/[0-9]+/?$'),
+    ('social:bilibili', 'fetch'): ('GET', 'www.bilibili.com', 'regex:^/video/BV[0-9A-Za-z]+/?$'),
+    ('social:douyin', 'fetch'): ('GET', 'www.douyin.com', 'regex:^/(?:video|shipin)/[0-9]+/?$'),
+    ('social:youtube', 'fetch'): ('GET', 'www.youtube.com', '/watch'),
     ('official:meituan', 'detail'): ('POST', 'zhaopin.meituan.com', '/api/official/job/getJobDetail'),
     ('official:meituan', 'list'): ('POST', 'zhaopin.meituan.com', '/api/official/job/getJobList'),
     ('official:tencent', 'detail'): ('GET', 'careers.tencent.com', '/tencentcareer/api/post/ByPostId'),
     ('official:tencent', 'list'): ('GET', 'careers.tencent.com', '/tencentcareer/api/post/Query'),
+    # Baidu detail pages are eligible only after the user-facing Ego list flow
+    # has been filtered to Mainland locations before submitting the query.
+    ('official:baidu', 'detail'): ('GET', 'talent.baidu.com', 'regex:^/jobs/detail/(INTERN|GRADUATE|SOCIAL)/[0-9a-fA-F-]{36}$'),
+    ('official:moonshot', 'career_discovery'): ('GET', 'www.moonshot.cn', '/'),
+    ('official:moonshot', 'careers_portal'): ('GET', 'careers.kimi.com', '/'),
+    ('official:moonshot', 'list'): ('GET', 'app.mokahr.com', '/apply/moonshot/148506'),
+    ('official:moonshot', 'detail'): ('GET', 'app.mokahr.com', '/apply/moonshot/148506'),
+    ('official:stepfun', 'list'): ('GET', 'app.mokahr.com', '/social-recruitment/step/94904'),
+    ('official:stepfun', 'detail'): ('GET', 'app.mokahr.com', '/social-recruitment/step/94904'),
+    ('official:stepfun', 'campus_list'): ('GET', 'app.mokahr.com', '/campus-recruitment/step/94905'),
+    ('official:stepfun', 'campus_detail'): ('GET', 'app.mokahr.com', '/campus-recruitment/step/94905'),
+    ('official:zhipu', 'career_discovery'): ('GET', 'www.zhipuai.cn', '/'),
+    ('official:minimax', 'list'): ('GET', 'vrfi1sk8a0.jobs.feishu.cn', '/379481/'),
+    ('official:minimax', 'social_list'): ('GET', 'vrfi1sk8a0.jobs.feishu.cn', '/index/'),
+    ('official:minimax', 'detail'): ('GET', 'vrfi1sk8a0.jobs.feishu.cn', 'regex:^/379481/position/[0-9]+/detail$'),
+    ('official:baichuan', 'list'): ('GET', 'cq6qe6bvfr6.jobs.feishu.cn', '/baichuanzhaopin/'),
+    ('official:baichuan', 'campus_list'): ('GET', 'cq6qe6bvfr6.jobs.feishu.cn', '/646926/'),
+    ('official:baichuan', 'detail'): ('GET', 'cq6qe6bvfr6.jobs.feishu.cn', 'regex:^/baichuanzhaopin/position/[0-9]+/detail$'),
+    ('official:modelbest', 'list'): ('GET', 'modelbest.jobs.feishu.cn', '/career/position/list'),
+    ('official:modelbest', 'campus_list'): ('GET', 'modelbest.jobs.feishu.cn', '/campus/position/list'),
 }
 
 # Verified Tencent domestic city IDs (China countryId=1)
@@ -48,9 +75,11 @@ def _validate_endpoint(request, source_id, operation, location, external_id):
     expected = APPROVED_ENDPOINTS.get((source_id, operation))
     if not expected:
         raise SourceBlocked('source operation is not approved for Mainland job requests')
+    path_ok = (bool(re.fullmatch(expected[2][6:], parsed.path)) if expected[2].startswith('regex:')
+               else parsed.path == expected[2])
     if (parsed.scheme != 'https' or parsed.username or parsed.password or
             parsed.hostname != expected[1] or parsed.port not in (None, 443) or
-            parsed.path != expected[2] or method != expected[0]):
+            not path_ok or method != expected[0]):
         raise SourceBlocked('request does not match the approved source endpoint')
     override_host = request.get_header('Host') if hasattr(request, 'get_header') else None
     if override_host and override_host.casefold() != expected[1]:
@@ -64,6 +93,35 @@ def _validate_endpoint(request, source_id, operation, location, external_id):
             raise SourceBlocked('official detail request has no valid job identity') from error
         if not isinstance(payload, dict) or str(payload.get('jobUnionId') or '') != str(external_id):
             raise SourceBlocked('official detail request identity does not match the Mainland job')
+    if source_id == 'official:moonshot' and operation == 'list':
+        # The official Moonshot careers page links this exact tenant and the two AI hiring categories.
+        fragment_query = parsed.fragment.split('?', 1)[1] if '?' in parsed.fragment else ''
+        qs = urllib.parse.parse_qs(fragment_query)
+        if qs.get('zhineng[0]') != ['190965'] or qs.get('zhineng[1]') != ['195114']:
+            raise SourceBlocked('official:moonshot list requires the company-provided AI category filters')
+        locations = [value for key, values in qs.items() if re.fullmatch(r'location\[\d+\]', key) for value in values]
+        allowed_cities = {'北京市', '上海市', '深圳市', '成都市'}
+        if not locations or any(value not in allowed_cities for value in locations):
+            raise SourceBlocked('official:moonshot list requires explicit Mainland-only city filters')
+    if source_id == 'official:moonshot' and operation == 'detail':
+        match = re.fullmatch(r'/job/([0-9a-fA-F-]{36})', parsed.fragment)
+        if not match or not external_id or match[1].casefold() != str(external_id).casefold():
+            raise SourceBlocked('official:moonshot detail requires matching job UUID')
+        if not is_domestic_only(location):
+            raise SourceBlocked('official:moonshot detail requires a Mainland-only listing observation')
+    if source_id == 'official:stepfun' and operation in {'list', 'campus_list'}:
+        fragment_query = parsed.fragment.split('?', 1)[1] if '?' in parsed.fragment else ''
+        qs = urllib.parse.parse_qs(fragment_query)
+        locations = [value for key, values in qs.items() if re.fullmatch(r'location\[\d+\]', key) for value in values]
+        allowed_cities = {'北京市', '上海市', '深圳市'}
+        if not locations or any(value not in allowed_cities for value in locations):
+            raise SourceBlocked('official:stepfun list requires explicit Mainland-only city filters')
+    if source_id == 'official:stepfun' and operation in {'detail', 'campus_detail'}:
+        match = re.fullmatch(r'/job/([0-9a-fA-F-]{36})', parsed.fragment)
+        if not match or not external_id or match[1].casefold() != str(external_id).casefold():
+            raise SourceBlocked('official:stepfun detail requires matching job UUID')
+        if not is_domestic_only(location):
+            raise SourceBlocked('official:stepfun detail requires a Mainland-only listing observation')
     if source_id == 'official:meituan' and operation == 'list':
         try:
             payload = json.loads(request.data.decode('utf-8'))
@@ -87,21 +145,89 @@ def _validate_endpoint(request, source_id, operation, location, external_id):
         if not country_id or country_id != ['1']:
             raise SourceBlocked('official:tencent list request requires explicit countryId=1 (Mainland China)')
         area = qs.get('area')
-        if area and area != ['cn']:
+        if area != ['cn']:
             raise SourceBlocked('official:tencent list request area must be cn')
         city_id = qs.get('cityId')
+        if not city_id or len(city_id) != 1 or not city_id[0]:
+            raise SourceBlocked('official:tencent list request requires explicit Mainland cityId')
         if city_id and city_id[0]:
             for cid in city_id[0].split(','):
                 cid_strip = cid.strip()
                 if cid_strip and cid_strip not in TENCENT_DOMESTIC_CITY_IDS:
                     raise SourceBlocked('cityId ' + cid_strip + ' is not in proven Mainland city whitelist')
     if source_id == 'official:tencent' and operation == 'detail':
+        if not external_id or not is_domestic_only(location):
+            raise SourceBlocked('official:tencent detail requires an existing Mainland-only job')
         qs = urllib.parse.parse_qs(parsed.query)
         post_id = qs.get('postId')
         if not post_id or not post_id[0] or not post_id[0].isdigit():
             raise SourceBlocked('official:tencent detail requires valid numeric postId')
         if external_id and str(post_id[0]) != str(external_id):
             raise SourceBlocked('official:tencent detail postId does not match external_id')
+    if source_id == 'official:baidu' and operation == 'detail':
+        match = re.fullmatch(r'/jobs/detail/(?:INTERN|GRADUATE|SOCIAL)/([0-9a-fA-F-]{36})', parsed.path)
+        if not match or not external_id or match[1].casefold() != str(external_id).casefold():
+            raise SourceBlocked('official:baidu detail requires matching stable job identity')
+        if not is_domestic_only(location):
+            raise SourceBlocked('official:baidu detail requires an existing Mainland-only listing observation')
+    if source_id == 'official:minimax' and operation == 'list':
+        qs = urllib.parse.parse_qs(parsed.query)
+        if qs.get('location') != ['CT_11']:
+            raise SourceBlocked('official:minimax list requires the preselected Mainland Beijing filter (CT_11)')
+        projects = (qs.get('project') or [''])[0].split(',')
+        allowed_projects = {'7495675705720965415', '7352753013591755047'}
+        if not projects or any(project not in allowed_projects for project in projects):
+            raise SourceBlocked('official:minimax list project must be a supported campus or internship filter')
+        keywords = (qs.get('keywords') or [''])[0].strip().casefold()
+        if not any(term in keywords for term in ('agent', 'ai', '大模型', 'llm', '算法')):
+            raise SourceBlocked('official:minimax list requires an AI-role keyword')
+    if source_id == 'official:minimax' and operation == 'social_list':
+        qs = urllib.parse.parse_qs(parsed.query)
+        if qs.get('location') != ['CT_11']:
+            raise SourceBlocked('official:minimax social list requires the preselected Mainland Beijing filter (CT_11)')
+        keywords = (qs.get('keywords') or [''])[0].strip().casefold()
+        if not any(term in keywords for term in ('agent', 'ai', '大模型', 'llm', '算法')):
+            raise SourceBlocked('official:minimax social list requires an AI-role keyword')
+    if source_id == 'official:minimax' and operation == 'detail':
+        match = re.fullmatch(r'/379481/position/([0-9]+)/detail', parsed.path)
+        if not match or not external_id or match[1] != str(external_id):
+            raise SourceBlocked('official:minimax detail requires matching stable job identity')
+        if not is_domestic_only(location):
+            raise SourceBlocked('official:minimax detail requires an existing Mainland-only listing observation')
+    if source_id == 'official:baichuan' and operation == 'list':
+        qs = urllib.parse.parse_qs(parsed.query)
+        if qs.get('location') != ['CT_11']:
+            raise SourceBlocked('official:baichuan list requires the preselected Mainland Beijing filter (CT_11)')
+        keywords = (qs.get('keywords') or [''])[0].strip().casefold()
+        if not any(term in keywords for term in ('agent', 'ai', '大模型', 'llm', '算法')):
+            raise SourceBlocked('official:baichuan list requires an AI-role keyword')
+    if source_id == 'official:baichuan' and operation == 'campus_list':
+        qs = urllib.parse.parse_qs(parsed.query)
+        if qs.get('location') != ['CT_11']:
+            raise SourceBlocked('official:baichuan campus list requires the preselected Mainland Beijing filter (CT_11)')
+        keywords = (qs.get('keywords') or [''])[0].strip().casefold()
+        if not any(term in keywords for term in ('agent', 'ai', '大模型', 'llm', '算法')):
+            raise SourceBlocked('official:baichuan campus list requires an AI-role keyword')
+    if source_id == 'official:baichuan' and operation == 'detail':
+        match = re.fullmatch(r'/baichuanzhaopin/position/([0-9]+)/detail', parsed.path)
+        if not match or not external_id or match[1] != str(external_id):
+            raise SourceBlocked('official:baichuan detail requires matching stable job identity')
+        if not is_domestic_only(location):
+            raise SourceBlocked('official:baichuan detail requires an existing Mainland-only listing observation')
+    if source_id == 'official:modelbest' and operation == 'list':
+        qs = urllib.parse.parse_qs(parsed.query)
+        if qs.get('location') != ['CT_11']:
+            raise SourceBlocked('official:modelbest list requires the preselected Mainland Beijing filter (CT_11)')
+        keywords = (qs.get('keywords') or [''])[0].strip().casefold()
+        if not any(term in keywords for term in ('agent', 'ai', '大模型', 'llm', '算法')):
+            raise SourceBlocked('official:modelbest list requires an AI-role keyword')
+    if source_id == 'official:modelbest' and operation == 'campus_list':
+        qs = urllib.parse.parse_qs(parsed.query)
+        if qs.get('location') != ['CT_11']:
+            raise SourceBlocked('official:modelbest campus list requires the Mainland Beijing filter (CT_11)')
+        keywords = (qs.get('keywords') or [''])[0].strip().casefold()
+        if not any(term in keywords for term in ('agent', 'ai', '大模型', 'llm', '算法')):
+            raise SourceBlocked('official:modelbest campus list requires an AI-role keyword')
     return parsed.hostname
 
 
@@ -135,22 +261,27 @@ class SourceBlocked(RuntimeError):
 
 
 class RequestBudget:
-    def __init__(self, limit=3, interval=20, *, authorization_limit=9,
-                 round_limit=15, source_limit=15):
-        if (not 1 <= limit <= 15 or not 1 <= round_limit <= 15 or
-                not 1 <= source_limit <= 15 or not 1 <= authorization_limit <= 9 or interval < 20):
-            raise ValueError('request policy cannot exceed project limits')
+    def __init__(self, limit=DEFAULT_TASK_REQUESTS, interval=MIN_HOST_INTERVAL, *, authorization_limit=DEFAULT_AUTHORIZATION_REQUESTS,
+                 round_limit=MAX_ROUND_REQUESTS, source_limit=MAX_ROUND_REQUESTS, state_path=None):
+        for value in (limit, authorization_limit, round_limit, source_limit):
+            request_count(value)
+        if interval <= 10:
+            raise ValueError('host interval must be greater than 10 seconds')
         self.limit = min(limit, authorization_limit, round_limit, source_limit)
+        self.source_limit = source_limit
+        self.limits = dict(requested=limit, authorization=authorization_limit,
+                           round=round_limit, source=source_limit, effective=self.limit)
         self.interval = interval
         self.requests, self.last, self.blocked, self.events = 0, {}, set(), []
-        self.scheduler=SharedScheduler(Path(__file__).resolve().parent.parent / '.request-scheduler.json',_journal_lock)
+        self.scheduler=SharedScheduler(Path(state_path) if state_path else Path(__file__).resolve().parent.parent / '.request-scheduler.json',_journal_lock)
+        self.cooldown_path = self.scheduler.path.with_name(self.scheduler.path.stem.replace('scheduler','cooldown') + '.json')
 
     def stop(self, url, reason, retry_after=None):
         host = urllib.parse.urlsplit(url).hostname or ''
         self.blocked.add(host)
         self.scheduler.block(host,reason)
         if reason == 'http_429':
-            path = Path(__file__).resolve().parent.parent / '.request-cooldown.json'
+            path = self.cooldown_path
             with _journal_lock(path):
                 try:
                     cooldown = json.loads(path.read_text(encoding='utf8')) if path.exists() else {}
@@ -178,7 +309,7 @@ class RequestBudget:
         for denied in ('zhipin.com', 'zhaopin.com', '58.com'):
             if host == denied or host.endswith('.' + denied):
                 raise SourceBlocked('platform permission required')
-        path = Path(__file__).resolve().parent.parent / '.request-cooldown.json'
+        path = self.cooldown_path
         if path.exists():
             try:
                 cooldown = json.loads(path.read_text(encoding='utf8'))
@@ -190,8 +321,10 @@ class RequestBudget:
             raise SourceBlocked('source stopped for this round')
         if self.requests >= self.limit:
             raise SourceBlocked('round request budget exhausted')
+        if self.scheduler.snapshot()['remaining'] <= 0:
+            raise SourceBlocked('shared round budget exhausted; explicit new round required')
         try:
-            token,shared=self.scheduler.reserve(host,self.interval,lease)
+            token,shared=self.scheduler.reserve(host,self.interval,lease,source_id=source_id,source_limit=self.source_limit)
         except SchedulingBlocked as error:
             raise SourceBlocked(str(error)) from error
         self.requests += 1
@@ -259,8 +392,20 @@ DEFAULT_BUDGET = RequestBudget()
 if __name__=='__main__':
     import argparse
     parser=argparse.ArgumentParser(description='Explicit shared round management; no source requests')
-    parser.add_argument('--start-round',action='store_true',required=True)
-    parser.add_argument('--round-id',required=True)
+    actions=parser.add_mutually_exclusive_group(required=True)
+    actions.add_argument('--start-round',action='store_true')
+    actions.add_argument('--expand-round',action='store_true')
+    actions.add_argument('--preflight',action='store_true')
+    parser.add_argument('--round-id')
     parser.add_argument('--limit',type=int,default=3)
+    parser.add_argument('--expected-used',type=int)
+    parser.add_argument('--expected-limit',type=int)
     args=parser.parse_args()
-    print(json.dumps(DEFAULT_BUDGET.scheduler.start_round(args.round_id,args.limit)))
+    if args.preflight:
+        result=DEFAULT_BUDGET.scheduler.snapshot()
+    elif args.expand_round:
+        result=DEFAULT_BUDGET.scheduler.expand_round(args.round_id,args.expected_used,args.expected_limit,args.limit)
+    else:
+        if not args.round_id:parser.error('--round-id required')
+        result=DEFAULT_BUDGET.scheduler.start_round(args.round_id,args.limit)
+    print(json.dumps(result))

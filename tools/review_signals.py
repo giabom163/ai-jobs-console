@@ -12,9 +12,11 @@ from uuid import uuid4
 ROOT=Path(__file__).resolve().parent.parent
 sys.path.insert(0,str(ROOT))
 from tools.employment_signals import AI_SCOPES,parse_time
+from tools.evidence_contract import normalize_observation
 from tools.ingestion_contract import begin_batch,finish_batch,abort_batch
 
-CLAIMS={'reported','official_announcement','implemented','denied','rumor','prediction'}
+CLAIMS={'self_reported','reported','official_announcement','implemented','denied','rumor','prediction'}
+AI_RELATIONS={'explicit_ai','related_unconfirmed','unknown'}
 
 
 def apply_decisions(db,manifest,apply=False):
@@ -38,37 +40,49 @@ def apply_decisions(db,manifest,apply=False):
                 raise ValueError('explicit status and review reason required')
             if d['review_status']=='approved':
                 evidence=json.loads(row['evidence_json'])
-                receipt=evidence.get('fetch_receipt') or {}
-                if evidence.get('source_field')!='content' or evidence.get('fetch_received') is not True:
-                    raise ValueError('source Fetch evidence required; search summaries cannot be approved')
-                if receipt.get('action')!='fetch' or receipt.get('http_status')!=200 or receipt.get('input',{}).get('url')!=row['url'] or receipt.get('dispatched') is not True:
-                    raise ValueError('successful original-URL Fetch receipt required')
-                receipt_file=Path(receipt.get('response_file') or '').resolve()
                 evidence_root=Path.home()/'.codex'/'documents'
-                if not receipt_file.is_relative_to(evidence_root.resolve()) or not receipt_file.is_file():
-                    raise ValueError('Fetch response artifact must exist in Codex documents')
-                raw=receipt_file.read_bytes()
-                if hashlib.sha256(raw).hexdigest()!=receipt.get('response_sha256'):
-                    raise ValueError('Fetch response artifact hash differs')
-                source=json.loads(raw)
-                if str(source.get('content') or '').strip()!=row['content']:
-                    raise ValueError('Fetch response content differs from reviewed document')
+                observation=normalize_observation(evidence,row['url'],row['content'],evidence_root)
+                if not observation.get('final_url'):
+                    raise ValueError('fetch receipt does not prove the final source URL; cannot publish')
                 if d.get('ai_scope') not in AI_SCOPES or d.get('claim_status') not in CLAIMS:
                     raise ValueError('AI scope and evidence claim type required')
+                if d.get('ai_relation') not in AI_RELATIONS:
+                    raise ValueError('AI causality status required')
+                ai_span=d.get('ai_relation_evidence') or {}
+                ai_start,ai_end=ai_span.get('start'),ai_span.get('end')
+                if d['ai_relation']=='explicit_ai' and (
+                    not isinstance(ai_start,int) or not isinstance(ai_end,int) or
+                    not 0<=ai_start<ai_end<=len(row['content']) or
+                    row['content'][ai_start:ai_end]!=ai_span.get('text')
+                ):
+                    raise ValueError('explicit AI causality requires an exact source excerpt')
                 if not parse_time(d.get('published_at')):raise ValueError('source publication date required')
                 span=d.get('date_evidence') or {};start,end=span.get('start'),span.get('end')
                 if not isinstance(start,int) or not isinstance(end,int) or not 0<=start<end<=len(row['content']) or row['content'][start:end]!=span.get('text'):
                     raise ValueError('source publication date excerpt required')
                 if d.get('evidence_url')!=row['url']:raise ValueError('review must refer to the stored original URL')
+                geography=d.get('geography_evidence') or {};gstart,gend=geography.get('start'),geography.get('end')
+                if not isinstance(gstart,int) or not isinstance(gend,int) or not 0<=gstart<gend<=len(row['content']) or row['content'][gstart:gend]!=geography.get('text'):
+                    raise ValueError('Mainland geography evidence excerpt required')
                 date_parts=re.findall(r'(\d{4})[-/.年](\d{1,2})[-/.月](\d{1,2})(?:日)?',span['text'])
                 dates={date(*map(int,parts)).isoformat() for parts in date_parts}
                 if dates!={parse_time(d['published_at']).date().isoformat()}:
                     raise ValueError('source date excerpt must match the approved publication date')
-                evidence.update(source_verified=True,date_evidence=span)
+                if observation.get('published_at') not in (None,d['published_at']):
+                    raise ValueError('review publication date differs from source observation')
+                if observation.get('date_span') not in (None,span):
+                    raise ValueError('review date span differs from source observation')
+                observation.update(published_at=d['published_at'],date_span=span)
+                event_date=d.get('event_date')
+                if event_date and not parse_time(event_date):raise ValueError('event_date must be a valid ISO date/time or empty')
+                evidence.update(source_verified=True,source_observation=observation,date_evidence=span,event_date=event_date,geography={'region':'CN-mainland','evidence':geography},ai_relation=d['ai_relation'],ai_relation_evidence=ai_span if d['ai_relation']=='explicit_ai' else None)
                 if apply:
-                    con.execute("UPDATE discovery_documents SET review_status='approved',ai_scope=?,claim_status=?,published_at=?,date_basis='source_verified',evidence_json=? WHERE id=?",(d['ai_scope'],d['claim_status'],d['published_at'],json.dumps(evidence,ensure_ascii=False),d['id']))
+                    con.execute("UPDATE discovery_documents SET review_status='approved',ai_scope=?,claim_status=?,published_at=?,date_basis='source_verified',evidence_json=?,last_verified_at=? WHERE id=?",(d['ai_scope'],d['claim_status'],d['published_at'],json.dumps(evidence,ensure_ascii=False),datetime.now(timezone.utc).isoformat(),d['id']))
             elif apply:
-                con.execute('UPDATE discovery_documents SET review_status=? WHERE id=?',(d['review_status'],d['id']))
+                evidence=json.loads(row['evidence_json']);event_date=d.get('event_date')
+                if event_date and not parse_time(event_date):raise ValueError('event_date must be a valid ISO date/time or empty')
+                evidence['event_date']=event_date
+                con.execute('UPDATE discovery_documents SET review_status=?,evidence_json=? WHERE id=?',(d['review_status'],json.dumps(evidence,ensure_ascii=False),d['id']))
             if apply:
                 con.execute('INSERT INTO discovery_reviews VALUES(?,?,?,?,?,?,?,?)',('review-'+uuid4().hex,d['id'],batch['batch_id'],reviewer,datetime.now(timezone.utc).isoformat(),row['content_sha256'],json.dumps(dict(row),ensure_ascii=False),json.dumps(d,ensure_ascii=False)))
         result=dict(mode='preview',decisions=len(decisions),requests=0)

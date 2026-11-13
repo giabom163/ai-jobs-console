@@ -17,20 +17,22 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 if __package__:
-    from .employment_signals import list_signals, storage_status
+    from .employment_signals import count_signals, list_signals, storage_status
     from .source_health import source_health
     from .job_geography import is_domestic_only, is_mixed_location, is_unknown_location
     from .job_fields import register_read_view
     from .job_details import source_details, duplicate_records
     from .employment_events import load_events
+    from .employment_trends import programming_job_trend
     from .job_taxonomy import enrich_job, ROLES, EMPLOYMENT, CITIES, VERSION
 else:
-    from employment_signals import list_signals, storage_status
+    from employment_signals import count_signals, list_signals, storage_status
     from source_health import source_health
     from job_geography import is_domestic_only, is_mixed_location, is_unknown_location
     from job_fields import register_read_view
     from job_details import source_details, duplicate_records
     from employment_events import load_events
+    from employment_trends import programming_job_trend
     from job_taxonomy import enrich_job, ROLES, EMPLOYMENT, CITIES, VERSION
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -56,18 +58,27 @@ def one(con, sql, args=()):
 
 def build(con) -> dict:
     generated_at = datetime.now(TZ).isoformat(timespec="seconds")
+    job_columns = {row[1] for row in con.execute("PRAGMA table_info(job_records)")}
+    salary_evidence_column = "j.salary_evidence_json" if "salary_evidence_json" in job_columns else "NULL AS salary_evidence_json"
+    source_date = "COALESCE(j.source_updated_at,j.published_at,j.posted_at)"
+    source_date_ok = (
+        f"COALESCE(((j.source='official:meituan' AND "
+        f"date(j.source_updated_at,'+8 hours') >= '{DATE_FLOOR}') OR "
+        f"(j.source!='official:meituan' AND "
+        f"date({source_date},'+8 hours') >= '{DATE_FLOOR}')),0)=1"
+    )
     base = (
         f"is_domestic_only(j.location)=1 AND j.ai_relevance IN {AI_TIERS} "
-        f"AND date(j.first_seen,'+8 hours') >= '{DATE_FLOOR}' "
-        f"AND (j.source!='official:meituan' OR "
-        f"date(COALESCE(j.source_updated_at,j.updated_at),'+8 hours') >= '{DATE_FLOOR}')"
+        f"AND date(j.first_seen,'+8 hours') >= '{DATE_FLOOR}'"
     )
     win = (f"j.status IN ('open','review') AND {base} AND "
            "(j.application_deadline IS NULL OR date(j.application_deadline,'+8 hours') >= date('now','+8 hours'))")
+    public_win = f"{win} AND {source_date_ok}"
     rows = con.execute(
         "SELECT j.id,j.title,c.name company,c.id company_id,j.location,j.ai_relevance,"
         "j.ai_reason,j.published_at,j.source_updated_at,j.updated_at AS meituan_legacy_updated_at,j.application_start,j.application_deadline,j.source_status,j.source_status_raw,j.department,j.requisition_id,j.external_id,j.last_checked_at,j.posted_at,j.first_seen,j.last_seen,j.last_verified_at,j.http_status,j.presence_status,j.presence_checked_at,j.source_response_sha256,"
-        "j.source,j.url,j.salary_min,j.salary_max,j.currency,j.status,j.description,"
+        f"j.source,j.url,j.salary_min,j.salary_max,j.currency,{salary_evidence_column},"
+        f"CASE WHEN {source_date_ok} THEN j.status ELSE 'review' END AS status,j.description,"
         "j.authenticity_score,j.authenticity_level,j.liveness,j.liveness_reason "
         "FROM job_records j JOIN companies c ON c.id=j.company_id "
         f"WHERE {win} ORDER BY j.first_seen DESC"
@@ -82,17 +93,17 @@ def build(con) -> dict:
         return [dict(r) for r in con.execute(sql, args).fetchall()]
 
     levels = group(
-        f"SELECT j.authenticity_level label,count(*) value FROM job_records j WHERE {win} "
+        f"SELECT j.authenticity_level label,count(*) value FROM job_records j WHERE {public_win} "
         "GROUP BY j.authenticity_level ORDER BY value DESC"
     )
     top_companies = group(
         f"SELECT c.name label,count(*) value FROM job_records j JOIN companies c ON c.id=j.company_id "
-        f"WHERE {win} GROUP BY c.name ORDER BY value DESC LIMIT 8"
+        f"WHERE {public_win} GROUP BY c.name ORDER BY value DESC LIMIT 8"
     )
     trend = group(
         "SELECT date(c.changed_at,'+8 hours') day,count(DISTINCT CASE WHEN c.change_type='new' THEN c.job_id END) new_jobs,"
         "count(DISTINCT CASE WHEN c.change_type='closed' THEN c.job_id END) closed_jobs FROM job_changes c "
-        f"JOIN job_records j ON j.id=c.job_id WHERE {base} "
+        f"JOIN job_records j ON j.id=c.job_id WHERE {public_win} "
         "AND date(c.changed_at,'+8 hours') BETWEEN date('now','+8 hours','-13 day') AND date('now','+8 hours') GROUP BY day ORDER BY day"
     )
     sources = group(
@@ -114,10 +125,11 @@ def build(con) -> dict:
         "generated_at": generated_at,
         "source_date_review_count": one(
             con,
-            "SELECT count(*) FROM job_records WHERE source='official:meituan' "
-            "AND ai_relevance IN ('build','adjacent') AND status IN ('open','review','verification_pending') "
-            "AND (date(source_updated_at,'+8 hours') IS NULL "
-            f"OR date(source_updated_at,'+8 hours') < '{DATE_FLOOR}')",
+            f"SELECT count(*) FROM job_records j WHERE {win} AND NOT {source_date_ok}",
+        ),
+        "source_date_verified_count": one(
+            con,
+            f"SELECT count(*) FROM job_records j WHERE {public_win}",
         ),
         "verification_pending_count": one(
             con,
@@ -167,14 +179,48 @@ def build(con) -> dict:
             con,
             "SELECT count(DISTINCT c.job_id) FROM job_changes c JOIN job_records j ON j.id=c.job_id "
             "WHERE c.change_type='new' AND date(c.changed_at,'+8 hours')=date('now','+8 hours') "
-            f"AND {base}",
+            f"AND {public_win}",
         ),
         "levels": levels,
         "top_companies": top_companies,
         "trend": trend,
     }
+    tech_keywords = [
+        "大模型", "Agent", "多模态", "PyTorch", "RAG", "具身智能", "RLHF",
+        "Transformer", "DPO", "Megatron", "vLLM", "CUDA", "SGLang", "Triton", "DeepSpeed", "LangChain"
+    ]
+    tech_counts = {kw: 0 for kw in tech_keywords}
+    for j in jobs:
+        txt = f"{j.get('title', '')} {j.get('ai_reason', '')} {j.get('skills_json', '')}".lower()
+        for kw in tech_keywords:
+            if kw.lower() in txt:
+                tech_counts[kw] += 1
+
+    tech_ranking = [
+        {"name": kw, "count": tech_counts[kw], "percentage": round(tech_counts[kw] / max(1, len(jobs)) * 100, 1)}
+        for kw in sorted(tech_counts, key=lambda k: tech_counts[k], reverse=True)
+        if tech_counts[kw] > 0
+    ]
+
+    city_counts = {}
+    for j in jobs:
+        loc = (j.get("location") or "其他").split("·")[0].split("/")[0].strip()
+        for main_city in ("北京", "上海", "深圳", "杭州", "广州", "成都", "武汉", "南京"):
+            if main_city in loc:
+                loc = main_city
+                break
+        city_counts[loc] = city_counts.get(loc, 0) + 1
+    top_cities = [
+        {"city": c, "count": cnt, "percentage": round(cnt / max(1, len(jobs)) * 100, 1)}
+        for c, cnt in sorted(city_counts.items(), key=lambda x: x[1], reverse=True)[:6]
+    ]
+
+    stats["tech_stack_ranking"] = tech_ranking
+    stats["top_cities"] = top_cities
     signals = list_signals(con, review="approved", limit=200)
     signal_state=storage_status(con)
+    approved_signal_count = count_signals(con, review="approved")
+    pending_signal_count = count_signals(con, review="pending")
     report = {
         "generated_at": generated_at,
         "total": ai_total,
@@ -187,18 +233,23 @@ def build(con) -> dict:
         "today_new": stats["today_new"],
         "merged": stats["merged"],
         "companies": sum(1 for s in sources if s["jobs"]),
-        "signals": len(signals),
-        "signal_candidates": signal_state['pending_count'],
+        "signals": approved_signal_count,
+        "signal_candidates": pending_signal_count,
         "top_companies": top_companies[:5],
+        "quality_notes": [
+            "2026-10-22 记录的 3,020 条新增岗位变化属于存量数据初始化批量导入，来源尚未逐条核实前标记为归因未知，不代表市场招聘峰值。",
+            "job_daily 历史数据仅供参考，不作为市场长期真值；每日岗位新增按首次入库时间统计，与雇主实际发布时间分开。"
+        ],
+        "programming_trend": programming_job_trend(con),
         "note": "首次入库时间范围从 2026-06-01 起。美团旧记录可能使用历史兼容时间作收录筛查；只有官方 source_updated_at 才作为来源更新时间证据，缺失即显示未知。未映射招聘状态保持未知，历史 active 只表示当次链接观察。",
     }
     events = group("SELECT c.job_id,c.change_type,date(c.changed_at,'+8 hours') day,j.first_seen "
-                   f"FROM job_changes c JOIN job_records j ON j.id=c.job_id WHERE {base} "
+                    f"FROM job_changes c JOIN job_records j ON j.id=c.job_id WHERE {public_win} "
                    "AND date(c.changed_at,'+8 hours') >= date('now','+8 hours','-13 day')")
     return {"employment_events": load_events(), "job_events": events, "meta": {"schema_version": 3, "taxonomy_version": VERSION,
                      "roles": ROLES, "employment_types": EMPLOYMENT, "cities": CITIES,
-                     "date_basis": "first_seen",
-                     "source_date_basis": "first_seen defines the collection window; only official source_updated_at is displayed as source update evidence; legacy updated_at is historical screening data only",
+                      "date_basis": "first_seen",
+                      "source_date_basis": "public listings require source date >= 2026-06-01; non-Meituan uses source_updated_at, published_at, or posted_at; Meituan requires official source_updated_at; missing/older dates remain review-only",
                      "default_window_days": 30, "display_timezone": "Asia/Shanghai",
                      "supported_statuses": ["listed", "open", "review"],
                      "status_semantics": {"listed": "默认公开结果仅含 open；review 单独筛选", "open": "历史已收录，不等于来源当前确认在招", "review": "待复核来源记录，不计入默认公开总数", "verification_pending": "保留待核验，不计入默认公开总数"},

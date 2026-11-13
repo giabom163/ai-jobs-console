@@ -3,11 +3,15 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timedelta, timezone
+try:
+    from .evidence_contract import is_reviewed_observation
+except ImportError:
+    from evidence_contract import is_reviewed_observation
 
 TZ = timezone(timedelta(hours=8))
-EVENT_TYPES = {'hiring', 'layoff', 'shrink', 'freeze'}
+EVENT_TYPES = {'hiring', 'layoff', 'shrink', 'freeze', 'reorg', 'other'}
 AI_SCOPES = {'ai_role', 'ai_team', 'ai_impact', 'ai_company_other'}
-TAGS = {'hiring': '招聘线索', 'layoff': '裁员线索', 'shrink': '缩招线索', 'freeze': '停招线索'}
+TAGS = {'hiring': '招聘线索', 'layoff': '裁员线索', 'shrink': '缩招线索', 'freeze': '停招线索', 'reorg': '组织调整', 'other': '其他就业线索'}
 
 
 def storage_status(con):
@@ -73,17 +77,67 @@ def list_signals(con, *, review='approved', since=None, until=None, category=Non
         if d['category'] not in EVENT_TYPES:
             continue
         evidence = json.loads(d['evidence_json'])
-        if review=='approved' and not (evidence.get('source_verified') is True and evidence.get('fetch_received') is True and evidence.get('source_field')=='content'):
+        if review=='approved' and not is_reviewed_observation(evidence,d['url'],d['published_at'],d['content_sha256']):
             continue
+        public_evidence = dict(evidence)
+        observation = public_evidence.get('source_observation')
+        if isinstance(observation, dict):
+            observation = dict(observation)
+            observation.pop('raw_file_path', None)
+            public_evidence['source_observation'] = observation
         result.append({
             'id': d['id'], 'title': d['title'], 'url': d['url'],
-            'source': d['source'], 'published_at': d['published_at'],
-            'date_basis': d['date_basis'], 'first_seen': d['first_seen'], 'last_seen': d['last_seen'],
+            'source': d['source'], 'region': 'domestic' if evidence.get('geography', {}).get('region') == 'CN-mainland' else None,
+            'published_at': d['published_at'],
+            'event_date': evidence.get('event_date'), 'date_basis': d['date_basis'], 'first_seen': d['first_seen'], 'last_seen': d['last_seen'],
             'summary': evidence.get('employment', {}).get('text', ''),
+            'analysis_note': evidence.get('analysis_note') or ('作者自述内容仅按其原文呈现；AI 影响只按原文表述，不由单条自述推导因果。' if d['claim_status']=='self_reported' else ''),
+            'ai_relation': evidence.get('ai_relation', 'unknown'),
+            'ai_relation_evidence': evidence.get('ai_relation_evidence'),
             'tag': TAGS[d['category']], 'category': d['category'],
             'review_status': d['review_status'], 'claim_status': d['claim_status'],
             'ai_scope': d['ai_scope'], 'liveness': d['liveness'],
             'last_verified_at': d['last_verified_at'], 'company_id': d['company_id'],
-            'evidence': evidence,
+            'evidence': public_evidence,
         })
     return result
+
+
+def count_signals(con, *, review='approved', since=None, until=None, category=None):
+    """Count eligible observations without applying the public list page limit."""
+    if review not in {'approved', 'pending'}:
+        raise ValueError('unsupported review status')
+    if category and category not in EVENT_TYPES:
+        raise ValueError('unsupported event category')
+    lower, upper = parse_time(since), parse_time(until)
+    if since and lower is None or until and upper is None:
+        raise ValueError('invalid date bound')
+    if lower and upper and lower >= upper:
+        raise ValueError('since must precede until (exclusive)')
+    if not con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='discovery_documents'").fetchone():
+        return 0
+    sql = 'SELECT category,evidence_json,url,published_at,content_sha256 FROM discovery_documents WHERE review_status=?'
+    args = [review]
+    if category:
+        sql += ' AND category=?'
+        args.append(category)
+    if lower or upper:
+        sql += ' AND published_at IS NOT NULL'
+    if lower:
+        sql += ' AND julianday(published_at)>=julianday(?)'
+        args.append(lower.isoformat())
+    if upper:
+        sql += ' AND julianday(published_at)<julianday(?)'
+        args.append(upper.isoformat())
+    if review == 'approved':
+        sql += " AND ai_scope IN ('ai_role','ai_team','ai_impact','ai_company_other') AND date_basis='source_verified'"
+    total = 0
+    for row in con.execute(sql, args):
+        if row['category'] not in EVENT_TYPES:
+            continue
+        evidence = json.loads(row['evidence_json'])
+        if review == 'approved' and not is_reviewed_observation(
+                evidence, row['url'], row['published_at'], row['content_sha256']):
+            continue
+        total += 1
+    return total

@@ -25,8 +25,10 @@ from pathlib import Path
 
 if __package__:
     from .employment_signals import parse_time
+    from .evidence_contract import APPROVED_EVENT_SOURCE_STRATEGIES
 else:
     from employment_signals import parse_time
+    from evidence_contract import APPROVED_EVENT_SOURCE_STRATEGIES
 
 ROOT = Path(__file__).resolve().parent.parent
 TZ = timezone(timedelta(hours=8))
@@ -96,6 +98,10 @@ def candidate(item, query, *, fetched=False):
         'fetch_received': fetched, 'source_verified': False,
         'fetch_receipt': item.get('_fetch_receipt') if fetched and field=='content' else None,
     }
+    receipt=evidence.get('fetch_receipt')
+    if isinstance(receipt,dict):
+        host=urllib.parse.urlsplit(url).hostname
+        receipt['source_strategy_id']=next((sid for sid,strategy in APPROVED_EVENT_SOURCE_STRATEGIES.items() if host in strategy.get('hosts',())),None)
     # Offsets refer to the exact stored text, including sentence whitespace.
     evidence['employment']['text'] = sentence.group()
     payload = {
@@ -207,6 +213,13 @@ class DirectClient:
                 raise ValueError('expected a JSON object')
             if action == 'fetch' and (not isinstance(data.get('content'), str) or not data['content'].strip()):
                 raise ValueError('Fetch response has no usable content; not a successful fetch')
+            if action == 'fetch':
+                final_url=data.get('final_url') or data.get('url')
+                if final_url:
+                    call['final_url']=public_url(final_url)
+                call['observed_at']=call['finished_at']
+                call['extractor_version']='deepseek-fetch-response-v1'
+                call['extracted_text_sha256']=hashlib.sha256(data['content'].encode('utf-8')).hexdigest()
             return data
         except Exception as error:
             call.update(finished_at=now(), error=str(error).replace(self.key, '[REDACTED]'))

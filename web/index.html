@@ -94,6 +94,8 @@ footer{padding:24px 16px;color:#8290a1}
 @media(max-width:1000px){header{align-items:flex-start}header>div:first-child{min-width:0}.cards{grid-template-columns:repeat(3,minmax(0,1fr))}.grid{grid-template-columns:1fr 1fr}}
 @media(max-width:760px){header{position:static;display:block;padding:14px 18px}header>div:first-child{margin-bottom:12px}nav{overflow-x:auto;flex-wrap:nowrap;padding:2px 0 5px;scrollbar-width:thin}nav button{flex:0 0 auto}main{margin:18px auto;padding:0 14px}.grid{grid-template-columns:1fr}.cards{grid-template-columns:repeat(2,minmax(0,1fr));gap:9px}.card{padding:14px}.card .n{font-size:24px}.panel{padding:17px}.page-heading h2{font-size:22px}#job-filters{padding:14px}.search-main{display:grid;grid-template-columns:1fr auto}.search-main input{grid-column:1/-1;width:100%}.search-main .primary-button{min-width:100px}.filter-row{align-items:flex-start;gap:9px}.filter-row>b{flex:0 0 100%;padding-top:3px}.filter-row label{min-height:32px}.filter-row .meta{flex:0 0 100%}.toolbar{align-items:stretch}.toolbar select{flex:1 1 145px}.toolbar label{flex:1 1 135px}.toolbar input[type=date]{width:100%;min-width:0}.table-scroll{overflow:visible;border:0;background:transparent}.table-scroll table,.table-scroll tbody{display:block;width:100%}.table-scroll thead{display:none}#jobs-body tr.row{display:block;margin:0 0 10px;padding:4px 12px;border:1px solid var(--line);border-radius:10px;background:#fff;box-shadow:0 1px 5px #243b5308}#jobs-body td{display:grid;grid-template-columns:88px minmax(0,1fr);gap:8px;padding:9px 0;border-bottom:1px solid #edf1f5;font-size:12px}#jobs-body td:last-child{border-bottom:0}#jobs-body td::before{content:attr(data-label);color:#718198;font-size:11px;font-weight:600}#jobs-body td:first-child{min-width:0!important}#jobs-body td:first-child::before{content:attr(data-label)}.job-evidence{min-width:0}.pager{gap:6px}.pager span{font-size:11px}.drawer{padding:18px}.drawer header{top:-18px;margin:-18px -18px 12px;padding:12px 18px}.detail-grid{grid-template-columns:1fr 1fr}.event-stats{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:420px){main{padding:0 10px}.cards{gap:7px}.card{padding:12px}.filter-row label{font-size:12px}.detail-grid{grid-template-columns:1fr}}
+.panel-subsection{border:1px solid var(--line);border-radius:10px;padding:16px;margin:14px 0;background:#fbfcfe}.panel-subsection h3,.report-section h3{margin:0 0 8px;font-size:15px}.report-toolbar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:12px 0}.report-grid{display:grid;grid-template-columns:1fr;gap:14px;margin-top:14px}.report-section{min-height:150px}.report-slot{padding:10px 0}.report-kv{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.report-kv div{padding:12px;background:#f5f8fc;border-radius:8px}.report-kv b{display:block;font-size:20px;color:var(--ink)}@media(max-width:680px){.report-grid{grid-template-columns:1fr}.report-kv{grid-template-columns:1fr}}
+.signal-form{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:12px}.signal-form label{display:grid;gap:5px;font-size:12px;color:var(--muted)}.signal-form label.wide{grid-column:1/-1}.signal-form textarea{min-height:90px;padding:10px;border:1px solid #cbd7e4;border-radius:7px;font:inherit;resize:vertical}.signal-query-output{width:100%;min-height:78px;margin-top:10px;padding:10px;border:1px solid var(--line);border-radius:8px;background:#f6f8fb;font:13px/1.6 ui-monospace,Consolas,monospace}.signal-local-note{padding:10px 12px;background:#eff6ff;border:1px solid #d7e5fa;border-radius:8px;color:#31527c;font-size:12px;line-height:1.6}@media(max-width:680px){.signal-form{grid-template-columns:1fr}.signal-form label.wide{grid-column:auto}}
 @media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
 </style>
 </head>
@@ -110,7 +112,7 @@ footer{padding:24px 16px;color:#8290a1}
 </header>
 <div id="app-status" class="panel" role="status" aria-live="polite" style="max-width:1240px;margin:16px auto;padding:12px 18px"><span id="app-status-text">正在加载岗位列表；完整详情将在打开岗位时读取。</span> <button id="app-retry" type="button" hidden>重试加载</button></div>
 <main>
-  <section id="view-dashboard">
+  <section id="view-dashboard" hidden>
     <div class="page-heading"><div><h2>岗位与核查概览</h2><p>先看收录范围，再查岗位和原始证据。</p></div><button class="primary-button" id="browse-jobs">查找岗位 →</button></div>
     <p id="overview-scope" class="meta"></p>
     <div class="cards" id="cards"></div>
@@ -121,6 +123,27 @@ footer{padding:24px 16px;color:#8290a1}
     <div class="grid">
       <div class="panel"><h2>当前来源覆盖</h2><div id="companies"></div></div>
       <div class="panel"><h2>待核查与统计口径</h2><div class="kv" id="notes"></div></div>
+    </div>
+
+    <!-- 前沿大模型技术栈需求与薪资/层级透视看板 (优化二) -->
+    <div class="grid" style="margin-top: 18px;">
+      <div class="panel">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+          <h2 style="margin:0;">岗位技能关键词提及统计</h2>
+          <span style="font-size:12px; color:var(--muted);">按当前筛选范围统计</span>
+        </div>
+        <p class="meta" style="margin-top:-6px; margin-bottom:14px;">按岗位统计标题、AI 判定理由和技能字段中命中的关键词；同一关键词在一条岗位中最多计一次。结果是已收录样本的提及数，不代表整体市场需求。</p>
+        <div id="tech-stack-ranking" style="display:flex; flex-direction:column; gap:10px;"></div>
+      </div>
+
+      <div class="panel">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+          <h2 style="margin:0;">AI 职能分级与收录城市样本</h2>
+          <span style="font-size:12px; color:var(--muted);">当前筛选样本</span>
+        </div>
+        <p class="meta" style="margin-top:-6px; margin-bottom:14px;">对比 AI 研发相关（build）与技术支撑/相邻岗位（adjacent）的记录数，并展示收录岗位的城市分布；不外推到整体就业市场。</p>
+        <div id="tier-city-breakdown" style="display:flex; flex-direction:column; gap:12px;"></div>
+      </div>
     </div>
   </section>
 
@@ -155,24 +178,36 @@ footer{padding:24px 16px;color:#8290a1}
   <section id="view-signals" hidden>
     <div class="panel"><h2>裁员与组织调整核查</h2>
       <p class="event-meta">以事件而非转载篇数计数。分别记录公告、实施证据、公司回应和传闻；历史事件按原始日期展示。仅展示中国大陆就业线索；个人自述与已核实事件分开记录。</p>
-      <div class="toolbar"><input id="event-q" placeholder="公司 / 团队关键词" aria-label="就业事件关键词"><select id="event-region" aria-label="事件地区"><option value="">全部地区</option><option value="domestic">国内</option></select><select id="event-type" aria-label="就业事件类别"><option value="">全部事件</option><option value="layoff">裁员</option><option value="reorg">组织调整</option><option value="shrink">缩招</option><option value="freeze">停招</option></select><select id="event-status" aria-label="事件证据状态"><option value="">全部证据状态</option><option value="announced">官方已公告</option><option value="implemented">实施有证据</option><option value="response_reported">公司回应（媒体引述）</option><option value="reported">媒体报道待交叉核实</option><option value="pending">待核实线索</option><option value="denied">已否认/更正</option></select><label>事件从 <input id="event-since" type="date" ></label><label>至 <input id="event-until" type="date"></label><button id="event-apply">筛选事件</button></div>
+       <div class="panel-subsection"><h3>AI 就业影响检索</h3><p class="meta">按大陆范围搜索 AI 相关裁员、缩招、组织调整、岗位变化和编程类应届岗位。可填写公司/团队缩小范围，也可留空搜索行业；每次最多 3 条，结果进入待审队列，摘要不作原文证据。</p><div class="toolbar"><input id="signal-query-entity" placeholder="可选：公司或团队，如某公司某业务线" aria-label="可选公司或团队"><select id="signal-query-topic" aria-label="关注方向"><option value="layoff">AI 相关裁员 / 人员调整</option><option value="shrink">AI 相关缩招 / 停招</option><option value="reorg">AI 相关组织调整</option><option value="hiring">AI 相关招聘变化</option><option value="programming">编程类 / 应届岗位变化</option></select><label>时间从 <input id="signal-query-since" type="date"></label><label>至 <input id="signal-query-until" type="date"></label><button id="signal-query-build" type="button" class="primary-button">生成检索式</button><button id="signal-search-run" type="button">执行限量搜索</button><button id="signal-query-copy" type="button" disabled>复制检索式</button></div><textarea id="signal-query-output" class="signal-query-output" readonly aria-label="生成的检索式" placeholder="生成后可复制到获准的搜索来源"></textarea><p id="signal-query-status" class="meta" aria-live="polite">未点击检索前不发请求；检索摘要不构成原文证据。</p></div>
+     <div class="toolbar"><input id="event-q" placeholder="公司 / 团队关键词" aria-label="就业事件关键词"><select id="event-region" aria-label="事件地区"><option value="">全部地区</option><option value="domestic">国内</option></select><select id="event-type" aria-label="就业事件类别"><option value="">全部事件</option><option value="layoff">裁员</option><option value="reorg">组织调整</option><option value="shrink">缩招</option><option value="freeze">停招</option><option value="hiring">招聘岗位变化</option></select><select id="event-status" aria-label="事件证据状态"><option value="">全部证据状态</option><option value="announced">官方已公告</option><option value="implemented">实施有证据</option><option value="response_reported">公司回应（媒体引述）</option><option value="reported">媒体报道待交叉核实</option><option value="pending">待核实线索</option><option value="denied">已否认/更正</option></select><label>事件从 <input id="event-since" type="date" ></label><label>至 <input id="event-until" type="date"></label><button id="event-apply">筛选事件</button></div>
       <div id="event-stats" class="event-stats"></div><div id="event-analysis" class="event-notice"></div><div id="events-list"></div>
-      <details style="margin-top:18px"><summary>收集与核查方法</summary><p class="event-meta">公司公告、监管披露和法定通知优先；媒体一手报道核对公司回应；社交帖仅作线索。按公司、团队、地区及同一轮调整归并来源，保留后续更正。员工数下降、职位下架、离职均不能单独证明裁员，AI投资和裁员同时发生也不能单独证明因果。当前为有限人工核查样本，未设置后台自动采集。</p></details>
+      <details style="margin-top:18px"><summary>收集与核查方法</summary><p class="event-meta">公司公告、监管披露和法定通知优先；媒体一手报道核对公司回应；社交帖仅作线索。按公司、团队、地区及同一轮调整归并来源，保留后续更正。员工数下降、职位下架、离职均不能单独证明裁员，AI投资和裁员同时发生也不能单独证明因果。</p></details>
     </div>
     <div class="panel" style="margin-top:14px"><h2>其他招聘与就业线索</h2>
-      <p style="font-size:12px;color:#64748b">公开站只展示已复核内容，最多收录最近200条；待核验原文只供本地复核。招聘线索不代表目前仍在招。</p>
+      <p style="font-size:12px;color:#64748b">公开站只展示已复核内容，最多收录最近200条；待核验内容只在本地审核台显示。招聘线索不代表目前仍在招。</p>
       <div class="toolbar">
-        <select id="signal-review"><option value="approved">已复核记录</option><option value="pending">待核验线索</option></select>
-        <select id="signal-category"><option value="">全部变化</option><option value="hiring">招聘</option><option value="layoff">裁员</option><option value="shrink">缩招</option><option value="freeze">停招</option></select>
+        <select id="signal-review"><option value="approved">已复核记录 (公开)</option></select>
+        <select id="signal-category"><option value="">全部变化</option><option value="hiring">招聘</option><option value="layoff">裁员</option><option value="shrink">缩招</option><option value="freeze">停招</option><option value="reorg">组织调整</option><option value="other">其他</option></select>
         <label>从 <input id="signal-since" type="date" style="min-width:140px"></label>
         <label>至 <input id="signal-until" type="date" style="min-width:140px"></label>
         <button onclick="loadSignals()">筛选</button>
       </div>
-      <p id="signal-storage" class="meta"></p><div id="signals-list"></div></div>
+      <p id="signal-storage" class="meta"></p><div id="signals-list"></div><h3>本地待审候选</h3><p id="signal-review-status" class="meta">审核接口仅供本地服务使用；批准发布需要原文、发布日期及通过来源门禁的证据。</p><div id="signal-review-queue" class="empty">正在读取待审队列…</div></div>
+     <div class="panel" style="margin-top:14px"><h2>人工找到的原文登记</h2><p class="signal-local-note">登记内容进入本地待审队列，不会自动成为公开事件。搜索摘要不能代替原文；批准公开仍需来源回执、日期与大陆范围证据。</p><form id="signal-draft-form" class="signal-form"><label>公司 / 团队<input name="entity" required maxlength="160" placeholder="按原文填写"></label><label>事件类型<select name="event_type"><option value="layoff">裁员</option><option value="shrink">缩招 / 停招</option><option value="freeze">停招</option><option value="reorg">组织调整</option><option value="hiring">招聘变化</option><option value="other">其他就业线索</option></select></label><label class="wide">原文标题<input name="title" required maxlength="240" placeholder="使用来源页面标题，不要改写成结论"></label><label>来源名称<input name="source_name" maxlength="120" placeholder="公告、媒体或平台名称"></label><label>原文链接<input name="source_url" type="url" required placeholder="https://…"></label><label>原文发布时间<input name="published_at" type="date"></label><label>事件发生日期（未知可留空）<input name="event_date" type="date"></label><label class="wide">原文内容或可核对摘录<textarea name="claim" required maxlength="3000" placeholder="粘贴人工找到的原文或足以复核的精确摘录"></textarea></label><label class="wide">中国大陆范围依据（未确认可留空）<textarea name="geography_evidence" maxlength="1000" placeholder="记录原文中可确认的地点；未知或混合地点不要推定为大陆"></textarea></label><label>登记人<input name="reviewer" required maxlength="80"></label><div class="toolbar"><button type="submit" class="primary-button">保存到待审队列</button><span id="signal-draft-status" class="meta" aria-live="polite">登记后仍为待核验。</span></div></form></div>
   </section>
 
   <section id="view-report" hidden>
-    <div class="panel"><h2>今日日报</h2><div id="report-body"></div></div>
+    <div class="panel">
+      <div class="page-heading"><div><h2>AI 就业影响日报</h2><p>先看有证据的就业事件，再看编程类岗位记录变化；趋势只作公开招聘数据观察，不单独证明 AI 因果。</p></div><button id="report-refresh" type="button">刷新数据</button></div>
+      <div class="report-toolbar"><label>事件筛选起始 <input id="report-since" type="date"></label><label>事件筛选结束 <input id="report-until" type="date"></label><button id="report-apply" type="button">应用周期</button><span class="meta">结束日期按北京时间自然日包含；岗位趋势固定比较最近30天与前30天。</span></div>
+      <div id="report-body" aria-live="polite"></div>
+      <div class="report-grid">
+        <section class="panel report-section"><h3>一、近期就业事件</h3><div id="report-events" class="report-slot meta">等待事件和已复核线索</div></section>
+        <section class="panel report-section"><h3>二、编程类岗位趋势</h3><div id="report-trends" class="report-slot meta">等待岗位数据</div></section>
+        <section class="panel report-section"><h3>来源覆盖与审核状态</h3><div id="report-coverage" class="report-slot meta">等待来源运行状态与证据统计</div></section>
+      </div>
+      <p class="event-notice">事件和趋势使用不同数据口径。公开岗位记录不等于录用人数；岗位减少与 AI 的因果关系须有单独原文证据。</p>
+    </div>
   </section>
 
   <section id="view-sources" hidden>
@@ -193,7 +228,8 @@ function badge(v){const m={'build':'build','adjacent':'adjacent','exposed':'expo
 function sourceLabel(v){return ({'official:meituan':'美团招聘','official:bytedance':'字节跳动招聘','official:alibaba':'阿里巴巴招聘','official:baidu':'百度招聘','official:deepseek':'DeepSeek招聘','official:jd':'京东招聘','official:huawei':'华为招聘','official:tencent':'腾讯招聘','official:chinamobile':'中国移动招聘','platform:liepin':'猎聘','platform:zhaopin':'智联招聘','platform:58':'58同城','platform:boss':'BOSS直聘'})[v]||v||'未知来源';}
 function levelBadge(v){const m={'已验证':'verified','可信':'trusted','待核验':'pending','低可信':'low'};return `<span class="badge ${m[v]||'pending'}">${esc(v==='已验证'?'历史标签：已验证':v)}</span>`;}
 function fmt(s){if(!s)return '—';const raw=String(s);if(/^\d{4}-\d{2}-\d{2}$/.test(raw))return raw;if(!/(Z|[+-]\d{2}:?\d{2})$/i.test(raw))return esc(raw.replace('T',' '));const d=new Date(raw);if(isNaN(d.getTime()))return esc(raw);const parts=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).formatToParts(d);const p=Object.fromEntries(parts.map(x=>[x.type,x.value]));return `${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute}`;}
-async function api(u){return PayloadLoader.json(window.fetch.bind(window),u,{timeout:35000});}
+async function api(u,options){return PayloadLoader.json(window.fetch.bind(window),u,{timeout:options?.timeout||35000,...(options||{})});}
+async function postJson(u,data){return fetch(u,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)}).then(async r=>{const d=await r.json();if(!r.ok)throw new Error(d.error||d.stderr||`HTTP ${r.status}`);return d;});}
 function requirementCount(j){return j.requirements_count??j.requirements_summary?.items?.length??0;}
 function requirementEvidence(item){const normalize=value=>String(value||'').replace(/^\s*\d+[.、)）]\s*/,'').replace(/[\s，。；、：,.!?！？]/g,'').trim(),brief=normalize(item.brief||item.text),evidence=normalize(item.evidence);return evidence&&evidence!==brief?`<details><summary>原文证据</summary><p>${esc(item.evidence)}</p></details>`:'';}
 function qualificationSummary(j){const details=j.job_details||{},education=details.education?.value,experience=details.experience?.value;return `<div class="job-qualification"><span title="${esc(education||'尚未采到明确学历')}">${education?`学历：${esc(education)}`:'学历待确认'}</span><span title="${esc(experience||'尚未采到明确经验')}">${experience?`经验：${esc(experience)}`:'经验待确认'}</span></div>`;}
@@ -220,6 +256,49 @@ async function loadDashboard(){
   $('#levels').innerHTML=(d.levels||[]).map(x=>`<div class="bar"><span>${esc(x.label==='已验证'?'历史标签：已验证':x.label)}</span><span class="track"><i style="width:${x.value/max*100}%;background:${x.label==='已验证'?'#0f766e':x.label==='低可信'?'#b42318':'#1d4ed8'}"></i></span><b>${x.value}</b></div>`).join('')||'<div class="empty">暂无</div>';
   const cmax=Math.max(...(d.top_companies||[]).map(x=>x.value),1);
   $('#companies').innerHTML=(d.top_companies||[]).length===1?`<div class="coverage-single"><b>${esc(d.top_companies[0].label)}</b> · ${d.top_companies[0].value} 条公开记录</div><p class="meta">当前筛选仅覆盖一家企业，不能代表整体招聘市场。</p>`:(d.top_companies||[]).map(x=>`<div class="bar"><span>${esc(x.label)}</span><span class="track"><i style="width:${x.value/cmax*100}%"></i></span><b>${x.value}</b></div>`).join('')||'<div class="empty">暂无</div>';
+    // 渲染前沿技术栈热度榜 (优化二)
+  const techList = d.tech_stack_ranking || [];
+  if (techList.length && $('#tech-stack-ranking')) {
+    const tmax = Math.max(...techList.map(x => x.count), 1);
+    $('#tech-stack-ranking').innerHTML = techList.map(t => `
+      <div style="display:flex; align-items:center; gap:10px;">
+        <span style="width:110px; font-size:13px; font-weight:600; color:var(--blue); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">🏷️ ${esc(t.name)}</span>
+        <span class="track" style="flex:1;"><i style="width:${t.count/tmax*100}%; background:#2457b8;"></i></span>
+        <span style="font-size:12px; font-weight:600; width:80px; text-align:right;">${t.count} 条 <small style="color:var(--muted); font-weight:normal;">(${t.percentage}%)</small></span>
+      </div>
+    `).join('');
+  }
+
+  // 渲染研发/应用层级与城市分布透视 (优化二)
+  if ($('#tier-city-breakdown')) {
+    const buildPct = Math.round((d.build || 0) / Math.max(1, d.ai_total || 1) * 100);
+    const adjPct = 100 - buildPct;
+    const cities = d.top_cities || [];
+    const cmax = Math.max(...cities.map(x => x.count), 1);
+    $('#tier-city-breakdown').innerHTML = `
+      <div style="margin-bottom:14px; padding-bottom:12px; border-bottom:1px solid var(--line);">
+        <div style="display:flex; justify-content:space-between; font-size:12px; margin-bottom:6px;">
+          <span>🛠️ 核心研发 (Build): <b>${d.build || 0} (${buildPct}%)</b></span>
+          <span>💼 生态应用 (Adjacent): <b>${d.adjacent || 0} (${adjPct}%)</b></span>
+        </div>
+        <div class="track" style="height:10px; display:flex; overflow:hidden; border-radius:5px;">
+          <div style="width:${buildPct}%; background:#10b981;" title="AI研发: ${buildPct}%"></div>
+          <div style="width:${adjPct}%; background:#6366f1;" title="AI支撑应用: ${adjPct}%"></div>
+        </div>
+      </div>
+      <div>
+        <div style="font-size:12px; color:var(--muted); margin-bottom:8px;">收录样本所在城市分布：</div>
+        ${cities.map(c => `
+          <div style="display:flex; align-items:center; gap:8px; margin-bottom:6px; font-size:12px;">
+            <span style="width:60px;">${esc(c.city)}</span>
+            <span class="track" style="flex:1;"><i style="width:${c.count/cmax*100}%; background:#64748b;"></i></span>
+            <span style="width:75px; text-align:right; font-weight:600;">${c.count} 条</span>
+          </div>
+        `).join('')}
+      </div>
+    `;
+  }
+
   $('#notes').innerHTML=`<div class="health-summary"><div><b>${d.verification_pending_count||0}</b>全局待核验</div><div><b>${d.review_count||0}</b>当前条件下来源待复核</div></div><p class="meta">待核验记录不进入默认公开结果；更新时间或链接可访问均不会自动提升状态。默认公开岗位：官方身份有详情证据 ${d.official_identity_confirmed_count||0} 条；官方来源更新时间未知 ${d.source_update_unknown_count||0} 条；招聘状态未知 ${d.hiring_status_unknown_count||0} 条。</p><details><summary>查看完整统计口径与证据边界</summary><div>数据生成时间：${fmt(d.generated_at)}</div><div>当前条件：${esc(filterDescription())}</div><div>普通来源待复核（review）${d.review_count||0} 条，已从默认公开列表及其总数中分开；收录记录数不等于招聘人数。</div><div>AI 岗位库全局待核验（verification_pending，首次入库自 ${esc(d.global_window_since||'2026-06-01')} 起）${d.verification_pending_count||0} 条，不进入默认公开结果；状态不会因页面可访问或日期达标自动升级。</div><div>美团待核验中，来源更新时间过早或缺失 ${d.meituan_pending_old_date_count||0} 条；更新时间达标但官方详情身份尚未确认 ${d.meituan_pending_identity_count||0} 条。</div><div>美团混合境内外地点 ${d.meituan_mixed_location_count||0} 条、地点无法判断 ${d.meituan_unknown_location_count||0} 条：记录保留但不进入默认公开，须单独复核；业务状态不因地域判断自动改写。</div><div>首次入库范围：${esc(d.window_since)} 起；来源发布时间独立保存。</div><div>美团来源日期待复核 ${d.source_date_review_count||0} 条；来源更新时间早于 2026-06-01 或缺失的记录不进入公开结果，仍保留在数据库。</div><div>最近 URL 返回 HTTP 2xx 的记录 ${d.verified} 条；这不代表岗位正文身份已核实，也不代表当前仍在招。</div><div>类型待确认 ${d.unknown??0} 条；合同/兼职 ${d.other_employment??0} 条。</div><div>库内累计排除非AI ${d.excluded||0} 条；合并重复 ${d.merged||0} 条。</div><div>当前来源只代表已收录样本，不代表整体招聘市场；城市数量可能交叉。</div><div>岗位要求为原文要点摘录，最多10条，缺少明确要求时不补写。</div></details>`;
 
 }
@@ -243,7 +322,7 @@ async function loadJobs(offset=jobOffset){
       <td data-label="公司 / 部门">${esc(j.company)}${j.department?`<div class="job-sub">${esc(j.department)}</div>`:''}<div class="job-sub">${esc(sourceLabel(j.source))}${j.status==='review'?' · 待复核':''}</div></td>
       <td data-label="招聘类型"><span class="badge ${j.employment_type==='intern'?'trusted':'none'}">${esc(j.employment_label||'类型待确认')}</span></td>
       <td data-label="工作城市">${esc(j.location||'地点待确认')}</td>
-      <td data-label="招聘状态"><div class="job-evidence"><div class="job-evidence-main"><span class="badge ${j.hiring_status==='active'?'trusted':'pending'}">${esc(j.hiring_status==='unknown'?'招聘状态未知':(j.hiring_status_label||'招聘状态未知'))}</span></div><div class="job-evidence-line">来源更新：${fmt(j.source_updated_at)}</div><div class="job-evidence-line">身份匹配：${j.identity_evidence_status==='confirmed'?'已匹配':'未知'}</div></div></td>
+      <td data-label="招聘状态"><div class="job-evidence"><div class="job-evidence-main"><span class="badge ${j.hiring_status==='active'?'trusted':'pending'}">${esc(j.hiring_status==='unknown'?'招聘状态未知':(j.hiring_status_label||'招聘状态未知'))}</span></div><div class="job-evidence-line">来源更新：${fmt(j.source_updated_at)}</div><div class="job-evidence-line">官方详情核验：${j.identity_evidence_status==='confirmed'?'详情已核对':'尚无核验记录'}</div></div></td>
     </tr>`).join('')||'<tr><td colspan="5" class="empty">没有匹配岗位。可减少筛选条件；类型待确认不计入正式岗。</td></tr>';
     $('#jobs-body').setAttribute('aria-busy','false');
     $('#page-status').textContent=d.total?`第 ${Math.floor(d.offset/30)+1} / ${Math.ceil(d.total/30)} 页 · 共 ${d.total} 条`:'暂无结果';
@@ -264,10 +343,21 @@ async function openJob(id){
   document.querySelector('main').inert=true;document.querySelector('header').inert=true;document.querySelector('footer').inert=true;$('#drawer .close').focus();$('#drawer').scrollTop=0;
   try {
   const d=await api('/api/jobs/'+encodeURIComponent(id));if(request!==detailRequest)return;const j=d.job;
+  const techKeywords = ['大模型', 'Agent', '多模态', 'PyTorch', 'RAG', '具身智能', 'RLHF', 'Transformer', 'DPO', 'Megatron', 'vLLM', 'CUDA', 'SGLang', 'Triton', 'DeepSpeed', 'LangChain'];
+  const fullJobText = `${j.title} ${j.ai_reason||''} ${j.full_description||''}`.toLowerCase();
+  const matchedTechs = techKeywords.filter(kw => fullJobText.includes(kw.toLowerCase()));
+  const techPills = matchedTechs.length ? `
+    <div style="margin: 12px 0 16px; display:flex; flex-wrap:wrap; gap:6px; align-items:center;">
+      <span style="font-size:12px; font-weight:600; color:var(--muted); margin-right:4px;">🏷️ 大模型技术栈标签:</span>
+      ${matchedTechs.map(t => `<span class="badge" style="cursor:pointer; background:#e0e7ff; color:#3730a3; border:1px solid #c7d2fe; padding:3px 9px; border-radius:999px; font-size:11px;" onclick="closeDrawer(); filterByTech('${esc(t)}')" title="点击筛选全库 ${esc(t)} 岗位">${esc(t)} ↗</span>`).join('')}
+    </div>
+  ` : '';
+
   $('#drawer-body').innerHTML=`<h3>${esc(j.title)}</h3><div class="meta">${esc(j.company)} · ${esc(j.location||'')} · ${esc(j.role_label||'职能待确认')} · ${esc(j.employment_label||'类型待确认')} · ${levelBadge(j.authenticity_level)}</div>
+  ${techPills}
   <div class="detail-actions"><a class="primary-link" href="${signalUrl(j.url)}" target="_blank" rel="noreferrer">查看原始岗位 / 申请 →</a></div><p class="detail-notice">原始链接可访问不代表当前仍可投递，请核对官方说明。</p>${jobFacts(j)}<details><summary>来源与核查信息</summary><div class="kv"><div><b>来源：</b>${esc(sourceLabel(j.source))}</div><div><b>状态：</b>${esc(j.status)}</div>
   <div><b>来源岗位ID：</b>${esc(j.external_id||'—')}</div><div><b>招聘编号：</b>${esc(j.requisition_id||'—')}</div><div><b>部门：</b>${esc(j.department||'—')}</div>
-  <div><b>官方身份匹配：</b>${j.identity_evidence_status==='confirmed'?'已匹配':'未知 / 未确认'} · 观察时间：${fmt(j.identity_evidence_checked_at)}</div><div><b>来源发布时间：</b>${fmt(j.published_at)}</div><div><b>来源更新时间：</b>${fmt(j.source_updated_at)}</div><div><b>招聘状态：</b>${esc(j.hiring_status_label||'未知（来源状态码未映射）')}</div><div><b>来源原始状态码：</b>${esc(j.source_status_raw||'未知')}（未映射时不据此推断）</div><div><b>最近检查来源：</b>${fmt(j.last_checked_at)}</div><div><b>申请开始：</b>${fmt(j.application_start)}</div><div><b>申请截止：</b>${fmt(j.application_deadline)}</div>
+  <div><b>官方详情核验：</b>${j.identity_evidence_status==='confirmed'?'详情已核对':'尚无核验记录'} · 观察时间：${fmt(j.identity_evidence_checked_at)}</div><div><b>来源发布时间：</b>${fmt(j.published_at)}</div><div><b>来源更新时间：</b>${fmt(j.source_updated_at)}</div><div><b>招聘状态：</b>${esc(j.hiring_status_label||'未知（来源状态码未映射）')}</div><div><b>来源原始状态码：</b>${esc(j.source_status_raw||'未知')}（未映射时不据此推断）</div><div><b>最近检查来源：</b>${fmt(j.last_checked_at)}</div><div><b>申请开始：</b>${fmt(j.application_start)}</div><div><b>申请截止：</b>${fmt(j.application_deadline)}</div>
   <div><b>首次入库：</b>${fmt(j.first_seen)}</div><div><b>最近看到：</b>${fmt(j.last_seen)}</div>
   <div><b>最近证据核验时间：</b>${fmt(j.last_evidence_check_at||j.last_verified_at)}</div><div><b>HTTP：</b>${esc(j.http_status??'—')}</div>
   <div><b>历史存活观察：</b>${esc(j.liveness_label||'尚无链接检查')} · ${esc(j.liveness||'未知')} ${esc(j.liveness_reason||'')}；不等于当前在招</div>
@@ -277,7 +367,7 @@ async function openJob(id){
   ${j.requirements_summary?.truncated?'<p>原文超过10条，请查看完整岗位。</p>':''}
   ${jobOriginal(j)}<div><b>AI 判定依据：</b>${esc(j.ai_reason||'—')}</div>
   <div><b>申请链接：</b><a href="${signalUrl(j.url)}" target="_blank" rel="noreferrer">打开原始岗位</a></div>
-  <div><b>薪资：</b>${j.salary_min?`${esc(j.currency||'')} ${j.salary_min}–${j.salary_max||''}`:'未采到薪资信息'}</div></div>
+  <div><b>薪资：</b>${j.salary_min?`<span style="color:#059669; font-weight:700;">${esc(j.currency||'CNY')} ${j.salary_min}–${j.salary_max||j.salary_min}k</span>`:'未采到明确薪资（企业薪酬保密 / 面议）'}</div></div>
   <p style="font-size:12px;color:#64748b;margin-top:16px">历史分级和 URL 返回状态均不等于岗位真实性已确证；链接可访问不代表岗位当前仍可投递。核验分数不是概率。</p>`;
   $('#drawer').classList.add('open');
   if(!$('#drawer').contains(document.activeElement))$('#drawer .close').focus();
@@ -299,8 +389,8 @@ async function loadEmploymentEvents(){
   try{const d=await api('/api/employment-events?'+p),s=d.summary;if(request!==eventsRequest)return;
     $('#event-stats').innerHTML=[['独立事件',s.total],['裁员官方公告',s.announced],['实施有证据',s.implemented],['回应 / 待核实',s.responses+s.pending]].map(([label,n])=>`<div><b>${n}</b>${label}</div>`).join('');
     $('#event-analysis').textContent=`${d.coverage_note} 当前筛选：${s.announced}起官方裁员公告，${s.implemented}起有实施证据，${s.responses}起回应或更正。${s.note} AI因果和AI岗位受影响数量须单独举证。`;
-    const labels={announced:'官方已公告',implemented:'实施有证据',reported:'媒体报道待交叉核实',response_reported:'公司回应（媒体引述）',pending:'待核实线索',denied:'已否认/更正'},types={layoff:'裁员',shrink:'缩招',freeze:'停招',reorg:'组织调整'};
-    $('#events-list').innerHTML=d.items.map(e=>`<article class="event-card"><span class="badge ${e.status==='announced'?'trusted':'pending'}">${esc(labels[e.status])}</span> <span class="badge none">${esc(types[e.event_type])}</span><h3>${esc(e.title)}</h3><div class="event-meta">${esc(e.company)} · ${e.region==='domestic'?'国内':'海外'} · 事件 / 公告日期：${fmt(e.event_date)} · 原文发布：${fmt(e.published_at)}</div><p>${esc(e.summary)}</p><details><summary>影响范围、证据与待核查事项</summary><div class="event-meta"><b>涉及团队：</b>${esc(e.department)}<br><b>人数口径：</b>${esc(e.headcount_text)}<br><b>AI关联：</b>${esc(e.ai_relation)}<br><b>尚未查清：</b>${esc(e.unresolved)}</div><h4>来源证据与时间线</h4>${e.sources.map(x=>`<p><a href="${signalUrl(x.url)}" target="_blank" rel="noreferrer">${esc(x.name)}</a> · ${fmt(x.published_at)}<br>${esc(x.evidence||'')}</p>`).join('')}${(e.timeline||[]).map(t=>`<div>${fmt(t.date)}：${esc(t.action)}</div>`).join('')}<p>最近核查：${fmt(e.verified_at)}；公告及报道保留原日期，不按收录日期冒充新事件。</p></details></article>`).join('')||'<div class="empty">当前样本中没有匹配事件；这不表示没有发生裁员或调整。</div>';
+    const labels={announced:'官方已公告',implemented:'实施有证据',reported:'媒体报道待交叉核实',response_reported:'公司回应（媒体引述）',pending:'待核实线索',denied:'已否认/更正'},types={layoff:'裁员',shrink:'缩招',freeze:'停招',reorg:'组织调整',hiring:'招聘岗位变化'},aiRelations={explicit_ai:'来源明确归因 AI',related_unconfirmed:'AI 相关，因果未证实',unknown:'未确认 AI 因果'};
+    $('#events-list').innerHTML=d.items.map(e=>`<article class="event-card"><span class="badge ${e.status==='announced'?'trusted':'pending'}">${esc(labels[e.status])}</span> <span class="badge none">${esc(types[e.event_type])}</span><h3>${esc(e.title)}</h3><div class="event-meta">${esc(e.company)} · ${e.region==='domestic'?'国内':'海外'} · 事件 / 公告日期：${fmt(e.event_date)} · 原文发布：${fmt(e.published_at)}</div><p>${esc(e.summary)}</p><details><summary>影响范围、证据与待核查事项</summary><div class="event-meta"><b>涉及团队：</b>${esc(e.department)}<br><b>人数口径：</b>${esc(e.headcount_text)}<br><b>AI关联：</b>${esc(aiRelations[e.ai_relation]||e.ai_relation||aiRelations.unknown)}<br><b>尚未查清：</b>${esc(e.unresolved)}</div>${e.ai_relation_evidence?`<p><b>AI因果原文：</b>${esc(e.ai_relation_evidence)}</p>`:''}<h4>来源证据与时间线</h4>${e.sources.map(x=>`<p><a href="${signalUrl(x.url)}" target="_blank" rel="noreferrer">${esc(x.name)}</a> · ${fmt(x.published_at)}<br>${esc(x.evidence||'')}</p>`).join('')}${(e.timeline||[]).map(t=>`<div>${fmt(t.date)}：${esc(t.action)}</div>`).join('')}<p>最近核查：${fmt(e.verified_at)}；公告及报道保留原日期，不按收录日期冒充新事件。</p></details></article>`).join('')||'<div class="empty">当前无已复核样本；这不表示没有发生裁员或调整。</div>';
   }catch(e){if(request!==eventsRequest)return;$('#events-list').innerHTML='<div class="empty">事件加载失败：'+esc(e.message)+'</div>';}
 }
 function signalUrl(value){try{const u=new URL(value);return ['https:','http:'].includes(u.protocol)?esc(u.href):'#';}catch{return '#';}}
@@ -310,20 +400,114 @@ async function loadSignals(){
   if($('#signal-category').value)p.set('category',$('#signal-category').value);
   if($('#signal-since').value)p.set('since',$('#signal-since').value);
   if($('#signal-until').value){const end=new Date($('#signal-until').value+'T00:00:00Z');end.setUTCDate(end.getUTCDate()+1);p.set('until',end.toISOString().slice(0,10));}
-  const labels={unverified:'事实待核验',denial_candidate:'可能为否认/辟谣',speculation_candidate:'可能为传闻/预测',reported:'媒体报道',official_announcement:'官方宣布',implemented:'已实施',denied:'否认/更正',rumor:'传闻',prediction:'预测'};
+  const labels={unverified:'事实待核验',denial_candidate:'可能为否认/辟谣',speculation_candidate:'可能为传闻/预测',self_reported:'作者自述（未独立核实）',reported:'公开报道',official_announcement:'官方宣布',implemented:'已实施',denied:'否认/更正',rumor:'传闻',prediction:'预测'};
   const scopes={pending:'AI关联待复核',ai_role:'AI岗位',ai_team:'AI团队',ai_impact:'来源声称AI影响',ai_company_other:'AI企业其他岗位'};
   try{
-    const d=await api('/api/signals?'+p);
+  const d=await api('/api/signals?'+p);
     if(request!==signalsRequest)return;
     $('#signal-storage').textContent=d.note||(d.storage?d.storage.note+' 最近入库：'+fmt(d.storage.last_ingested_at):'当前数据版本未提供存储状态。');
-    $('#signals-list').innerHTML=(d.items||[]).map(x=>`<div class="event" style="display:flex;gap:10px;padding:10px 0;border-bottom:1px solid #eef3f9"><span class="badge none">${esc(x.tag)}</span><div><a href="${signalUrl(x.url)}" target="_blank" rel="noreferrer" style="color:#172033;text-decoration:none;font-weight:600">${esc(x.title)}</a><div style="font-size:12px;color:#64748b;margin-top:4px">${esc(x.source)} · ${x.date_basis==='source_verified'?'原文发布时间':x.date_basis==='search_index'?'搜索标注时间（待核实）':'发布时间未知'}：${fmt(x.published_at)} · ${esc(labels[x.claim_status]||'事实待核验')} · ${esc(scopes[x.ai_scope]||'AI关联待复核')}</div><div style="font-size:12px;margin-top:6px">${esc(x.summary||'')}</div><div class="meta">最近采到：${fmt(x.last_seen)}；招聘有效性：${x.liveness==='active'?'最近核验可申请':'未确认'}${x.last_verified_at?'（'+fmt(x.last_verified_at)+'）':''}</div></div></div>`).join('')||'<div class="empty">当前筛选下暂无记录</div>';
+    $('#signals-list').innerHTML=(d.items||[]).map(x=>`<div class="event" style="display:flex;gap:10px;padding:10px 0;border-bottom:1px solid #eef3f9"><span class="badge none">${esc(x.tag)}</span><div><a href="${signalUrl(x.url)}" target="_blank" rel="noreferrer" style="color:#172033;text-decoration:none;font-weight:600">${esc(x.title)}</a><div style="font-size:12px;color:#64748b;margin-top:4px">${esc(x.source)} · ${x.date_basis==='source_verified'?'原文发布时间':x.date_basis==='search_index'?'搜索标注时间（待核实）':'发布时间未知'}：${fmt(x.published_at)} · ${esc(labels[x.claim_status]||'事实待核验')} · ${esc(scopes[x.ai_scope]||'AI关联待复核')}</div><div style="font-size:12px;margin-top:6px">${esc(x.summary||'')}</div>${x.analysis_note?`<div class="meta" style="margin-top:5px">${esc(x.analysis_note)}</div>`:''}<div class="meta">最近采到：${fmt(x.last_seen)}；招聘有效性：${x.liveness==='active'?'最近核验可申请':'未确认'}${x.last_verified_at?'（'+fmt(x.last_verified_at)+'）':''}</div></div></div>`).join('')||'<div class="empty">当前无已复核样本</div>';
   }catch(e){if(request===signalsRequest)$('#signals-list').innerHTML='<div class="empty">加载失败：'+esc(e.message)+'</div>';}
+  loadSignalCandidates();
+}
+async function loadSignalCandidates(){
+ try{const d=await api('/api/admin/signals/candidates');const rows=d.items||[];$('#signal-review-queue').innerHTML=rows.map(x=>{let host='';try{host=new URL(x.url).hostname;}catch{}const canFetch=['www.gov.cn','www.miit.gov.cn','www.v2ex.com','www.bilibili.com','www.douyin.com','www.youtube.com'].includes(host);return `<article class="event" style="padding:12px 0;border-bottom:1px solid #e5eaf0"><b>${esc(x.title)}</b><div class="meta">${esc(x.source)} · ${esc(x.url)} · ${x.date_basis==='manual_submission'?'登记的发布时间（待核）':'搜索标注发布时间（待核）'}：${esc(x.published_at||'未知')} · ${esc(x.claim_status)}</div><p>${esc(x.content.slice(0,700))}</p><details><summary>查看证据与全文</summary><pre style="white-space:pre-wrap">${esc(x.content)}</pre><pre style="white-space:pre-wrap">${esc(JSON.stringify(x.evidence,null,2))}</pre></details><div class="toolbar">${canFetch?`<button type="button" onclick="fetchSignalSource('${esc(x.id)}')">获取批准来源原文</button>`:''}<input data-reviewer="${esc(x.id)}" placeholder="审核人" maxlength="80"><select data-decision="${esc(x.id)}"><option value="excluded">排除</option><option value="pending">保留待核验</option><option value="approved">批准公开（必须满足证据门禁）</option></select><label>AI关联范围<select data-ai-scope="${esc(x.id)}"><option value="ai_impact">AI影响线索（裁员/缩招/调整）</option><option value="ai_team">AI团队变化</option><option value="ai_role">AI岗位招聘</option><option value="ai_company_other">其他公司层面线索</option></select></label><label>事实性质<select data-claim-status="${esc(x.id)}"><option value="reported">来源报道，待交叉核实</option><option value="self_reported">作者自述</option><option value="official_announcement">官方公告</option><option value="implemented">实施有证据</option><option value="denied">已否认/更正</option><option value="rumor">传闻</option><option value="prediction">预测</option></select></label><label>AI因果判断<select data-ai-relation="${esc(x.id)}"><option value="unknown">未确认 AI 因果</option><option value="related_unconfirmed">AI相关，因果未证实</option><option value="explicit_ai">来源明确归因 AI（需原文摘录）</option></select></label><input data-ai-evidence="${esc(x.id)}" placeholder="明确归因时，摘录原文中的AI因果句"><label>原文发布时间 <input data-published="${esc(x.id)}" type="date"></label><label>事件发生日 <input data-event-date="${esc(x.id)}" type="date"></label><input data-date-evidence="${esc(x.id)}" placeholder="原文中发布时间原文摘录"><input data-geography-evidence="${esc(x.id)}" placeholder="原文中可证明中国大陆范围的摘录"><button type="button" onclick="submitSignalReview('${esc(x.id)}','${esc(x.content_sha256)}')">提交审核</button></div></article>`;}).join('')||'<div class="empty">当前没有待审候选</div>';$('#signal-review-status').textContent=`待审 ${rows.length} 条；来源仅按批准策略读取。社媒自述只有原文明确支持的中国大陆线索可公开，并按作者自述标记。`;
+ }catch(e){$('#signal-review-queue').innerHTML='<div class="empty">本地审核接口不可用：'+esc(e.message)+'</div>';}
+}
+async function submitSignalReview(id,hash){
+ const reviewer=document.querySelector(`[data-reviewer="${CSS.escape(id)}"]`).value.trim(),status=document.querySelector(`[data-decision="${CSS.escape(id)}"]`).value,published=document.querySelector(`[data-published="${CSS.escape(id)}"]`).value,excerpt=document.querySelector(`[data-date-evidence="${CSS.escape(id)}"]`).value,aiScope=document.querySelector(`[data-ai-scope="${CSS.escape(id)}"]`).value,claimStatus=document.querySelector(`[data-claim-status="${CSS.escape(id)}"]`).value,aiRelation=document.querySelector(`[data-ai-relation="${CSS.escape(id)}"]`).value,aiExcerpt=document.querySelector(`[data-ai-evidence="${CSS.escape(id)}"]`).value;
+ if(!reviewer){$('#signal-review-status').textContent='请填写审核人。';return;}
+ const row=(await api('/api/admin/signals/candidates')).items.find(x=>x.id===id);if(!row)return;
+ const start=excerpt?row.content.indexOf(excerpt):-1;
+ const geographyText=document.querySelector(`[data-geography-evidence="${CSS.escape(id)}"]`).value.trim(),gstart=geographyText?row.content.indexOf(geographyText):-1,aiStart=aiExcerpt?row.content.indexOf(aiExcerpt):-1;
+ if(aiRelation==='explicit_ai'&&aiStart<0){$('#signal-review-status').textContent='明确归因AI时，必须提供与原文完全一致的因果摘录。';return;}
+ const decision={id,expected_sha256:hash,review_status:status,reason:status==='excluded'?'人工审核排除':'人工审核记录',evidence_url:row.url,published_at:published||null,event_date:document.querySelector(`[data-event-date="${CSS.escape(id)}"]`).value||null,date_evidence:start>=0?{start,end:start+excerpt.length,text:excerpt}:null,geography_evidence:gstart>=0?{start:gstart,end:gstart+geographyText.length,text:geographyText}:null,ai_scope:aiScope,claim_status:claimStatus,ai_relation:aiRelation,ai_relation_evidence:aiRelation==='explicit_ai'?{start:aiStart,end:aiStart+aiExcerpt.length,text:aiExcerpt}:null};
+ try{await postJson('/api/admin/signals/review',{reviewer,decisions:[decision]});$('#signal-review-status').textContent='审核已保存，已记录审核人、时间、结论与原文哈希。';loadSignals();loadReport();}catch(e){$('#signal-review-status').textContent='未能提交：'+e.message;}
+}
+async function fetchSignalSource(id){
+ if(!confirm('将通过 DeepSeek Fetch 请求已批准的政府来源原文，最多 1 次请求，可能产生 API 费用。是否继续？'))return;
+ $('#signal-review-status').textContent='正在获取批准来源原文…';
+ try{const d=await postJson('/api/admin/signals/fetch',{id});$('#signal-review-status').textContent=`原文获取结束：${d.status}；${d.stdout||d.stderr||''}`;loadSignalCandidates();}catch(e){$('#signal-review-status').textContent='原文获取未完成：'+e.message;}
+}
+async function runSignalSearch(){
+ const entity=$('#signal-query-entity').value.trim();
+ const since=$('#signal-query-since').value,until=$('#signal-query-until').value;if(!since||!until||since>=until){$('#signal-query-status').textContent='搜索需填写有效开始与结束日期，结束日期不包含在请求窗口内。';return;}
+ const terms={layoff:'AI 人工智能 裁员 人员调整',shrink:'AI 人工智能 缩招 停招',reorg:'AI 自动化 组织调整 团队调整',hiring:'AI 自动化 招聘岗位减少 校招',programming:'AI 编程 软件开发 应届生 校招 岗位减少'};
+ $('#signal-search-run').disabled=true;$('#signal-query-status').textContent='正在进行限量搜索；候选不会自动批准。';
+ try{const d=await postJson('/api/admin/signals/search',{query:`${entity?entity+' ':''}${terms[$('#signal-query-topic').value]} 中国大陆`,since,until,limit:3});$('#signal-query-status').textContent=`搜索完成：${d.status}；${d.stdout||d.stderr||''}`;loadSignalCandidates();}catch(e){$('#signal-query-status').textContent='搜索未完成：'+e.message;}finally{$('#signal-search-run').disabled=false;}
+}
+function buildSignalQuery(){
+ const entity=$('#signal-query-entity').value.trim();
+ const topics={layoff:['AI','人工智能','裁员','人员调整','人员优化'],shrink:['AI','人工智能','缩招','停招','冻结招聘'],reorg:['AI','自动化','组织调整','团队调整','部门撤销'],hiring:['AI','自动化','招聘岗位减少','缩招','校招'],programming:['AI','编程岗位','软件开发','应届生','校招','岗位减少']};
+ const since=$('#signal-query-since').value,until=$('#signal-query-until').value;
+ if(since&&until&&since>until){$('#signal-query-status').textContent='结束日期不能早于开始日期。';return;}
+ const escaped=entity.replace(/"/g,' '),terms=topics[$('#signal-query-topic').value]||topics.layoff;
+ const dates=[since&&`开始日期 ${since}`,until&&`结束日期 ${until}`].filter(Boolean);
+ $('#signal-query-output').value=`${escaped?`"${escaped}" `:''}(${terms.map(x=>'"'+x+'"').join(' OR ')}) 中国大陆 ${dates.join(' ')}`.trim();
+ $('#signal-query-copy').disabled=false;
+ $('#signal-query-status').textContent='检索式已生成。请粘贴到获准来源手动检索；结果仍是线索，需回到原文核对。';
+}
+async function copySignalQuery(){
+ const value=$('#signal-query-output').value;
+ if(!value)return;
+ try{await navigator.clipboard.writeText(value);$('#signal-query-status').textContent='检索式已复制；页面没有向搜索平台发送请求。';}
+ catch{$('#signal-query-output').focus();$('#signal-query-output').select();$('#signal-query-status').textContent='浏览器未允许剪贴板访问，请手动复制选中的检索式。';}
+}
+async function downloadSignalDraft(event){
+ event.preventDefault();
+ const form=event.currentTarget;
+ if(!form.reportValidity())return;
+ const values=Object.fromEntries(new FormData(form).entries());
+ let sourceUrl;
+ try{sourceUrl=new URL(values.source_url);if(!['http:','https:'].includes(sourceUrl.protocol))throw new Error();}
+ catch{$('#signal-draft-status').textContent='原文链接必须是 HTTP 或 HTTPS 网页地址。';return;}
+ try{const result=await postJson('/api/admin/signals/intake',{entity:values.entity.trim(),event_type:values.event_type,title:values.title.trim(),source_name:values.source_name.trim()||sourceUrl.hostname,source_url:sourceUrl.href,published_at:values.published_at||null,event_date:values.event_date||null,content:values.claim.trim(),geography_evidence:values.geography_evidence.trim()||null,reviewer:values.reviewer.trim()});$('#signal-draft-status').textContent=`已登记待核验候选 ${result.id}；采集时间 ${fmt(result.received_at)}，来源尚未核实。`;form.reset();loadSignalCandidates();}
+ catch(e){$('#signal-draft-status').textContent='登记失败：'+e.message;}
+}
+function renderReportSection(id, entries){
+  const target=$('#'+id);
+  target.innerHTML='<div class="report-kv">'+entries.map(([label,value])=>`<div><b>${esc(value??'?')}</b>${esc(label)}</div>`).join('')+'</div>';
+}
+function renderReportEvents(data, reviewed){
+ const labels=data.event_ai_relation_labels||{explicit_ai:'来源明确归因 AI',related_unconfirmed:'AI 相关，因果未证实',unknown:'未确认 AI 因果'};
+ const statusLabels={announced:'官方已公告',implemented:'实施有证据',reported:'媒体报道待交叉核实',response_reported:'公司回应（媒体引述）',pending:'待核实线索',denied:'已否认/更正'};
+ const typeLabels={layoff:'裁员',shrink:'缩招',freeze:'停招',reorg:'组织调整',hiring:'招聘岗位变化'};
+ const eventCards=(data.event_items||[]).map(e=>`<article class="event-card"><span class="badge ${e.status==='announced'?'trusted':'pending'}">${esc(statusLabels[e.status]||e.status)}</span> <span class="badge none">${esc(typeLabels[e.event_type]||e.event_type)}</span><h4>${esc(e.title)}</h4><div class="event-meta">${esc(e.company)} · ${fmt(e.event_date)} · AI因果：${esc(labels[e.ai_relation]||e.ai_relation||labels.unknown)}</div><p>${esc(e.summary||'')}</p><details><summary>查看来源和待核事项</summary><p>${esc(e.unresolved||'')}</p>${(e.ai_relation_evidence?[{name:'AI因果原文',evidence:e.ai_relation_evidence}]:[]).concat(e.sources||[]).map(s=>`<p>${s.url?`<a href="${signalUrl(s.url)}" target="_blank" rel="noreferrer">${esc(s.name||'来源')}</a>`:esc(s.name||'来源')} · ${fmt(s.published_at)}<br>${esc(s.evidence||'')}</p>`).join('')}</details></article>`);
+ const signalCards=(reviewed.items||[]).map(s=>`<article class="event-card"><span class="badge trusted">已复核线索</span> <span class="badge none">${esc(s.tag||'就业线索')}</span><h4><a href="${signalUrl(s.url)}" target="_blank" rel="noreferrer">${esc(s.title)}</a></h4><div class="event-meta">${esc(s.source)} · ${fmt(s.event_date||s.published_at)} · ${s.claim_status==='self_reported'?'作者自述':s.claim_status==='official_announcement'?'官方公告':s.claim_status==='implemented'?'实施有证据':'来源报道'} · AI范围：${esc(s.ai_scope||'待确认')} · AI因果：${esc(labels[s.ai_relation]||labels.unknown)}</div>${s.ai_relation==='explicit_ai'&&s.ai_relation_evidence?.text?`<p><b>AI因果原文：</b>${esc(s.ai_relation_evidence.text)}</p>`:''}<p>${esc(s.summary||'')}</p>${s.analysis_note?`<p class="meta">${esc(s.analysis_note)}</p>`:''}</article>`);
+ const cards=eventCards.concat(signalCards);
+ $('#report-events').innerHTML=(cards.join('')||`<div class="empty">当前筛选内没有已复核事件或线索；这不代表没有发生。待核候选 ${esc(data.signal_candidates??0)} 条。</div>`)+(reviewed.items?.length>=50?'<p class="meta">已复核线索列表最多展示50条，完整总数见来源覆盖区。</p>':'');
+}
+function renderProgrammingTrend(trend){
+ if(!trend){$('#report-trends').textContent='尚无趋势数据。';return;}
+ const current=trend.recent||{},previous=trend.previous||{},change=trend.change||{};
+ const changeText=Number.isFinite(change.percent)?`${change.percent>0?'+':''}${change.percent}%`:'基线不足，暂不可比较';
+ const comparison=trend.status==='limited_coverage'?`覆盖有限：${changeText}`:changeText;
+ renderReportSection('report-trends',[
+  [`近${trend.window_days||30}天编程类岗位记录`,current.programming_records??0],
+  ['其中应届 / 初级记录',current.entry_level_records??0],
+  ['明确应届 / 初级占比',current.entry_level_share_percent==null?'未知':`${current.entry_level_share_percent}%`],
+  ['较前一窗口变化',comparison],
+  ['其中 AI 相关岗位',current.ai_related_records??0],
+  ['经验要求未知',current.experience_unknown_records??0],
+  ['近期覆盖单位 / 来源',`${current.companies??0} / ${current.sources??0}`],
+  ['前期覆盖单位 / 来源',`${previous.companies??0} / ${previous.sources??0}`],
+ ]);
+ const range=`近期 ${current.since||'?'} 至 ${current.until_exclusive||'?'}（结束日不含）；前期 ${previous.since||'?'} 至 ${previous.until_exclusive||'?'}（结束日不含）。`;
+ $('#report-trends').insertAdjacentHTML('beforeend',`<p class="meta">${esc(range)}${esc(trend.note||'')}</p>`);
 }
 async function loadReport(){
- const request=++reportRequest;$('#report-body').innerHTML='<p role="status" class="empty">正在生成摘要…</p>';
- try{const d=await api('/api/report?'+filterParams());if(request!==reportRequest)return;
- $('#report-body').innerHTML=`<p class="meta">数据生成：${fmt(d.generated_at)} · 首次入库自 ${esc(d.window_since||curSince())} 起 · ${esc(filterDescription())}</p><div class="report-cards"><div><b>${d.today_new??'—'}</b><span>今日首次入库</span></div><div><b>${d.total}</b><span>当前筛选岗位</span></div><div><b>${d.companies}</b><span>当前覆盖企业</span></div></div><h3>本次数据摘要</h3><p>AI 研发 ${d.build} 条，AI 支撑 ${d.adjacent} 条；已复核就业线索 ${d.signals} 条，待核验线索 ${d.signal_candidates||0} 条。</p><p>今日新增只表示当前筛选内首次入库，不能据此推断企业当天新增招聘。</p><details><summary>核查范围与累计数据</summary><p>最近 HTTP 2xx ${d.verified} 条，其他/未核验 ${d.pending} 条；链接可访问不等于当前在招。</p><p>库内累计排除非 AI ${d.excluded||0} 条，合并重复 ${d.merged||0} 条。</p><p class="meta">${esc(d.note)}</p></details>`;
- }catch(e){if(request===reportRequest)$('#report-body').innerHTML='<p role="alert">日报加载失败：'+esc(e.message)+'</p>';}
+ const request=++reportRequest;
+ $('#report-body').innerHTML='<p role="status" class="empty">正在读取现有日报统计…</p>';
+ try{
+  const p=filterParams();if(p.get('since')==='all')p.delete('since');if($('#report-since').value)p.set('since',$('#report-since').value);if($('#report-until').value){const end=new Date($('#report-until').value+'T00:00:00Z');end.setUTCDate(end.getUTCDate()+1);p.set('until',end.toISOString().slice(0,10));}const signalParams=new URLSearchParams(p);signalParams.set('review','approved');signalParams.set('limit','50');const [d,reviewed]=await Promise.all([api('/api/report?'+p),api('/api/signals?'+signalParams)]);
+  if(request!==reportRequest)return;
+  const scope=d.window_since?`首次入库自 ${d.window_since} 起`:'服务端未提供统计起始时间';
+  $('#report-body').innerHTML=`<p class="meta">数据生成：${esc(fmt(d.generated_at))} · ${esc(scope)} · ${esc(filterDescription())}</p>`;
+  renderReportEvents(d,reviewed);
+  renderProgrammingTrend(d.programming_trend);
+  renderReportSection('report-coverage',[['已复核线索',d.signals??reviewed.items?.length??0],['待审候选',d.signal_candidates??0],['事件台账',d.events??0],['来源运行状态',d.signal_source_status??'未运行/未接入']]);
+  $('#report-coverage').insertAdjacentHTML('beforeend',`<p class="meta">${esc(d.signal_note||'无来源覆盖说明。')} ${esc(d.note||'')}</p>`);
+ }catch(e){if(request===reportRequest){$('#report-body').innerHTML='<p role="alert">日报加载失败：'+esc(e.message)+'</p>';$('#report-events').textContent='统计不可用';$('#report-trends').textContent='统计不可用';$('#report-coverage').textContent='统计不可用';}}
 }
 
 async function loadSources(){
@@ -369,7 +553,7 @@ async function init(){
 // Filters remain in the jobs panel.
 $('#job-filters').classList.add('panel');
 $('#apply-filters').onclick=refreshJobs;
-$('#reset-filters').onclick=()=>{restoreFilters(new URLSearchParams('since=all'));refreshJobs();};
+$('#reset-filters').onclick=()=>{restoreFilters(new URLSearchParams('since=all'));if($('#advanced-filters'))$('#advanced-filters').open=false;refreshJobs();};
 $('#city-all').onclick=()=>{document.querySelectorAll('input[name="city"]').forEach(x=>x.checked=false);$('#f-city-text').value='';refreshJobs();};
 document.querySelectorAll('input[name="city"],#f-status,#f-since,#f-until,#f-ai,#f-level,#f-role,#f-employment,#f-company').forEach(s=>s.onchange=refreshJobs);
 ['#f-city-text','#f-education-text','#f-experience-text'].forEach(id=>{$(id).onchange=refreshJobs;$(id).onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();refreshJobs();}};});
@@ -381,13 +565,33 @@ window.addEventListener('popstate',()=>{closeDrawer();const p=new URLSearchParam
 
 async function startApp(){
   if(initInFlight)return;initInFlight=true;
-  $('#app-status').hidden=false;$('#app-status-text').textContent='正在加载岗位列表；完整详情将在打开岗位时读取。';$('#app-retry').hidden=true;
+  const initialParams=new URLSearchParams(location.search);
+  const initialView=initialParams.get('view')||(initialParams.size?'jobs':'dashboard');
+  showView(initialView,false);
+  $('#app-status').hidden=false;$('#app-status-text').textContent='正在加载数据；完整详情将在打开岗位时读取。';$('#app-retry').hidden=true;
   try{await init();$('#app-status').hidden=true;}
-  catch(error){$('#app-status-text').textContent='暂时无法加载岗位列表：'+error.message+'。可以保留当前筛选并重试。';$('#app-retry').hidden=false;}
+  catch(error){$('#app-status-text').textContent='暂时无法加载数据：'+error.message+'。可以保留当前筛选并重试。';$('#app-retry').hidden=false;}
   finally{initInFlight=false;}
 }
 $('#app-retry').onclick=startApp;
+function setDefaultSignalWindow(){
+ const fields=['#signal-query-since','#signal-query-until'].map(s=>$(s));
+ if(fields.every(field=>!field.value)){
+  const parts=Object.fromEntries(new Intl.DateTimeFormat('en-US',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date()).map(x=>[x.type,x.value]));
+  const today=`${parts.year}-${parts.month}-${parts.day}`,start=new Date(`${today}T00:00:00Z`),end=new Date(`${today}T00:00:00Z`);
+  start.setUTCDate(start.getUTCDate()-29);end.setUTCDate(end.getUTCDate()+1);
+  fields[0].value=start.toISOString().slice(0,10);fields[1].value=end.toISOString().slice(0,10);
+ }
+}
+setDefaultSignalWindow();
 startApp();
+$('#report-refresh').onclick=loadReport;
+$('#report-apply').onclick=loadReport;
+$('#signal-query-build').onclick=buildSignalQuery;
+$('#signal-query-copy').onclick=copySignalQuery;
+$('#signal-search-run').onclick=()=>{if(confirm('将通过 DeepSeek Search 发起一次最多 3 条结果的搜索请求；可能产生 API 费用。是否继续？'))runSignalSearch();};
+$('#report-since').onchange=loadReport;$('#report-until').onchange=loadReport;
+$('#signal-draft-form').onsubmit=downloadSignalDraft;
 $('#event-apply').onclick=loadEmploymentEvents;
 document.querySelectorAll('#event-region,#event-type,#event-status').forEach(s=>s.onchange=loadEmploymentEvents);
 </script>

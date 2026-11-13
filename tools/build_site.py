@@ -45,6 +45,27 @@ def split_details(payload):
     return index, artifacts
 
 
+def verify_audit_evidence(con):
+    """Enforce exact row-level audit evidence linkage; block unverified approved signals."""
+    tables = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    if 'discovery_documents' in tables:
+        # Check if any approved document lacks corresponding discovery_reviews record with matching content_sha256
+        unreviewed = con.execute("""
+            SELECT count(*) FROM discovery_documents d
+            WHERE d.review_status='approved'
+              AND NOT EXISTS (
+                SELECT 1 FROM discovery_reviews r
+                WHERE r.document_id = d.id
+                  AND r.content_sha256 = d.content_sha256
+              )
+        """).fetchone()[0]
+        if unreviewed > 0:
+            raise ValueError(
+                f"Pre-Deploy Audit Gate failed: {unreviewed} documents marked 'approved' lack matching discovery_reviews audit evidence. "
+                "Unaudited signals cannot be published."
+            )
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--limit', type=int, default=3, help='Maximum build groups: page, script, data bundles; start with 3. No collection.')
@@ -66,6 +87,7 @@ def main():
     html = html.replace(marker, '<script>\n' + js.decode('utf-8') + '\n</script>', 1)
     con = connect()
     try:
+        verify_audit_evidence(con)
         payload = build(con)
     finally:
         con.close()

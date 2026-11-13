@@ -34,8 +34,9 @@ from tools.ai_lexicon import classify  # noqa: E402
 from tools.job_geography import is_domestic_only  # noqa: E402
 from tools.job_fields import ensure_columns as ensure_source_columns, save_source_fields
 from tools.job_details import department_name
-from tools.request_policy import RequestBudget, DEFAULT_BUDGET
+from tools.request_policy import RequestBudget, DEFAULT_BUDGET, SourceBlocked
 from tools.ingestion_contract import standard_fields, validate_record, begin_batch, finish_batch, abort_batch, record_external_failure
+from tools.collection_cursor import prepare_page, commit_checkpoint
 from tools.source_runs import start_run, finish_run
 
 API = "https://zhaopin.meituan.com/api/official/job/getJobList"
@@ -216,6 +217,11 @@ def main():
     parser.add_argument('--ai-only', action='store_true')
     parser.add_argument('--json-out', default='')
     parser.add_argument('--dry-run', action='store_true')
+    parser.add_argument('--max-requests', type=int, default=3)
+    parser.add_argument('--authorization-limit', type=int, default=9)
+    parser.add_argument('--source-limit', type=int, default=200)
+    parser.add_argument('--cursor-file', default=str(ROOT / '.collection-cursors.json'))
+    parser.add_argument('--refresh', action='store_true', help='Explicitly rescan page one; do not advance discovery cursor')
     args = parser.parse_args()
     if not 1 <= args.limit <= 15 or not 1 <= args.page_size <= 15:
         parser.error('limit and page-size must be 1..15; start with --limit 3')
@@ -224,7 +230,7 @@ def main():
     keywords = [x.strip() for x in args.keywords.split(',') if x.strip()] or ['']
     con = None
     batch = None
-    budget = RequestBudget()
+    budget = RequestBudget(limit=args.max_requests, authorization_limit=args.authorization_limit, source_limit=args.source_limit)
     run_id = None
     request_start = budget.requests
     if not args.dry_run:
@@ -234,22 +240,23 @@ def main():
     try:
         staged=[]
         seen_ids = set()
-        for keyword in keywords[:15]:
-            if stats['seen'] >= args.limit:
-                break
-            data = fetch(1, min(args.page_size, args.limit - stats['seen']), keyword, budget=budget)
-            for item in (data.get('list') or [])[:args.limit - stats['seen']]:
-                ext = str(item.get('jobUnionId') or '')
-                if ext in seen_ids:
+        staged_raw, checkpoint, cursor_info = prepare_page(
+            args.cursor_file, 'official:meituan', keywords, {'cities': DEFAULT_MAINLAND_CITIES}, args.page_size, args.limit,
+            lambda kw, page, size: fetch(page, size, kw, budget=budget).get('list') or [], refresh=args.refresh)
+        stats['cursor'] = cursor_info
+        for item, observed_at in staged_raw:
+            ext = str(item.get('jobUnionId') or '')
+            if not ext or ext in seen_ids:
+                continue
+            seen_ids.add(ext)
+            stats['seen'] += 1
+            if args.ai_only:
+                desc = '\n'.join(x for x in (item.get('jobDuty'), item.get('jobRequirement')) if x)
+                if standard_fields(item.get('name') or '', desc, department_name(item.get('department')) or '')['ai_relevance'] == 'none':
+                    stats['skipped_non_ai'] = stats.get('skipped_non_ai', 0) + 1
                     continue
-                seen_ids.add(ext)
-                stats['seen'] += 1
-                if args.ai_only:
-                    desc = '\n'.join(x for x in (item.get('jobDuty'), item.get('jobRequirement')) if x)
-                    if standard_fields(item.get('name') or '', desc, department_name(item.get('department')) or '')['ai_relevance'] == 'none':
-                        stats['skipped_non_ai'] = stats.get('skipped_non_ai', 0) + 1
-                        continue
-                staged.append((item,now()))
+            staged.append((item, observed_at))
+
         if not args.dry_run:
             con=sqlite3.connect('file:'+Path(args.db).resolve().as_posix()+'?mode=rw',uri=True)
             con.row_factory=sqlite3.Row
@@ -267,6 +274,13 @@ def main():
             batch['request_events'] = budget.events
             stats['batch'] = finish_batch(con, batch)
             con.commit()
+            try:
+                commit_checkpoint(checkpoint)
+            except (ValueError, OSError) as cursor_error:
+                stats['cursor_error'] = str(cursor_error)
+                stats['cursor_committed'] = False
+            else:
+                stats['cursor_committed'] = True
         if run_id:
             finish_run(args.db, run_id, 'succeeded', request_count=budget.requests-request_start,
                        records_seen=stats['seen'], records_added=stats['added'],
@@ -285,6 +299,8 @@ def main():
             except ValueError:
                 pass
         stats['errors'].append(type(exc).__name__)
+        stats['status'] = 'blocked' if isinstance(exc, SourceBlocked) or getattr(exc, 'code', None) in (401, 403, 429) else 'failed'
+        stats['error_message'] = str(exc)
         stats['rolled_back'] = bool(con)
     finally:
         if con:

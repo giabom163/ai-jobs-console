@@ -54,23 +54,33 @@ def extract_deepseek_identity(url: str) -> str:
 
 
 def parse_deepseek_text(raw_text: str):
-    """解析 Moka 页面抓取的纯文本，提取职位、城市、部门和职责。"""
+    """解析 Moka 页面抓取的纯文本，提取职位、城市、部门和职责。
+
+    安全边界 (R5):
+      1) 严禁从任意正文中随机挑选单个城市名替代整段地点；
+      2) 仅识别带有明确地点标签的行，并完整提取该行原文，绝不将混合地点裁剪为单一国内城市；
+      3) 若无明确地点字段，保持 location 为空，交由 downstream is_domestic_only 门禁拒绝，不得脑补。
+    """
     lines = [line.strip() for line in raw_text.splitlines() if line.strip()]
     if not lines:
         return {}
 
     title = lines[0]
-    location = "杭州市"  # 默认总部
+    location = ""
     dept = "AI核心研发"
     desc_lines = []
 
+    loc_prefix_re = re.compile(r"^(?:工作地点|地点|工作城市|工作地|base|job location)[\s:：]+(.+)$", re.IGNORECASE)
+
     for line in lines[1:]:
-        if any(c in line for c in ["杭州", "北京", "上海", "深圳"]):
-            for loc in ["杭州市", "北京市", "上海市", "深圳市"]:
-                if loc[:2] in line:
-                    location = loc
-                    break
-        elif any(kw in line for kw in ["职责", "要求", "加分项", "团队使命", "1.", "2.", "3."]):
+        m_loc = loc_prefix_re.match(line)
+        if m_loc:
+            # 完整保留字段原文，交给共享地理分类器进行 mixed/foreign 识别 (R5)
+            field_location = m_loc.group(1).strip()
+            location = f"{location} / {field_location}" if location else field_location
+            continue
+
+        if any(kw in line for kw in ["职责", "要求", "加分项", "团队使命", "1.", "2.", "3."]):
             desc_lines.append(line)
 
     description = "\n".join(desc_lines) if desc_lines else raw_text[:2000]
@@ -136,7 +146,7 @@ def upsert(con, item_data, cid, observed_at=None):
             "ai_relevance,ai_confidence,ai_reason,first_seen,last_seen,status,url,content_hash,"
             "posted_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,'verification_pending',?,?,?,?)",
             (jid, "official:deepseek", ext, cid, title, location, desc[:20000], tier, conf,
-             reason, observed_at, observed_at, url, content_hash, observed_at, observed_at),
+             reason, observed_at, observed_at, url, content_hash, None, None),
         )
         con.execute(
             "INSERT INTO job_changes(job_id,change_type,changed_at,new_hash,note) VALUES(?,?,?,?,?)",
@@ -155,8 +165,8 @@ def upsert(con, item_data, cid, observed_at=None):
     )
     save_source_fields(
         con, jid,
-        published=observed_at,
-        updated=observed_at,
+        published=None,
+        updated=None,
         department=dept,
         source_status="listed",
         checked_at=observed_at,

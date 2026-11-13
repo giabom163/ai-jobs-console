@@ -84,7 +84,7 @@ def _initialize(con):
     from .job_fields import ensure_columns
     ensure_columns(con)
     have = {row[1] for row in con.execute('PRAGMA table_info(jobs)')}
-    for name in ('scored_at', 'presence_status', 'presence_checked_at', 'source_response_sha256'):
+    for name in ('scored_at', 'presence_status', 'presence_checked_at', 'source_response_sha256', 'salary_evidence_json', 'date_evidence_json'):
         if name not in have:
             con.execute('ALTER TABLE jobs ADD COLUMN ' + name + ' TEXT')
     con.execute("""CREATE TABLE IF NOT EXISTS ingestion_batches (
@@ -92,6 +92,7 @@ def _initialize(con):
         completed_at TEXT NOT NULL, input_sha256 TEXT, accounting_json TEXT NOT NULL)""")
     con.execute('CREATE TABLE IF NOT EXISTS schema_migrations(version TEXT PRIMARY KEY, applied_at TEXT NOT NULL)')
     con.execute('INSERT OR IGNORE INTO schema_migrations VALUES(?,?)', ('fix12-contract-v1', datetime.now(timezone.utc).isoformat()))
+    con.execute('INSERT OR IGNORE INTO schema_migrations VALUES(?,?)', ('salary-evidence-v1', datetime.now(timezone.utc).isoformat()))
     document_schema=Path(__file__).resolve().parent.parent/'schema'/'deepseek_discovery.sql'
     statement=''
     for line in document_schema.read_text(encoding='utf8').splitlines(True):
@@ -103,7 +104,7 @@ def _initialize(con):
     con.execute('INSERT OR IGNORE INTO schema_migrations VALUES(?,?)',('source-run-ledger-v1',datetime.now(timezone.utc).isoformat()))
 
 
-def begin_batch(con, origin, input_sha256=None, existing_backup=None):
+def begin_batch(con, origin, input_sha256=None, existing_backup=None, extra_migration=None):
     if con.in_transaction:
         raise ValueError('begin batch before writing source records')
     batch = dict(batch_id='batch-' + uuid4().hex, origin=origin,
@@ -127,6 +128,8 @@ def begin_batch(con, origin, input_sha256=None, existing_backup=None):
         con.execute('PRAGMA foreign_keys=ON')
         con.execute('BEGIN IMMEDIATE')
         _initialize(con)
+        if extra_migration is not None:
+            extra_migration(con)
         con.commit()
         con.execute('BEGIN IMMEDIATE')
         batch['before'] = _rows(con)

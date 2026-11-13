@@ -66,7 +66,19 @@ SHIM = """
       var cap = Math.min(200,Math.max(1,parseInt(p.get('limit') || '50',10)||50));
       return resp({items:items.slice(0,cap),storage:d.signal_storage||{storage_status:'unknown',note:'旧版本未提供存储状态。'},note:review==='pending'?'待核验原文仅供本地复核，不随公开站导出。':null});
     }
-    if (url.pathname === '/api/report') return resp(Object.assign({}, d.report, {total:stats.ai_total,intern:stats.intern,regular:stats.regular,unknown:stats.unknown,other_employment:stats.other_employment,build:stats.build,adjacent:stats.adjacent,verified:stats.verified,pending:stats.ai_total-stats.verified,companies:stats.companies,top_companies:stats.top_companies.slice(0,5),window_since:jobSince,date_basis:'first_seen',today_new:localDates?stats.today_new:null, signals:(d.signals||[]).filter(function(x){return x.review_status === 'approved';}).length, signal_candidates:(d.signal_candidates||[]).length, note:timeWarning+' 按首次发现时间筛选；发布时间未知保持空值。链接可读不代表当前可投递。'}));
+    if (url.pathname === '/api/report') {
+      var reportEvents = [];
+      try {
+        var reportEventParams = new URLSearchParams(url.searchParams);
+        var reportUntil = reportEventParams.get('until');
+        if (reportUntil && /^\\d{4}-\\d{2}-\\d{2}$/.test(reportUntil)) {
+          var reportEnd = new Date(reportUntil+'T00:00:00Z'); reportEnd.setUTCDate(reportEnd.getUTCDate()-1);
+          reportEventParams.set('until', reportEnd.toISOString().slice(0,10));
+        }
+        reportEvents = EventCatalog.select((d.employment_events||{}).events||[], reportEventParams);
+      } catch(error) { return new Response(JSON.stringify({error:error.message}),{status:400}); }
+      return resp(Object.assign({}, d.report, {total:stats.ai_total,intern:stats.intern,regular:stats.regular,unknown:stats.unknown,other_employment:stats.other_employment,build:stats.build,adjacent:stats.adjacent,verified:stats.verified,pending:stats.ai_total-stats.verified,companies:stats.companies,top_companies:stats.top_companies.slice(0,5),window_since:jobSince,date_basis:'first_seen',today_new:localDates?stats.today_new:null, signals:Number.isInteger(d.report.signals)?d.report.signals:(d.signals||[]).filter(function(x){return x.review_status === 'approved';}).length, signal_candidates:Number.isInteger(d.report.signal_candidates)?d.report.signal_candidates:(d.signal_storage||{}).pending_count||0, events:reportEvents.length, event_items:reportEvents, event_ai_relation_labels:{explicit_ai:'来源明确归因 AI',related_unconfirmed:'AI 相关，因果未证实',unknown:'未确认 AI 因果'}, programming_trend:d.report.programming_trend||{status:'insufficient_baseline',note:'请重新构建静态数据以生成编程岗位趋势。'}, note:[timeWarning,d.report.note,(d.report.quality_notes||[]).join(' '),'按首次发现时间筛选岗位；线索总数按导出时全部已复核样本统计，不随岗位筛选变化；链接可读不代表当前可投递。'].filter(Boolean).join(' ')}));
+    }
     if (url.pathname === '/api/jobs') {
       var p = url.searchParams;
       var status = p.get('status') || 'listed';

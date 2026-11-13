@@ -17,6 +17,9 @@ SOURCE_KEYS={
  'app.mokahr.com':('official:deepseek',None),
  'careers.tencent.com':('official:tencent','postId'),
  'career.huawei.com':('official:huawei','advertisementId'),
+ 'vrfi1sk8a0.jobs.feishu.cn':('official:minimax',None),
+ 'cq6qe6bvfr6.jobs.feishu.cn':('official:baichuan',None),
+ 'modelbest.jobs.feishu.cn':('official:modelbest',None),
  'jobs.bilibili.com':('official:bilibili',None),
  'talent.alibaba.com':('official:alibaba','positionId'),
  'www.liepin.com':('platform:liepin',None),'m.liepin.com':('platform:liepin',None),
@@ -42,10 +45,17 @@ def identity(url):
   if not match: raise ValueError('unregistered Boss detail path')
   return source,match[1]
  if u.hostname=='app.mokahr.com':
-  # This exact tenant is linked by talent.deepseek.com; other Moka tenants
-  # must never inherit DeepSeek's identity.
+  # Match only the official tenants whose company sites link to them. Other
+  # Moka tenants must never inherit another company's identity.
   match=re.fullmatch(r'/job/([0-9a-f-]{36})',u.fragment)
-  if u.path!='/social-recruitment/high-flyer/140576' or not match:
+  tenant_sources={
+   '/social-recruitment/high-flyer/140576':'official:deepseek',
+   '/apply/moonshot/148506':'official:moonshot',
+   '/social-recruitment/step/94904':'official:stepfun',
+   '/campus-recruitment/step/94905':'official:stepfun',
+  }
+  source=tenant_sources.get(u.path)
+  if not source or not match:
    raise ValueError('unregistered Moka tenant or missing concrete job ID')
   return source,match[1]
  ext=(params.get(key) or params.get('jobId') or [None])[0] if key else None

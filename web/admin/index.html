@@ -37,7 +37,7 @@
     header h1 { font-size: 20px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
     header a { color: var(--primary); text-decoration: none; font-size: 14px; font-weight: 500; }
     header a:hover { text-decoration: underline; }
-    
+
     .stats-grid {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
@@ -112,7 +112,7 @@
     }
 
     h2 { font-size: 16px; font-weight: 600; margin-bottom: 12px; display: flex; align-items: center; justify-content: space-between; }
-    
+
     table { width: 100%; border-collapse: collapse; font-size: 13px; }
     th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--border); }
     th { color: var(--text-muted); font-weight: 500; }
@@ -159,19 +159,75 @@
         <div class="value" id="stat-review-jobs" style="color: var(--warning);">--</div>
       </div>
       <div class="card">
-        <div class="title">调度配额使用</div>
-        <div class="value" id="stat-sched-usage">--</div>
+        <div class="title">共享调度账本 (Round Quota)</div>
+        <div class="value" id="stat-sched-usage" style="font-size: 20px;">--</div>
+        <div style="font-size: 11px; color: var(--text-muted); margin-top: 4px;" id="stat-sched-detail">--</div>
       </div>
+      <div class="card">
+        <div class="title">物理备份健康度</div>
+        <div class="value" id="stat-backups" style="font-size: 16px;">--</div>
+      </div>
+    </div>
+
+    <div class="actions-bar" style="background:#1e293b; border:1px solid #334155; padding:12px 18px; border-radius:8px; display:flex; align-items:center; gap:12px; margin-bottom:16px;">
+      <span style="font-weight:600; color:#f8fafc; display:flex; align-items:center; gap:6px;">⏱️ 常驻自动巡检调度 (Daemon):</span>
+      <span id="daemon-status-badge" style="padding:3px 10px; border-radius:12px; font-size:12px; background:#334155; color:#94a3b8;">⚪ 已停止</span>
+      <label style="font-size:13px; color:#94a3b8; margin-left:8px;">巡检周期:</label>
+      <select id="daemon-interval-select" style="background:#0f172a; color:#f8fafc; border:1px solid #475569; padding:4px 8px; border-radius:4px; font-size:13px;">
+        <option value="15">每 15 分钟</option>
+        <option value="30" selected>每 30 分钟 (推荐)</option>
+        <option value="60">每 60 分钟 (1小时)</option>
+        <option value="120">每 120 分钟 (2小时)</option>
+      </select>
+      <button id="btn-daemon-start" class="btn" style="padding:6px 14px; font-size:13px; background:#059669;" onclick="startDaemon()">
+        <span>▶</span> 开启常驻定时巡检
+      </button>
+      <button id="btn-daemon-stop" class="btn btn-secondary" style="padding:6px 14px; font-size:13px; background:#dc2626; color:#fff;" onclick="stopDaemon()">
+        <span>⏹</span> 停止巡检
+      </button>
+      <label style="font-size:13px; color:#cbd5e1; margin-left:6px; display:inline-flex; align-items:center; gap:4px; cursor:pointer;">
+        <input type="checkbox" id="daemon-offline-check"> 离线演练(零外网请求)
+      </label>
+      <span id="daemon-tip" style="font-size:12px; color:var(--text-muted); margin-left:auto;"></span>
     </div>
 
     <div class="actions-bar">
       <button id="btn-trigger" class="btn" onclick="triggerPipeline()">
         <span>▶</span> 立即运行一轮全量自动化管道
       </button>
+      <label style="font-size:13px; color:#cbd5e1; margin-left:8px; display:inline-flex; align-items:center; gap:4px; cursor:pointer;">
+        <input type="checkbox" id="pipeline-offline-check"> 离线演练(零外网请求)
+      </label>
       <button class="btn btn-secondary" onclick="fetchStatus()">
         <span>🔄</span> 刷新监控数据
       </button>
+      <button class="btn btn-secondary" onclick="pruneBackups()" style="background: #334155;">
+        <span>🧾</span> 预览超期备份候选
+      </button>
       <span id="action-tip" style="font-size: 13px; color: var(--text-muted); margin-left: auto;"></span>
+    </div>
+
+    <!-- 真实调度账本、来源配额与游标状态监控板 (契约 3/4) -->
+    <div class="card" style="margin-bottom: 24px;">
+      <h2><span>📊 调度账本配额、来源分配与扫描游标 (Shared Scheduler & Cursors)</span></h2>
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; margin-top: 12px;">
+        <div style="background: rgba(15,23,42,0.6); padding: 12px; border-radius: 6px; border: 1px solid var(--border);">
+          <div style="font-size: 12px; color: var(--text-muted); font-weight: 600;">当前轮次与账本配额</div>
+          <div style="font-size: 13px; margin-top: 6px;" id="panel-round-info">加载中...</div>
+        </div>
+        <div style="background: rgba(15,23,42,0.6); padding: 12px; border-radius: 6px; border: 1px solid var(--border);">
+          <div style="font-size: 12px; color: var(--text-muted); font-weight: 600;">各来源配额与用量</div>
+          <div style="font-size: 13px; margin-top: 6px;" id="panel-source-alloc">加载中...</div>
+        </div>
+        <div style="background: rgba(15,23,42,0.6); padding: 12px; border-radius: 6px; border: 1px solid var(--border);">
+          <div style="font-size: 12px; color: var(--text-muted); font-weight: 600;">持久扫描游标 (Collection Cursors)</div>
+          <div style="font-size: 13px; margin-top: 6px;" id="panel-cursor-info">加载中...</div>
+        </div>
+        <div style="background: rgba(15,23,42,0.6); padding: 12px; border-radius: 6px; border: 1px solid var(--border);">
+          <div style="font-size: 12px; color: var(--text-muted); font-weight: 600;">最近计划运行结果 (Last Plan Outcome)</div>
+          <div style="font-size: 13px; margin-top: 6px;" id="panel-plan-outcome">加载中...</div>
+        </div>
+      </div>
     </div>
 
     <div class="layout-grid">
@@ -201,6 +257,120 @@
         </div>
       </div>
     </div>
+
+    <div class="card" style="margin-top: 24px;">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; flex-wrap: wrap; gap: 10px;">
+        <h2>🎯 候选大模型岗位快审放行工作台 (Review Station)</h2>
+        <!-- Tab 切换组 -->
+        <div style="display: flex; gap: 4px; background: rgba(15, 23, 42, 0.8); border: 1px solid var(--border); border-radius: 6px; padding: 3px;">
+          <button id="tab-btn-review" class="tab-btn active" style="padding: 4px 12px; font-size: 12px; border: none; border-radius: 4px; cursor: pointer; background: var(--primary); color: #fff; font-weight: 600;" onclick="switchReviewTab('review')">
+            ⏳ 待审候选队列 (<span id="tab-count-review">0</span>)
+          </button>
+          <button id="tab-btn-excluded" class="tab-btn" style="padding: 4px 12px; font-size: 12px; border: none; border-radius: 4px; cursor: pointer; background: transparent; color: var(--text-muted);" onclick="switchReviewTab('excluded')">
+            🚫 已排除岗位/回收站 (<span id="tab-count-excluded">0</span>)
+          </button>
+          <button id="tab-btn-open" class="tab-btn" style="padding: 4px 12px; font-size: 12px; border: none; border-radius: 4px; cursor: pointer; background: transparent; color: var(--text-muted);" onclick="switchReviewTab('open')">
+            ✅ 最近已放行入库 (<span id="tab-count-open">0</span>)
+          </button>
+        </div>
+      </div>
+      <div style="display: flex; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; align-items: center;">
+        <input type="text" id="review-search" placeholder="输入岗位/公司过滤候选..." style="background: var(--bg-dark); border: 1px solid var(--border); color: #fff; padding: 6px 12px; border-radius: 6px; font-size: 13px; width: 200px;" onkeydown="if(event.key==='Enter') loadReviews(0)">
+        <button class="btn btn-secondary" onclick="loadReviews(0)">🔍 搜索</button>
+
+        <button class="btn" onclick="toggleAutoReviewPanel()" style="background: #8b5cf6;">
+          <span>🤖</span> 接入本地/在线模型智能审查并自动放行
+        </button>
+
+        <button class="btn" onclick="batchApproveSelected()" style="background: #10b981; margin-left: auto;">
+          <span>✓</span> 放行勾选
+        </button>
+        <button class="btn" onclick="approveAllRemaining()" style="background: #059669;">
+          <span>⚡</span> 全部待审一键放行
+        </button>
+        <button class="btn btn-secondary" onclick="batchRejectSelected()" style="background: #ef4444; color: #fff;">
+          <span>✕</span> 排除勾选
+        </button>
+      </div>
+
+      <!-- 智能审查抽屉面板 -->
+      <div id="ai-review-panel" style="background: rgba(15, 23, 42, 0.9); border: 1px solid #8b5cf6; border-radius: 8px; padding: 14px; margin-bottom: 14px; display: none;">
+        <div style="font-weight: 600; font-size: 13px; margin-bottom: 10px; color: var(--primary); display: flex; justify-content: space-between; align-items: center;">
+          <div style="display: flex; gap: 8px; align-items: center;">
+            <span>🤖 本地大模型智能审查工作台 (D:\JiuGuan Qwen3.5-9B 驱动)</span>
+            <span id="qwen-status-badge" style="font-size: 11px; padding: 2px 8px; border-radius: 10px; background: rgba(56, 189, 248, 0.1); color: var(--primary);">检查本地 Qwen 状态中...</span>
+          </div>
+          <div style="display: flex; gap: 8px; align-items: center;">
+            <button class="btn btn-secondary" style="font-size: 11px; padding: 2px 8px;" onclick="triggerQwenStart()">检测本地 Qwen 状态</button>
+            <span style="font-size: 11px; color: var(--text-muted); cursor: pointer;" onclick="toggleAutoReviewPanel()">[收起面板 ✕]</span>
+          </div>
+        </div>
+        <div style="display: flex; gap: 12px; flex-wrap: wrap; align-items: center; font-size: 13px;">
+          <label style="color: var(--text-muted);">审查引擎:
+            <select id="auto-review-mode" style="background: var(--bg-dark); border: 1px solid var(--border); color:#fff; padding:5px 8px; border-radius:4px;" onchange="toggleLlmInputs()">
+              <option value="qwen">🟢 本地 Qwen 大模型 (D:\JiuGuan 8080端口 / 0成本深度研判)</option>
+              <option value="custom_llm">🟣 自定义在线大模型 (DeepSeek / OpenAI 兼容 API)</option>
+            </select>
+          </label>
+          <div id="llm-inputs" style="display: none; gap: 8px; align-items: center; flex-wrap: wrap;">
+            <input type="text" id="auto-review-api-base" placeholder="API 地址 (默认 http://127.0.0.1:8080/v1)" style="background: var(--bg-dark); border: 1px solid var(--border); color:#fff; padding:4px 8px; border-radius:4px; width: 240px;">
+            <input type="password" id="auto-review-api-key" placeholder="API Key (本地留空)" style="background: var(--bg-dark); border: 1px solid var(--border); color:#fff; padding:4px 8px; border-radius:4px; width: 140px;">
+            <input type="text" id="auto-review-model" placeholder="模型名 (如 Qwen3.5-9B-DARK-ROAST)" style="background: var(--bg-dark); border: 1px solid var(--border); color:#fff; padding:4px 8px; border-radius:4px; width: 180px;">
+          </div>
+          <label style="color: var(--text-muted);">执行规模:
+            <select id="auto-review-limit" style="background: var(--bg-dark); border: 1px solid var(--border); color:#fff; padding:5px 8px; border-radius:4px;">
+            <option value="3" selected>先看 3 条</option>
+            <option value="9">最多 9 条</option>
+            <option value="15">15 条</option>
+            <option value="50">50 条</option>
+            <option value="200">最多 200 条</option>
+            </select>
+          </label>
+          <span style="color: var(--text-muted);">模型结果仅作建议，需人工审核后才能改变岗位状态。</span>
+          <button class="btn" id="btn-start-auto-review" style="background: #8b5cf6; padding: 6px 16px; font-size: 13px;" onclick="startAutoReview()">
+            ⚡ 启动本地大模型研判
+          </button>
+        </div>
+
+        <!-- 实时研判进度条与动态日志反馈 -->
+        <div id="ai-review-progress-box" style="display: none; margin-top: 12px; background: rgba(0,0,0,0.4); border: 1px solid rgba(139, 92, 246, 0.4); border-radius: 6px; padding: 10px;">
+          <div style="display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 6px;">
+            <span id="ai-prog-title" style="color: #c084fc; font-weight: 500;">⚡ 正在连接 Qwen 大模型服务...</span>
+            <span id="ai-prog-percent" style="color: var(--primary); font-family: monospace; font-weight: 600;">0 / 0 (0%)</span>
+          </div>
+          <div style="background: #1e293b; border-radius: 4px; height: 8px; overflow: hidden;">
+            <div id="ai-prog-bar" style="background: linear-gradient(90deg, #8b5cf6, #38bdf8); width: 0%; height: 100%; transition: width 0.3s ease;"></div>
+          </div>
+          <div id="ai-prog-detail" style="font-size: 11px; color: var(--text-muted); margin-top: 6px; font-family: monospace;">等待任务派发...</div>
+        </div>
+      </div>
+
+      <table><table>
+        <thead>
+          <tr>
+            <th style="width: 32px;"><input type="checkbox" id="check-all-reviews" onclick="toggleSelectAllReviews(this)"></th>
+            <th>岗位名称</th>
+            <th>招聘企业</th>
+            <th>工作地点</th>
+            <th>薪酬</th>
+            <th>AI判定原因</th>
+            <th>来源平台</th>
+            <th style="text-align: right;">审核操作</th>
+          </tr>
+        </thead>
+        <tbody id="review-table-body">
+          <tr><td colspan="8" style="text-align: center; color: var(--text-muted);">正在加载待审候选岗位...</td></tr>
+        </tbody>
+      </table>
+
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 14px; font-size: 13px; color: var(--text-muted);">
+        <span id="review-page-info">第 1 页</span>
+        <div style="display: flex; gap: 8px;">
+          <button id="btn-prev-review" class="btn btn-secondary" style="padding: 4px 10px; font-size: 12px;" onclick="changeReviewPage(-1)">上一页</button>
+          <button id="btn-next-review" class="btn btn-secondary" style="padding: 4px 10px; font-size: 12px;" onclick="changeReviewPage(1)">下一页</button>
+        </div>
+      </div>
+    </div>
   </div>
 
   <script>
@@ -209,13 +379,81 @@
         const res = await fetch('/api/admin/status');
         if (!res.ok) throw new Error('status error: ' + res.status);
         const data = await res.json();
-        
+
         // 更新卡片
         document.getElementById('stat-total-jobs').innerText = data.total_jobs.toLocaleString();
         document.getElementById('stat-review-jobs').innerText = (data.status_counts.review || 0).toLocaleString();
-        
+
         const sched = data.scheduler || {};
-        document.getElementById('stat-sched-usage').innerText = `${sched.used || 0} / ${sched.limit || 15} 次`;
+        const remaining = (sched.limit !== undefined && sched.used !== undefined) ? (sched.limit - sched.used) : '--';
+        document.getElementById('stat-sched-usage').innerText = `${sched.used ?? '--'} / ${sched.limit ?? '--'} 次 (余 ${remaining})`;
+        document.getElementById('stat-sched-detail').innerText = `轮次: ${sched.round_id || '未知'} | 历史未归因: ${sched.legacy_unattributed_used ?? 0}`;
+
+        // 渲染真实调度账本与游标详情面板 (契约 3/4)
+        const roundEl = document.getElementById('panel-round-info');
+        if (roundEl) {
+          roundEl.innerHTML = `
+            <div><b>轮次 ID:</b> <code style="color:var(--primary);">${sched.round_id || 'unknown'}</code></div>
+            <div><b>总请求上限:</b> ${sched.limit ?? '--'} 次 (硬上限 200)</div>
+            <div><b>已用请求:</b> ${sched.used ?? '--'} 次 (剩余: <b style="color:var(--success);">${remaining}</b>)</div>
+            <div><b>历史未归因:</b> ${sched.legacy_unattributed_used ?? 0} 次</div>
+          `;
+        }
+
+        const allocEl = document.getElementById('panel-source-alloc');
+        if (allocEl) {
+          const sCaps = sched.source_caps || {};
+          const sUsed = sched.source_used || {};
+          const allSources = Array.from(new Set([...Object.keys(sCaps), ...Object.keys(sUsed)]));
+          if (allSources.length === 0) {
+            allocEl.innerHTML = '<span style="color:var(--text-muted);">暂无独立来源配额记录 (均受轮次硬上限约束)</span>';
+          } else {
+            allocEl.innerHTML = allSources.map(s => {
+              const cap = sCaps[s] ?? sched.limit ?? 200;
+              const used = sUsed[s] ?? 0;
+              const rem = cap - used;
+              return `<div><b>${s}:</b> 用量 ${used} / 上限 ${cap} (余 ${rem})</div>`;
+            }).join('');
+          }
+        }
+
+        const cursorEl = document.getElementById('panel-cursor-info');
+        if (cursorEl) {
+          const cData = data.cursors;
+          if (!cData || !cData.queries || Object.keys(cData.queries).length === 0) {
+            cursorEl.innerHTML = '<span style="color:var(--text-muted);">暂无持久游标记录 (no_history)</span>';
+          } else {
+            cursorEl.innerHTML = Object.entries(cData.queries).map(([k, q]) => {
+              const src = q.source || '未知来源';
+              const kw = q.keyword || '全部';
+              const pg = q.page ?? 1;
+              const off = q.offset ?? 0;
+              const exh = q.exhausted ? '<span style="color:var(--warning);">已扫尽</span>' : '<span style="color:var(--success);">活跃</span>';
+              return `<div><b>[${src}]</b> 词: <code>${kw}</code> | 页: ${pg} (偏移 ${off}) | ${exh}</div>`;
+            }).join('');
+          }
+        }
+
+        const planEl = document.getElementById('panel-plan-outcome');
+        if (planEl) {
+          const lp = data.last_plan_outcome;
+          if (!lp) {
+            planEl.innerHTML = '<span style="color:var(--text-muted);">无计划运行记录 (no_history)</span>';
+          } else {
+            const stColor = lp.status === 'succeeded' ? 'var(--success)' : (lp.status === 'partial' ? 'var(--warning)' : 'var(--danger)');
+            const tasksSummary = (lp.tasks || []).map(t => `${t.source_id}:${t.status}`).join(', ');
+            planEl.innerHTML = `
+              <div><b>计划 ID:</b> <code>${lp.plan_id || 'unknown'}</code></div>
+              <div><b>执行状态:</b> <span style="font-weight:700; color:${stColor}; text-transform:uppercase;">${lp.status}</span></div>
+              <div><b>任务列表:</b> ${tasksSummary || '无'}</div>
+              <div><b>时间:</b> ${lp.ended_at ? lp.ended_at.slice(11, 19) : '--'}</div>
+              ${lp.reason ? `<div style="color:var(--danger); font-size:12px;"><b>阻断/停止原因:</b> ${lp.reason}</div>` : ''}
+            `;
+          }
+        }
+
+        const bk = data.backups || {};
+        document.getElementById('stat-backups').innerHTML = `<span style="color:#10b981;">${bk.count || 0} 个</span> <small style="color:var(--text-muted);font-weight:normal;">(${bk.total_size_mb || 0} MB)</small>`;
 
         const badge = document.getElementById('pipeline-status-badge');
         const badgeText = document.getElementById('pipeline-status-text');
@@ -229,6 +467,30 @@
           badge.className = 'status-badge';
           badgeText.innerText = '空闲就绪 (IDLE)';
           triggerBtn.disabled = false;
+        }
+
+        const daemon = data.daemon || {};
+        const dBadge = document.getElementById('daemon-status-badge');
+        const dStartBtn = document.getElementById('btn-daemon-start');
+        const dStopBtn = document.getElementById('btn-daemon-stop');
+        if (dBadge && dStartBtn && dStopBtn) {
+          if (daemon.running) {
+            dBadge.style.background = '#065f46';
+            dBadge.style.color = '#34d399';
+            dBadge.innerText = `🟢 运行中 (PID: ${daemon.pid}, 每 ${daemon.interval_min} 分钟)`;
+            dStartBtn.disabled = true;
+            dStartBtn.style.opacity = '0.5';
+            dStopBtn.disabled = false;
+            dStopBtn.style.opacity = '1';
+          } else {
+            dBadge.style.background = '#334155';
+            dBadge.style.color = '#94a3b8';
+            dBadge.innerText = '⚪ 已停止';
+            dStartBtn.disabled = false;
+            dStartBtn.style.opacity = '1';
+            dStopBtn.disabled = true;
+            dStopBtn.style.opacity = '0.5';
+          }
         }
 
         // 更新表格
@@ -265,32 +527,430 @@
       }
     }
 
+    let logPollingTimer = null;
+
+
+    async function startDaemon() {
+      const interval = parseInt(document.getElementById('daemon-interval-select').value, 10) || 30;
+      const offline = document.getElementById('daemon-offline-check')?.checked || false;
+      const tip = document.getElementById('daemon-tip');
+      tip.innerText = '正在启动常驻定时守护...';
+      try {
+        const res = await fetch('/api/admin/pipeline/daemon_start', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ interval_min: interval, offline: offline })
+        });
+        const data = await res.json();
+        if (res.ok) {
+          tip.innerHTML = `<span style="color:var(--success);">✓ 成功启动守护进程 (PID: ${data.pid}, 每 ${data.interval_min} 分钟)</span>`;
+          await fetchStatus();
+          await fetchLogs();
+        } else {
+          tip.innerHTML = `<span style="color:var(--danger);">启动失败: ${data.error}</span>`;
+        }
+      } catch (err) {
+        tip.innerHTML = `<span style="color:var(--danger);">网络异常: ${err.message}</span>`;
+      }
+    }
+
+    async function stopDaemon() {
+      const tip = document.getElementById('daemon-tip');
+      tip.innerText = '正在停止常驻守护进程...';
+      try {
+        const res = await fetch('/api/admin/pipeline/daemon_stop', { method: 'POST' });
+        const data = await res.json();
+        if (res.ok) {
+          tip.innerHTML = `<span style="color:var(--success);">✓ 已停止常驻守护进程 (PID: ${data.stopped_pid})</span>`;
+          await fetchStatus();
+        } else {
+          tip.innerHTML = `<span style="color:var(--danger);">停止失败: ${data.error}</span>`;
+        }
+      } catch (err) {
+        tip.innerHTML = `<span style="color:var(--danger);">网络异常: ${err.message}</span>`;
+      }
+    }
+
+    async function pruneBackups() {
+      const tip = document.getElementById('action-tip');
+      tip.innerText = '正在计算备份候选清单...';
+      try {
+        const res = await fetch('/api/admin/backups/prune', { method: 'POST' });
+        const data = await res.json();
+        if (res.ok) {
+          tip.textContent = `预览完成：${data.pruned_count || 0} 个候选，${data.freed_mb || 0} MB；未删除。清单 ID：${data.manifest_id || '无'}`;
+        } else {
+          tip.innerHTML = `<span style="color:var(--danger);">清理失败: ${data.error}</span>`;
+        }
+      } catch (err) {
+        tip.innerHTML = `<span style="color:var(--danger);">网络异常: ${err.message}</span>`;
+      }
+    }
+
     async function triggerPipeline() {
       const btn = document.getElementById('btn-trigger');
       const tip = document.getElementById('action-tip');
+      const offline = document.getElementById('pipeline-offline-check')?.checked || false;
       btn.disabled = true;
-      tip.innerText = '正在派发采集任务...';
+      tip.innerHTML = `<span style="color:var(--primary);">${offline ? '离线演练启动中...' : '检查有限任务计划；未提供计划时不会发送岗位请求...'}</span>`;
       try {
-        const res = await fetch('/api/admin/pipeline/trigger', { method: 'POST' });
+        const res = await fetch('/api/admin/pipeline/trigger', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ offline: offline })
+        });
         const data = await res.json();
         if (res.ok) {
-          tip.innerText = '任务已启动 (PID: ' + data.pid + ')';
-          fetchStatus();
+          tip.textContent = data.offline ? '离线演练已派发。' : '已派发任务；无显式计划时不会发送岗位来源请求。';
+          await fetchStatus();
+          await fetchLogs();
+          startFastLogPolling();
         } else {
-          tip.innerText = '启动失败: ' + (data.error || '未知错误');
+          tip.innerHTML = '<span style="color:var(--danger);">启动失败: ' + (data.error || '未知错误') + '</span>';
           btn.disabled = false;
         }
       } catch (err) {
-        tip.innerText = '网络异常: ' + err.message;
+        tip.innerHTML = '<span style="color:var(--danger);">网络异常: ' + err.message + '</span>';
         btn.disabled = false;
       }
     }
 
+    function startFastLogPolling() {
+      if (logPollingTimer) clearInterval(logPollingTimer);
+      logPollingTimer = setInterval(async () => {
+        await fetchLogs();
+        await fetchStatus();
+        const badge = document.getElementById('pipeline-status-text');
+        if (badge && !badge.innerText.includes('RUNNING')) {
+          clearInterval(logPollingTimer);
+          logPollingTimer = setInterval(fetchLogs, 2500);
+        }
+      }, 1000);
+    }
+
+
+    // === 待审岗位快审工作台逻辑 ===
+    let currentReviewOffset = 0;
+    const reviewPageSize = 15;
+    let currentReviewTotal = 0;
+    let currentReviewTab = 'review'; // 'review' | 'excluded' | 'open'
+    let progressPollingTimer = null;
+
+    function switchReviewTab(tab) {
+      currentReviewTab = tab;
+      ['review', 'excluded', 'open'].forEach(t => {
+        const btn = document.getElementById('tab-btn-' + t);
+        if (btn) {
+          if (t === tab) {
+            btn.style.background = 'var(--primary)';
+            btn.style.color = '#fff';
+            btn.style.fontWeight = '600';
+          } else {
+            btn.style.background = 'transparent';
+            btn.style.color = 'var(--text-muted)';
+            btn.style.fontWeight = 'normal';
+          }
+        }
+      });
+      loadReviews(0);
+    }
+
+    async function loadReviews(offset = 0) {
+      currentReviewOffset = offset;
+      const q = document.getElementById('review-search').value.trim();
+      const tbody = document.getElementById('review-table-body');
+      tbody.innerHTML = '<tr><td colspan="8" style="text-align: center; color: var(--text-muted); padding: 20px;">正在加载数据...</td></tr>';
+
+      try {
+        const url = `/api/admin/reviews?limit=${reviewPageSize}&offset=${offset}&q=${encodeURIComponent(q)}&status=${currentReviewTab}`;
+        const res = await fetch(url);
+        if (!res.ok) throw new Error('API error: ' + res.status);
+        const data = await res.json();
+
+        currentReviewTotal = data.total;
+        const countSpan = document.getElementById('tab-count-' + currentReviewTab);
+        if (countSpan) countSpan.innerText = data.total;
+
+        const currentPage = Math.floor(offset / reviewPageSize) + 1;
+        const totalPages = Math.ceil(data.total / reviewPageSize) || 1;
+        document.getElementById('review-page-info').innerText = `第 ${currentPage} / ${totalPages} 页 (共 ${data.total} 条)`;
+        document.getElementById('btn-prev-review').disabled = offset <= 0;
+        document.getElementById('btn-next-review').disabled = offset + reviewPageSize >= data.total;
+
+        if (!data.items || data.items.length === 0) {
+          const emptyText = currentReviewTab === 'review' ? '暂无待审候选岗位 🎉' : (currentReviewTab === 'excluded' ? '回收站暂无被排除岗位' : '暂无已放行大盘岗位');
+          tbody.innerHTML = `<tr><td colspan="8" style="text-align: center; color: var(--text-muted); padding: 24px;">${emptyText}</td></tr>`;
+          return;
+        }
+
+        tbody.replaceChildren();
+        const cell = (row, value, tag = 'td') => {
+          const node = document.createElement(tag);
+          node.textContent = value == null ? '' : String(value);
+          row.appendChild(node);
+          return node;
+        };
+        for (const it of data.items) {
+          const id = String(it.id ?? '');
+          const row = document.createElement('tr');
+          row.id = 'row-' + id;
+          const selectCell = document.createElement('td');
+          const checkbox = document.createElement('input');
+          checkbox.type = 'checkbox'; checkbox.className = 'review-item-check'; checkbox.value = id;
+          selectCell.appendChild(checkbox); row.appendChild(selectCell);
+
+          const titleCell = document.createElement('td');
+          const link = document.createElement('a');
+          try {
+            const parsed = new URL(String(it.url || ''), window.location.href);
+            link.href = ['http:', 'https:'].includes(parsed.protocol) ? parsed.href : '#';
+          } catch (_) { link.href = '#'; }
+          link.target = '_blank'; link.rel = 'noopener noreferrer';
+          link.style.cssText = 'color:var(--primary);text-decoration:none;font-weight:500';
+          link.textContent = String(it.title || '') + ' ↗'; titleCell.appendChild(link); row.appendChild(titleCell);
+          cell(row, it.company, 'td').style.fontWeight = '600';
+          cell(row, it.location).style.cssText = 'font-size:12px;color:var(--text-muted)';
+          cell(row, it.salary || '未采到薪资信息').style.cssText = 'color:#10b981;font-weight:600';
+
+          const reasonCell = document.createElement('td');
+          const reason = document.createElement('span');
+          reason.textContent = it.ai_reason || it.ai_relevance || '待定';
+          reason.title = String(it.ai_reason || it.ai_relevance || '待定');
+          reason.style.cssText = 'font-size:11px;background:rgba(139,92,246,.15);color:#c084fc;padding:2px 6px;border-radius:4px;display:inline-block;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+          reasonCell.appendChild(reason); row.appendChild(reasonCell);
+          cell(row, String(it.source || '').replace('official:', '').replace('platform:', '')).style.cssText = 'font-size:11px;color:var(--text-muted)';
+
+          const actions = document.createElement('td');
+          actions.style.cssText = 'text-align:right;white-space:nowrap';
+          const addAction = (label, action, color, title, inspect = false) => {
+            const button = document.createElement('button');
+            button.type = 'button'; button.className = 'btn'; button.textContent = label;
+            button.title = title || ''; button.style.cssText = `padding:3px 8px;font-size:11px;background:${color};margin-left:3px`;
+            button.addEventListener('click', () => inspect ? aiInspectSingle(id, button) : handleSingleAction(id, action));
+            actions.appendChild(button);
+          };
+          if (currentReviewTab === 'review') {
+            addAction('🤖 试判', '', '#3b82f6', '仅给出模型建议', true);
+            addAction('放行', 'approve', '#10b981'); addAction('排除', 'reject', '#ef4444');
+          } else if (currentReviewTab === 'excluded') {
+            addAction('↺ 恢复待审', 'restore', '#8b5cf6'); addAction('✓ 放行', 'approve', '#10b981');
+          } else {
+            addAction('✕ 撤回排除', 'reject', '#ef4444');
+          }
+          row.appendChild(actions); tbody.appendChild(row);
+        }
+
+        document.getElementById('check-all-reviews').checked = false;
+      } catch (err) {
+        tbody.replaceChildren();
+        const errorRow = document.createElement('tr');
+        const errorCell = document.createElement('td'); errorCell.colSpan = 8;
+        errorCell.style.color = 'var(--danger)'; errorCell.textContent = `加载失败: ${err.message}`;
+        errorRow.appendChild(errorCell); tbody.appendChild(errorRow);
+      }
+    }
+
+    async function aiInspectSingle(jobId, btnElement) {
+      const origText = btnElement.innerText;
+      btnElement.disabled = true;
+      btnElement.innerText = '⏳ 研判中...';
+      const row = document.getElementById('row-' + jobId);
+      if (row) row.style.background = 'rgba(139, 92, 246, 0.1)';
+
+      try {
+        const res = await fetch('/api/admin/reviews/single_ai_check', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ job_id: jobId })
+        });
+        const data = await res.json();
+        if (res.ok) {
+          const dec = (data.decision || 'reject').toUpperCase();
+          const color = dec === 'APPROVE' ? '#10b981' : '#ef4444';
+          const msg = `🤖 本地 Qwen 大模型试判建议：\n\n【判定结论】: ${dec} (置信度: ${data.confidence || 0.9})\n【研判原因】: ${data.reason || '无说明'}\n\n是否直接采纳并执行【${dec === 'APPROVE' ? '放行入大盘' : '排除至回收站'}】？`;
+          if (confirm(msg)) {
+            await handleSingleAction(jobId, dec === 'APPROVE' ? 'approve' : 'reject');
+          }
+        } else {
+          alert('试判失败: ' + (data.error || '未知错误'));
+        }
+      } catch (err) {
+        alert('试判请求异常: ' + err.message);
+      } finally {
+        btnElement.disabled = false;
+        btnElement.innerText = origText;
+        if (row) row.style.background = '';
+      }
+    }
+
+    function toggleSelectAllReviews(source) {
+      const checks = document.querySelectorAll('.review-item-check');
+      checks.forEach(c => c.checked = source.checked);
+    }
+
+    function changeReviewPage(delta) {
+      const nextOffset = currentReviewOffset + (delta * reviewPageSize);
+      if (nextOffset >= 0 && nextOffset < currentReviewTotal) {
+        loadReviews(nextOffset);
+      }
+    }
+
+    async function handleSingleAction(jobId, action) {
+      const actionNames = { approve: '放行至大盘', reject: '排除至回收站', restore: '恢复至待审队列' };
+      if (action === 'reject' && !confirm('确认将此岗位从大盘中排除吗？')) return;
+      await submitReviewAction([jobId], action);
+    }
+
+    async function batchApproveSelected() {
+      const ids = Array.from(document.querySelectorAll('.review-item-check:checked')).map(c => c.value);
+      if (ids.length === 0) return alert('请先勾选需要操作的岗位！');
+      if (!confirm(`确认将选中的 ${ids.length} 个岗位审核放行并更新大盘吗？`)) return;
+      await submitReviewAction(ids, 'approve');
+    }
+
+    async function batchRejectSelected() {
+      const ids = Array.from(document.querySelectorAll('.review-item-check:checked')).map(c => c.value);
+      if (ids.length === 0) return alert('请先勾选需要操作的岗位！');
+      if (!confirm(`确认排除选中的 ${ids.length} 个候选岗位吗？`)) return;
+      await submitReviewAction(ids, 'reject');
+    }
+
+    function toggleAutoReviewPanel() {
+      const panel = document.getElementById('ai-review-panel');
+      panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
+    }
+
+    function toggleLlmInputs() {
+      const mode = document.getElementById('auto-review-mode').value;
+      document.getElementById('llm-inputs').style.display = mode === 'custom_llm' ? 'inline-flex' : 'none';
+    }
+
+    async function checkQwenStatus() {
+      const badge = document.getElementById('qwen-status-badge');
+      if (!badge) return;
+      try {
+        const res = await fetch('/api/admin/qwen/status');
+        const data = await res.json();
+        if (data.alive) {
+          badge.innerHTML = '🟢 本地 Qwen 就绪 (:8080)';
+          badge.style.color = '#10b981';
+          badge.style.background = 'rgba(16, 185, 129, 0.1)';
+        } else {
+          badge.innerHTML = '🔴 本地 Qwen 未启动';
+          badge.style.color = '#ef4444';
+          badge.style.background = 'rgba(239, 68, 68, 0.1)';
+        }
+      } catch (err) {
+        badge.innerHTML = '⚪ 状态未知';
+      }
+    }
+
+    async function triggerQwenStart() {
+      await checkQwenStatus();
+    }
+
+    async function approveAllRemaining() {
+      if (!confirm(`确认将当前所有 ${currentReviewTotal} 条待审岗位一键全部审核放行至大盘吗？\n(操作前系统将自动创建物理数据库备份)`)) return;
+      await submitReviewAction([], 'approve_all');
+    }
+
+    async function startAutoReview() {
+      const mode = document.getElementById('auto-review-mode').value;
+      const limit = parseInt(document.getElementById('auto-review-limit').value, 10);
+      const api_base = document.getElementById('auto-review-api-base').value.trim();
+      const api_key = document.getElementById('auto-review-api-key').value.trim();
+      const model = document.getElementById('auto-review-model').value.trim();
+
+      const btn = document.getElementById('btn-start-auto-review');
+      btn.disabled = true;
+
+      const progressBox = document.getElementById('ai-review-progress-box');
+      progressBox.style.display = 'block';
+      document.getElementById('ai-prog-bar').style.width = '0%';
+      document.getElementById('ai-prog-percent').innerText = `0 / ${limit} (0%)`;
+      document.getElementById('ai-prog-title').innerText = '正在准备模型建议...';
+      document.getElementById('ai-prog-detail').innerText = '模型不会自动更新岗位审核状态。';
+
+      // 启动进度轮询
+      if (progressPollingTimer) clearInterval(progressPollingTimer);
+      progressPollingTimer = setInterval(async () => {
+        try {
+          const pRes = await fetch('/api/admin/reviews/progress');
+          if (pRes.ok) {
+            const p = await pRes.json();
+            if (p.total > 0) {
+              const pct = Math.round((p.current / p.total) * 100);
+              document.getElementById('ai-prog-bar').style.width = pct + '%';
+              document.getElementById('ai-prog-percent').innerText = `${p.current} / ${p.total} (${pct}%)`;
+              document.getElementById('ai-prog-title').innerText = p.last_message || '研判进行中...';
+              document.getElementById('ai-prog-detail').innerText = `已通过: ${p.approved} 条 | 拦截排除: ${p.rejected} 条`;
+            }
+          }
+        } catch (e) {}
+      }, 700);
+
+      try {
+        const res = await fetch('/api/admin/reviews/auto_review', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ mode, limit, api_base, api_key, model, auto_approve: false })
+        });
+        const data = await res.json();
+        clearInterval(progressPollingTimer);
+
+        if (res.ok) {
+          document.getElementById('ai-prog-bar').style.width = '100%';
+          document.getElementById('ai-prog-percent').innerText = `${data.total} / ${data.total} (100%)`;
+          document.getElementById('ai-prog-title').innerText = `建议生成完成：${data.total} 条，岗位状态未自动更改`;
+          alert(`模型建议报告：\n- 模型: ${data.model}\n- 样本: ${data.total} 条\n- 建议纳入: ${data.approved} 条\n- 建议排除: ${data.rejected} 条\n- 岗位状态未自动更改`);
+          await loadReviews(0);
+          await fetchStatus();
+        } else {
+          document.getElementById('ai-prog-title').innerText = '审查失败: ' + (data.error || '未知错误');
+        }
+      } catch (err) {
+        clearInterval(progressPollingTimer);
+        document.getElementById('ai-prog-title').innerText = '网络异常: ' + err.message;
+      } finally {
+        btn.disabled = false;
+        setTimeout(() => {
+          progressBox.style.display = 'none';
+        }, 5000);
+      }
+    }
+
+    async function submitReviewAction(jobIds, action) {
+      const tip = document.getElementById('action-tip');
+      tip.innerHTML = '<span style="color:var(--primary);">正在提交操作...</span>';
+      try {
+        const res = await fetch('/api/admin/reviews/action', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ job_ids: jobIds, action })
+        });
+        const data = await res.json();
+        if (res.ok) {
+          tip.innerHTML = `<span style="color:var(--success);">✓ 成功操作 ${data.affected} 条岗位，审核结果已更新。</span>`;
+          await loadReviews(currentReviewOffset);
+          await fetchStatus();
+        } else {
+          tip.innerHTML = `<span style="color:var(--danger);">操作失败: ${data.error}</span>`;
+        }
+      } catch (err) {
+        tip.innerHTML = `<span style="color:var(--danger);">网络异常: ${err.message}</span>`;
+      }
+    }
+
+    // 初始化加载
+    loadReviews(0);
+
     // 初始化与轮询
     fetchStatus();
     fetchLogs();
+    checkQwenStatus();
     setInterval(fetchStatus, 3000);
-    setInterval(fetchLogs, 2500);
+    setInterval(checkQwenStatus, 5000);
+    logPollingTimer = setInterval(fetchLogs, 2000);
   </script>
 </body>
 </html>

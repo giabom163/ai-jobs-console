@@ -66,7 +66,7 @@
 })(window);
 
 (function(global){
-  const types=['layoff','shrink','freeze','reorg'],statuses=['announced','implemented','reported','response_reported','pending','denied'];
+  const types=['layoff','shrink','freeze','reorg','hiring'],statuses=['announced','implemented','reported','response_reported','pending','denied'];
   function select(events,p){
     const f={};['event_type','region','event_status','q','since','until'].forEach(k=>f[k]=(p.get(k)||'').trim());
     [['event_type',types],['event_status',statuses],['region',['domestic']]].forEach(([k,a])=>{if(f[k]&&!a.includes(f[k]))throw Error('unsupported '+k);});
@@ -74,6 +74,6 @@
     if(f.since&&f.until&&f.since>f.until)throw Error('invalid event date range');
     return events.filter(e=>(!f.event_type||e.event_type===f.event_type)&&(!f.region||e.region===f.region)&&(!f.event_status||e.status===f.event_status)&&(!f.since||e.event_date>=f.since)&&(!f.until||e.event_date<=f.until)&&(!f.q||(e.company+' '+e.title+' '+(e.department||'')).toLowerCase().includes(f.q.toLowerCase()))).sort((a,b)=>b.event_date.localeCompare(a.event_date)||b.id.localeCompare(a.id));
   }
-  function summarize(events){return {total:events.length,announced:events.filter(e=>e.event_type==='layoff'&&e.status==='announced').length,implemented:events.filter(e=>e.event_type==='layoff'&&e.status==='implemented').length,responses:events.filter(e=>['response_reported','denied'].includes(e.status)).length,pending:events.filter(e=>['reported','pending'].includes(e.status)).length,headcount_total:null,note:'按独立事件计数；不同地区、岗位/员工口径和重叠轮次不合并成人数总计。'};}
+  function summarize(events){return {total:events.length,announced:events.filter(e=>e.event_type==='layoff'&&e.status==='announced').length,implemented:events.filter(e=>e.event_type==='layoff'&&e.status==='implemented').length,responses:events.filter(e=>['response_reported','denied'].includes(e.status)).length,pending:events.filter(e=>['reported','pending'].includes(e.status)).length,ai_explicit:events.filter(e=>e.ai_relation==='explicit_ai').length,ai_unconfirmed:events.filter(e=>e.ai_relation==='related_unconfirmed').length,headcount_total:null,note:'按独立事件计数；不同地区、岗位/员工口径和重叠轮次不合并成人数总计。AI因果仅在原文明确归因且保存原文摘录时标记。'};}
   global.EventCatalog={select,summarize};
 })(window);
