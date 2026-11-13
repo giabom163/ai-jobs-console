@@ -97,11 +97,27 @@ footer{padding:24px 16px;color:#8290a1}
 .panel-subsection{border:1px solid var(--line);border-radius:10px;padding:16px;margin:14px 0;background:#fbfcfe}.panel-subsection h3,.report-section h3{margin:0 0 8px;font-size:15px}.report-toolbar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:12px 0}.report-grid{display:grid;grid-template-columns:1fr;gap:14px;margin-top:14px}.report-section{min-height:150px}.report-slot{padding:10px 0}.report-kv{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.report-kv div{padding:12px;background:#f5f8fc;border-radius:8px}.report-kv b{display:block;font-size:20px;color:var(--ink)}@media(max-width:680px){.report-grid{grid-template-columns:1fr}.report-kv{grid-template-columns:1fr}}
 .signal-form{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:12px}.signal-form label{display:grid;gap:5px;font-size:12px;color:var(--muted)}.signal-form label.wide{grid-column:1/-1}.signal-form textarea{min-height:90px;padding:10px;border:1px solid #cbd7e4;border-radius:7px;font:inherit;resize:vertical}.signal-query-output{width:100%;min-height:78px;margin-top:10px;padding:10px;border:1px solid var(--line);border-radius:8px;background:#f6f8fb;font:13px/1.6 ui-monospace,Consolas,monospace}.signal-local-note{padding:10px 12px;background:#eff6ff;border:1px solid #d7e5fa;border-radius:8px;color:#31527c;font-size:12px;line-height:1.6}@media(max-width:680px){.signal-form{grid-template-columns:1fr}.signal-form label.wide{grid-column:auto}}
 @media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
+.brand-title{display:flex;align-items:center;gap:10px}
+.refresh-arrow-btn{display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:6px;border:1px solid #cbd7e4;background:#fff;color:#51657d;cursor:pointer;transition:all .15s ease;padding:0;line-height:1}
+.refresh-arrow-btn:hover{background:#edf3fa;color:var(--ink);border-color:#94a3b8}
+.refresh-arrow-btn:active{transform:scale(.95)}
+.refresh-arrow-btn.spinning svg{animation:spin-arrow .8s linear infinite}
+@keyframes spin-arrow{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
 </style>
 </head>
 <body>
 <header>
-  <div><h1>AI 就业核查台</h1><div class="sub">岗位分类 · 链接核验 · 来源可追溯</div></div>
+  <div class="brand">
+    <div class="brand-title">
+      <h1>AI 就业核查台</h1>
+      <button id="btn-refresh-all" type="button" class="refresh-arrow-btn" title="刷新大盘数据" aria-label="刷新大盘数据">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.19"/>
+        </svg>
+      </button>
+    </div>
+    <div class="sub">岗位分类 · 链接核验 · 来源可追溯</div>
+  </div>
   <nav>
     <button data-view="dashboard" class="active">总览</button>
     <button data-view="jobs">岗位库</button>
@@ -585,6 +601,38 @@ function setDefaultSignalWindow(){
 }
 setDefaultSignalWindow();
 startApp();
+
+async function handleManualRefresh(){
+  const btn=$('#btn-refresh-all');
+  if(btn)btn.classList.add('spinning');
+  $('#app-status').hidden=false;
+  $('#app-status-text').textContent='正在刷新数据...';
+  try{
+    const activeNav=document.querySelector('nav button.active');
+    const view=activeNav?activeNav.dataset.view:'dashboard';
+    const tasks=[loadDashboard()];
+    if(view==='jobs'){
+      tasks.push(loadJobs(jobOffset));
+    }else if(view==='signals'){
+      tasks.push(loadSignals(signalOffset),loadEvents());
+    }else if(view==='report'){
+      tasks.push(loadReport());
+    }else if(view==='sources'){
+      tasks.push(loadSources());
+    }else{
+      tasks.push(loadJobs(0));
+    }
+    await Promise.all(tasks);
+    $('#app-status').hidden=true;
+  }catch(err){
+    $('#app-status-text').textContent='刷新数据失败：'+err.message;
+    $('#app-retry').hidden=false;
+  }finally{
+    setTimeout(()=>{if(btn)btn.classList.remove('spinning');},400);
+  }
+}
+if($('#btn-refresh-all'))$('#btn-refresh-all').onclick=handleManualRefresh;
+
 $('#report-refresh').onclick=loadReport;
 $('#report-apply').onclick=loadReport;
 $('#signal-query-build').onclick=buildSignalQuery;
