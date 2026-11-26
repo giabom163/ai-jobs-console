@@ -2,15 +2,18 @@
 from __future__ import annotations
 
 import re
-from datetime import date, datetime, timedelta
-from zoneinfo import ZoneInfo
+from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 try:
     from .job_geography import is_domestic_only
 except ImportError:
     from job_geography import is_domestic_only
 
-TZ = ZoneInfo("Asia/Shanghai")
+try:
+    TZ = ZoneInfo("Asia/Shanghai")
+except ZoneInfoNotFoundError:
+    TZ = timezone(timedelta(hours=8))
 DATE_FLOOR = date(2026, 6, 1)
 PROGRAMMING_TITLE = re.compile(
     r"软件|程序|编程|开发工程师|前端|后端|客户端|移动端|全栈|测试开发|"

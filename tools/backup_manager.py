@@ -77,38 +77,47 @@ def prune_backups(keep_count: int = 10, max_age_days: int = 3, dry_run: bool = T
     }
 
 
+def backup_connection(src_con: sqlite3.Connection, tag: str = "backup", target_db: Path | str | None = None) -> tuple[Path, str]:
+    """Create a verified SQLite online backup from an active connection."""
+    main_path = next((row[2] for row in src_con.execute("PRAGMA database_list") if row[1] == "main"), "")
+    actual_db = Path(target_db).resolve() if target_db else (Path(main_path).resolve() if main_path else DB)
+    backup_dir = actual_db.parent
+    backup_name = f"_backup-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{tag}-{os.urandom(6).hex()}.db"
+    backup_path = backup_dir / backup_name
+    if backup_path.exists():
+        raise FileExistsError(f"备份文件已存在，拒绝覆盖: {backup_path}")
+    dst_con = sqlite3.connect(backup_path.resolve().as_posix())
+    try:
+        try:
+            with dst_con:
+                src_con.backup(dst_con)
+        finally:
+            dst_con.close()
+        check_con = sqlite3.connect(f"file:{backup_path.resolve().as_posix()}?mode=ro", uri=True)
+        try:
+            res = check_con.execute("PRAGMA integrity_check;").fetchone()
+            if not res or res[0] != "ok":
+                raise RuntimeError(f"备份文件完整性校验失败: {res}")
+        finally:
+            check_con.close()
+    except BaseException:
+        if backup_path.exists():
+            backup_path.unlink(missing_ok=True)
+        raise
+    return backup_path, hashlib.sha256(backup_path.read_bytes()).hexdigest()
+
+
 def ensure_backup(tag: str = "backup", target_db: Path | str | None = None) -> Path:
     actual_db = Path(target_db).resolve() if target_db else DB
     if not actual_db.exists():
         raise FileNotFoundError(f"目标数据库不存在: {actual_db}")
-
-    backup_dir = actual_db.parent
-    backup_name = f"_backup-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{tag}-{os.urandom(6).hex()}.db"
-    backup_path = backup_dir / backup_name
-
-    # 使用 SQLite 官方在线备份 API，确保事务一致性与物理快照完整
-    src_uri = f"file:{actual_db.as_posix()}?mode=ro"
-    src_con = sqlite3.connect(src_uri, uri=True)
-    dst_con = sqlite3.connect(backup_path.resolve().as_posix())
+    src_con = sqlite3.connect(f"file:{actual_db.as_posix()}?mode=ro", uri=True, timeout=5.0)
     try:
-        with dst_con:
-            src_con.backup(dst_con)
+        src_con.execute("PRAGMA busy_timeout=5000;")
+        backup_path, _ = backup_connection(src_con, tag=tag, target_db=actual_db)
+        return backup_path
     finally:
-        dst_con.close()
         src_con.close()
-
-    # 物理完整性核验
-    check_con = sqlite3.connect(f"file:{backup_path.resolve().as_posix()}?mode=ro", uri=True)
-    try:
-        cur = check_con.cursor()
-        cur.execute("PRAGMA integrity_check;")
-        res = cur.fetchone()
-        if not res or res[0] != "ok":
-            raise RuntimeError(f"备份文件完整性校验失败: {res}")
-    finally:
-        check_con.close()
-
-    return backup_path
 
 
 if __name__ == "__main__":

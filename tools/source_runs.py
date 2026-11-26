@@ -10,6 +10,13 @@ from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 from uuid import uuid4
 
+if __package__:
+    from .backup_manager import backup_connection
+    from .db_conn import connect_rw
+else:
+    from backup_manager import backup_connection
+    from db_conn import connect_rw
+
 ROOT = Path(__file__).resolve().parent.parent
 TERMINAL = {'succeeded', 'partial', 'failed', 'preview', 'interrupted'}
 
@@ -22,10 +29,7 @@ def _connect(db_path):
     path = Path(db_path).resolve()
     if not path.is_file():
         raise FileNotFoundError('source ledger database does not exist')
-    con = sqlite3.connect('file:' + path.as_posix() + '?mode=rw', uri=True, timeout=10)
-    con.row_factory = sqlite3.Row
-    con.execute('PRAGMA foreign_keys=ON')
-    return con
+    return connect_rw(path, timeout=10.0, row_factory=True, foreign_keys=True)
 
 
 def ensure_schema(db_path):
@@ -41,13 +45,7 @@ def ensure_schema(db_path):
             "SELECT 1 FROM schema_migrations WHERE version='source-run-ledger-v1' LIMIT 1").fetchone() is not None)
         if {'source_registry', 'crawler_runs'} <= tables and 'crawler_runs_source_started' in indexes and has_version:
             return
-        stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
-        backup = path.with_name(f'_backup-{stamp}-{uuid4().hex[:8]}-source-runs.db')
-        target = sqlite3.connect(backup)
-        try:
-            con.backup(target)
-        finally:
-            target.close()
+        backup_connection(con, tag='source-runs', target_db=path)
         try:
             con.execute('BEGIN IMMEDIATE')
             con.execute('''CREATE TABLE IF NOT EXISTS schema_migrations (

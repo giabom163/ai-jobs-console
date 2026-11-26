@@ -17,6 +17,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 if __package__:
+    from .db_conn import connect_ro, read_snapshot
     from .employment_signals import count_signals, list_signals, storage_status
     from .source_health import source_health
     from .job_geography import is_domestic_only, is_mixed_location, is_unknown_location
@@ -26,6 +27,7 @@ if __package__:
     from .employment_trends import programming_job_trend
     from .job_taxonomy import enrich_job, ROLES, EMPLOYMENT, CITIES, VERSION
 else:
+    from db_conn import connect_ro, read_snapshot
     from employment_signals import count_signals, list_signals, storage_status
     from source_health import source_health
     from job_geography import is_domestic_only, is_mixed_location, is_unknown_location
@@ -43,20 +45,14 @@ TZ = timezone(timedelta(hours=8))
 
 
 def connect() -> sqlite3.Connection:
-    con = sqlite3.connect(f"file:{DB}?mode=ro", uri=True)
-    con.row_factory = sqlite3.Row
-    con.create_function("is_domestic_only", 1, is_domestic_only, deterministic=True)
-    con.create_function("is_mixed_location", 1, is_mixed_location, deterministic=True)
-    con.create_function("is_unknown_location", 1, is_unknown_location, deterministic=True)
-    register_read_view(con)
-    return con
+    return connect_ro(DB, timeout=5.0, row_factory=True, with_udf=True, with_read_view=True, query_only=True)
 
 
 def one(con, sql, args=()):
     return con.execute(sql, args).fetchone()[0]
 
 
-def build(con) -> dict:
+def build(con, include_review: bool = True) -> dict:
     generated_at = datetime.now(TZ).isoformat(timespec="seconds")
     job_columns = {row[1] for row in con.execute("PRAGMA table_info(job_records)")}
     salary_evidence_column = "j.salary_evidence_json" if "salary_evidence_json" in job_columns else "NULL AS salary_evidence_json"
@@ -88,6 +84,8 @@ def build(con) -> dict:
     for job in jobs:
         job['duplicate_records'] = duplicates.get(job['id'], [])
         job.pop('description', None)
+    if not include_review:
+        jobs = [j for j in jobs if j.get('status') == 'open']
 
     def group(sql, args=()):
         return [dict(r) for r in con.execute(sql, args).fetchall()]
@@ -273,7 +271,8 @@ def main() -> None:
         ap.error('limit must be positive')
     con = connect()
     try:
-        payload = build(con)
+        with read_snapshot(con):
+            payload = build(con)
     finally:
         con.close()
     out = Path(args.out)

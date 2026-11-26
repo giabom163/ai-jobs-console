@@ -20,6 +20,7 @@ from pathlib import Path
 
 if __package__:
     from .daemon_runtime import file_lock, inspect_record, process_identity, daemon_command, terminate_owned, execution_lock
+    from .db_conn import connect_ro, connect_rw, read_snapshot
     from .employment_signals import count_signals, list_signals, storage_status
     from .evidence_contract import APPROVED_EVENT_DISCOVERY_PROVIDERS, APPROVED_EVENT_SOURCE_STRATEGIES
     from .job_geography import is_domestic_only, is_mixed_location, is_unknown_location
@@ -34,6 +35,7 @@ if __package__:
     from .backup_manager import ensure_backup, prune_backups, get_backup_stats
 else:
     from daemon_runtime import file_lock, inspect_record, process_identity, daemon_command, terminate_owned, execution_lock
+    from db_conn import connect_ro, connect_rw, read_snapshot
     from employment_signals import count_signals, list_signals, storage_status
     from evidence_contract import APPROVED_EVENT_DISCOVERY_PROVIDERS, APPROVED_EVENT_SOURCE_STRATEGIES
     from job_geography import is_domestic_only, is_mixed_location, is_unknown_location
@@ -208,13 +210,7 @@ def default_since():
 
 
 def connect():
-    con = sqlite3.connect(f"file:{DB}?mode=ro", uri=True)
-    con.row_factory = sqlite3.Row
-    con.create_function("is_domestic_only", 1, is_domestic_only, deterministic=True)
-    con.create_function("is_mixed_location", 1, is_mixed_location, deterministic=True)
-    con.create_function("is_unknown_location", 1, is_unknown_location, deterministic=True)
-    register_read_view(con)
-    return con
+    return connect_ro(DB, timeout=5.0, row_factory=True, with_udf=True, with_read_view=True, query_only=True)
 
 
 def _database_signature():
@@ -238,7 +234,8 @@ def get_payload(con):
         signature = _database_signature()
         if _payload_cache is not None and signature == _payload_cache_signature:
             return _payload_cache
-        payload = build_payload(con)
+        with read_snapshot(con):
+            payload = build_payload(con)
         final_signature = _database_signature()
         if signature == final_signature:
             _payload_cache = payload
@@ -327,8 +324,7 @@ def admin_review_action(job_ids, action):
     now_iso = datetime.now(timezone.utc).isoformat()
     backup_file = ensure_backup(f"review-{action}", target_db=DB)
 
-    con = sqlite3.connect(DB)
-    con.row_factory = sqlite3.Row
+    con = connect_rw(DB, timeout=5.0)
     try:
         cur = con.cursor()
         if action == "approve_all":
@@ -562,7 +558,7 @@ class Handler(BaseHTTPRequestHandler):
                     'claimed_published_at': req.get('published_at') or None, 'event_date': req.get('event_date') or None,
                     'geography_evidence': str(req.get('geography_evidence') or '').strip() or None,
                     'source_verified': False, 'source_observation': None}
-                con = sqlite3.connect(DB); con.row_factory = sqlite3.Row; batch = None
+                con = connect_rw(DB, timeout=5.0); batch = None
                 try:
                     batch = begin_batch(con, 'manual_event_intake', digest)
                     batch['document_ids'] = [doc_id]
@@ -873,21 +869,23 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/report":
                 con = connect()
                 try:
-                    s = stats(con, since, query)
-                    approved_signals_count = count_signals(
-                        con, review="approved", since=since,
-                        until=query.get("until", [None])[0])
-                    signal_candidates_count = count_signals(
-                        con, review="pending", since=since,
-                        until=query.get("until", [None])[0])
-                    event_query = dict(query)
-                    event_until = query.get('until', [None])[0]
-                    if event_until:
-                        try:
-                            event_query['until'] = [(datetime.strptime(event_until, '%Y-%m-%d').date()-timedelta(days=1)).isoformat()]
-                        except ValueError:
-                            return self.send_json({'error': 'invalid date bound'}, 400)
-                    event_result = event_payload(event_query)
+                    with read_snapshot(con):
+                        s = stats(con, since, query)
+                        approved_signals_count = count_signals(
+                            con, review="approved", since=since,
+                            until=query.get("until", [None])[0])
+                        signal_candidates_count = count_signals(
+                            con, review="pending", since=since,
+                            until=query.get("until", [None])[0])
+                        event_query = dict(query)
+                        event_until = query.get('until', [None])[0]
+                        if event_until:
+                            try:
+                                event_query['until'] = [(datetime.strptime(event_until, '%Y-%m-%d').date()-timedelta(days=1)).isoformat()]
+                            except ValueError:
+                                return self.send_json({'error': 'invalid date bound'}, 400)
+                        event_result = event_payload(event_query)
+                        trend_rows = programming_job_trend(con)
                     return self.send_json({
                         "generated_at": datetime.now(TZ).isoformat(timespec="seconds"),
                         "window_since": s["window_since"],
@@ -903,7 +901,7 @@ class Handler(BaseHTTPRequestHandler):
                         "events": event_result['summary']['total'],
                         "event_items": event_result['items'],
                         "event_ai_relation_labels": event_result['ai_relation_labels'],
-                        "programming_trend": programming_job_trend(con),
+                        "programming_trend": trend_rows,
                         "event_window": f"{since or '起始未限定'} 至 {event_until or '结束未限定'}（结束日不含）",
                         "signal_source_status": "手动检索已启用；自动搜索仅由本地操作员显式触发；无后台定时请求",
                         "signal_note": event_result['coverage_note'],

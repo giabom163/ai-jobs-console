@@ -16,8 +16,12 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 if __package__:
+    from .backup_manager import backup_connection
+    from .db_conn import connect_rw
     from .ingest_job_records import normalize, source_body
 else:
+    from backup_manager import backup_connection
+    from db_conn import connect_rw
     from ingest_job_records import normalize, source_body
 
 from tools.ingestion_contract import begin_batch, finish_batch, abort_batch
@@ -96,19 +100,11 @@ def main():
     finally:
         con.close()
     if args.apply and result['accepted']:
-        backup = ROOT / ('_backup-' + datetime.now(TZ).strftime('%Y%m%d-%H%M%S') + '-multisource.db')
-        if backup.exists():
-            raise ValueError('backup already exists; refusing overwrite')
         result['before_database_sha256'] = hashlib.sha256(args.db.read_bytes()).hexdigest()
-        con = sqlite3.connect(args.db)
-        target = sqlite3.connect(backup)
-        try:
-            con.backup(target)
-        finally:
-            target.close()
+        con = connect_rw(args.db, timeout=5.0, row_factory=False, foreign_keys=True)
+        backup, backup_sha256 = backup_connection(con, tag='multisource', target_db=args.db)
         result['backup'] = str(backup)
-        result['backup_sha256'] = hashlib.sha256(backup.read_bytes()).hexdigest()
-        con.execute('PRAGMA foreign_keys=ON')
+        result['backup_sha256'] = backup_sha256
         batch = None
         try:
             with con:

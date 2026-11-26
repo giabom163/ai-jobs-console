@@ -9,6 +9,7 @@ from urllib.parse import urlsplit
 from uuid import uuid4
 
 from .ai_lexicon import classify
+from .backup_manager import backup_connection
 from .dedup_candidates import canonical_title
 from .job_states import STATUSES
 
@@ -115,16 +116,13 @@ def begin_batch(con, origin, input_sha256=None, existing_backup=None, extra_migr
         if existing_backup and not backup_path.is_file():
             raise ValueError('existing backup must exist')
         if main_path and not existing_backup:
-            database = Path(main_path)
-            backup_path = database.parent / ('_backup-' + datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ') + '-' + uuid4().hex[:8] + '-ingestion.db')
-            target = sqlite3.connect(backup_path)
-            try:
-                con.backup(target)
-            finally:
-                target.close()
+            backup_path, backup_sha256 = backup_connection(con, tag='ingestion', target_db=Path(main_path))
+        else:
+            backup_sha256 = hashlib.sha256(backup_path.read_bytes()).hexdigest() if backup_path else None
         batch['backup_path'] = str(backup_path) if backup_path else None
-        if backup_path:
-            batch['backup_sha256'] = hashlib.sha256(backup_path.read_bytes()).hexdigest()
+        if backup_sha256:
+            batch['backup_sha256'] = backup_sha256
+        con.execute('PRAGMA busy_timeout=5000')
         con.execute('PRAGMA foreign_keys=ON')
         con.execute('BEGIN IMMEDIATE')
         _initialize(con)

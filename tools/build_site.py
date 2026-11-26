@@ -9,9 +9,11 @@ from pathlib import Path
 
 if __package__:
     from .build_console_page import render
+    from .db_conn import read_snapshot
     from .export_console import build, connect
 else:
     from build_console_page import render
+    from db_conn import read_snapshot
     from export_console import build, connect
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -87,8 +89,9 @@ def main():
     html = html.replace(marker, '<script>\n' + js.decode('utf-8') + '\n</script>', 1)
     con = connect()
     try:
-        verify_audit_evidence(con)
-        payload = build(con)
+        with read_snapshot(con):
+            verify_audit_evidence(con)
+            payload = build(con, include_review=False)
     finally:
         con.close()
     index, artifacts = split_details(payload)
