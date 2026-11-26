@@ -24,7 +24,11 @@ if (-not $Publish) {
     exit 0
 }
 $wrangler = Get-Command wrangler.cmd -ErrorAction Stop
-$node = 'C:\Users\Lenovo\.workbuddy\binaries\node\versions\22.22.2-3\node.exe'
+$nodeCmd = Get-Command node -ErrorAction SilentlyContinue
+$node = if ($nodeCmd) { $nodeCmd.Source } else {
+    Get-ChildItem 'C:\Users\Lenovo\.workbuddy\binaries\node\versions\*\node.exe' -ErrorAction SilentlyContinue | Sort-Object FullName -Descending | Select-Object -First 1 -ExpandProperty FullName
+}
+if (-not $node -or -not (Test-Path -LiteralPath $node)) { throw 'Missing node.exe' }
 $cli = Join-Path (Split-Path $wrangler.Source) 'node_modules\wrangler\bin\wrangler.js'
 if (-not (Test-Path -LiteralPath $cli)) { throw ('Missing Wrangler CLI: ' + $cli) }
 Push-Location $PSScriptRoot
