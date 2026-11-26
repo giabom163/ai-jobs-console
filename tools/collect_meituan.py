@@ -31,6 +31,7 @@ DB = ROOT / "ai_jobs.db"
 SCHEMA = ROOT / "schema" / "ai_employment.sql"
 sys.path.insert(0, str(ROOT))
 from tools.ai_lexicon import classify  # noqa: E402
+from tools.db_conn import connect_rw
 from tools.job_geography import is_domestic_only  # noqa: E402
 from tools.job_fields import ensure_columns as ensure_source_columns, save_source_fields
 from tools.job_details import department_name
@@ -258,8 +259,7 @@ def main():
             staged.append((item, observed_at))
 
         if not args.dry_run:
-            con=sqlite3.connect('file:'+Path(args.db).resolve().as_posix()+'?mode=rw',uri=True)
-            con.row_factory=sqlite3.Row
+            con = connect_rw(args.db)
             batch=begin_batch(con,'meituan_bounded_list')
             cid='company-meituan'
             con.execute("INSERT OR IGNORE INTO companies(id,name,ats_type,created_at) VALUES(?,?,?,?)",(cid,'美团','official',now()))

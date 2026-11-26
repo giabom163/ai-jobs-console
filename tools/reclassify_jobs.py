@@ -7,6 +7,7 @@ from pathlib import Path
 from datetime import datetime, timezone
 ROOT=Path(__file__).resolve().parent.parent
 sys.path.insert(0,str(ROOT))
+from tools.db_conn import connect_ro, connect_rw
 from tools.ingestion_contract import standard_fields, begin_batch, finish_batch, abort_batch
 from tools.job_states import STATUSES, classification_state
 
@@ -24,8 +25,7 @@ def main():
     args=ap.parse_args()
     if not 1<=args.limit<=15:ap.error('limit must be 1..15')
     states=args.status or ['open','review','verification_pending']
-    con=sqlite3.connect('file:'+args.db.resolve().as_posix()+('?mode=rw' if args.apply else '?mode=ro'),uri=True)
-    con.row_factory=sqlite3.Row
+    con=connect_rw(args.db) if args.apply else connect_ro(args.db)
     batch=None;result={'mode':'apply' if args.apply else 'preview','records':[]}
     try:
         if args.apply:batch=begin_batch(con,'reclassification')

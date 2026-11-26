@@ -21,6 +21,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
+from tools.db_conn import connect_ro, connect_rw
 from tools.ingestion_contract import begin_batch, finish_batch, abort_batch
 from tools.liveness import check_job
 from tools.verification_records import record_observation, assert_target_unchanged
@@ -97,8 +98,7 @@ def main():
             parser.error('--ids must contain at least one exact job row ID')
         if len(ids) > args.limit:
             parser.error('--ids count must not exceed --limit')
-    con = sqlite3.connect('file:'+args.db.resolve().as_posix()+'?mode=ro', uri=True)
-    con.row_factory = sqlite3.Row
+    con = connect_ro(args.db)
     batch = None
     budget = RequestBudget()
     stats = dict(checked=0, scored=0, source_accessible=0)
@@ -119,8 +119,7 @@ def main():
             observation=None if args.score_only else check_job(job['source'],job['external_id'],job['url'],today_local(),budget=budget,location=job['location'])
             observations.append((dict(job),observation))
         con.close()
-        con=sqlite3.connect('file:'+args.db.resolve().as_posix()+'?mode=rw',uri=True)
-        con.row_factory=sqlite3.Row
+        con = connect_rw(args.db)
         batch=begin_batch(con,'score_only' if args.score_only else 'verify_source')
         for job,observation in observations:
             assert_target_unchanged(con,job)

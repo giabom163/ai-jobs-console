@@ -20,14 +20,18 @@ from datetime import datetime, date, timedelta, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 DEFAULT_DB_PATH = ROOT / "ai_jobs.db"
 TZ = timezone(timedelta(hours=8))
 
 if __package__:
     from . import backup_manager
+    from .db_conn import connect_ro, connect_rw
     from .job_geography import classify_location
 else:
     import backup_manager
+    from db_conn import connect_ro, connect_rw
     from job_geography import classify_location
 
 
@@ -136,12 +140,11 @@ def ingest_signal(record: dict, target_db: Path | str | None = None, dry_run: bo
         print("[DRY-RUN] Validation passed. Database write skipped (--dry-run).")
         return
 
-    # 若操作主库，执行强制前置物理备份；若为隔离临时库，可直接安全操作
-    if db_path.name == "ai_jobs.db":
-        bk = backup_manager.ensure_backup(tag="signal-cli-ingest")
-        print(f"[+] Physical backup created: {bk.name}")
+    # 无论主库或临时副本，写入前均执行强制前置物理备份
+    bk = backup_manager.ensure_backup(tag="signal-cli-ingest", target_db=db_path)
+    print(f"[+] Physical backup created: {bk.name}")
 
-    con = sqlite3.connect(db_path)
+    con = connect_rw(db_path, timeout=5.0, row_factory=False)
     cur = con.cursor()
     try:
         cur.execute("BEGIN IMMEDIATE")
@@ -225,9 +228,11 @@ def ingest_signal(record: dict, target_db: Path | str | None = None, dry_run: bo
         con.close()
 
     # 验证完整性
-    con = sqlite3.connect(db_path)
-    check = con.execute("PRAGMA integrity_check").fetchone()[0]
-    con.close()
+    con = connect_ro(db_path, row_factory=False)
+    try:
+        check = con.execute("PRAGMA integrity_check").fetchone()[0]
+    finally:
+        con.close()
     if check != "ok":
         raise RuntimeError(f"Database integrity check failed: {check}")
     print("[+] DB integrity check: ok")

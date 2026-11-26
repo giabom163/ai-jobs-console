@@ -23,7 +23,7 @@ if __package__:
     from .job_geography import is_domestic_only, is_mixed_location, is_unknown_location
     from .job_fields import register_read_view
     from .job_details import source_details, duplicate_records
-    from .employment_events import load_events
+    from .employment_events import build_daily_digest, event_summary, load_events
     from .employment_trends import programming_job_trend
     from .job_taxonomy import enrich_job, ROLES, EMPLOYMENT, CITIES, VERSION
 else:
@@ -33,7 +33,7 @@ else:
     from job_geography import is_domestic_only, is_mixed_location, is_unknown_location
     from job_fields import register_read_view
     from job_details import source_details, duplicate_records
-    from employment_events import load_events
+    from employment_events import build_daily_digest, event_summary, load_events
     from employment_trends import programming_job_trend
     from job_taxonomy import enrich_job, ROLES, EMPLOYMENT, CITIES, VERSION
 
@@ -219,6 +219,10 @@ def build(con, include_review: bool = True) -> dict:
     signal_state=storage_status(con)
     approved_signal_count = count_signals(con, review="approved")
     pending_signal_count = count_signals(con, review="pending")
+    events_data = load_events(con)
+    valid_events = [e for e in events_data['events'] if not e.get('evidence_stale')]
+    events_summary = event_summary(events_data['events'])
+    public_events_data = dict(events_data, events=valid_events)
     report = {
         "generated_at": generated_at,
         "total": ai_total,
@@ -233,7 +237,23 @@ def build(con, include_review: bool = True) -> dict:
         "companies": sum(1 for s in sources if s["jobs"]),
         "signals": approved_signal_count,
         "signal_candidates": pending_signal_count,
+        "events": events_summary["total"],
+        "stale_events": events_summary["stale"],
         "top_companies": top_companies[:5],
+        "report_windows": {
+            "jobs": f"{DATE_FLOOR} 至今（静态全量公开 open，按 first_seen）",
+            "events": "全量已复核有效独立事件",
+            "programming_trend": "固定近 30 天（北京时间）",
+        },
+        "daily_digest": build_daily_digest(
+            report_date=generated_at[:10],
+            stats={**stats, "open": sum(1 for j in jobs if j.get("status") == "open")},
+            events_summary=events_summary,
+            events_items=valid_events,
+            approved_signals_count=approved_signal_count,
+            pending_signals_count=pending_signal_count,
+            coverage_note=events_data["coverage_note"],
+        ),
         "quality_notes": [
             "2026-10-22 记录的 3,020 条新增岗位变化属于存量数据初始化批量导入，来源尚未逐条核实前标记为归因未知，不代表市场招聘峰值。",
             "job_daily 历史数据仅供参考，不作为市场长期真值；每日岗位新增按首次入库时间统计，与雇主实际发布时间分开。"
@@ -244,7 +264,7 @@ def build(con, include_review: bool = True) -> dict:
     events = group("SELECT c.job_id,c.change_type,date(c.changed_at,'+8 hours') day,j.first_seen "
                     f"FROM job_changes c JOIN job_records j ON j.id=c.job_id WHERE {public_win} "
                    "AND date(c.changed_at,'+8 hours') >= date('now','+8 hours','-13 day')")
-    return {"employment_events": load_events(), "job_events": events, "meta": {"schema_version": 3, "taxonomy_version": VERSION,
+    return {"employment_events": public_events_data, "job_events": events, "meta": {"schema_version": 3, "taxonomy_version": VERSION,
                      "roles": ROLES, "employment_types": EMPLOYMENT, "cities": CITIES,
                       "date_basis": "first_seen",
                       "source_date_basis": "public listings require source date >= 2026-06-01 when present; Meituan requires official source_updated_at; older dates remain review-only",

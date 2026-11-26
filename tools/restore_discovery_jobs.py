@@ -17,11 +17,11 @@ from urllib.parse import urlsplit
 
 if __package__:
     from .backup_manager import backup_connection
-    from .db_conn import connect_rw
+    from .db_conn import connect_ro, connect_rw
     from .ingest_job_records import normalize, source_body
 else:
     from backup_manager import backup_connection
-    from db_conn import connect_rw
+    from db_conn import connect_ro, connect_rw
     from ingest_job_records import normalize, source_body
 
 from tools.ingestion_contract import begin_batch, finish_batch, abort_batch
@@ -60,7 +60,7 @@ def main():
               'input_sha256': hashlib.sha256(args.input.read_bytes()).hexdigest(),
               'accepted': [], 'existing': [], 'rejected': [], 'duplicates': [],
               'requests': 0, 'physically_deleted': 0}
-    con = sqlite3.connect('file:' + args.db.resolve().as_posix() + '?mode=ro', uri=True)
+    con = connect_ro(args.db, timeout=5.0, row_factory=False)
     seen = set()
     today = datetime.now(TZ).date().isoformat()
     try:

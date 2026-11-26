@@ -28,7 +28,7 @@ if __package__:
     from .export_console import build as build_payload
     from .job_taxonomy import enrich_job
     from .job_details import source_details, duplicate_records
-    from .employment_events import event_payload
+    from .employment_events import build_daily_digest, event_payload
     from .employment_trends import programming_job_trend
     from .job_catalog import normalized_filters, select_jobs, summarize_jobs
     from .ai_reviewer import execute_auto_review, check_qwen_alive, ensure_qwen_running, get_review_progress, review_single_job
@@ -43,7 +43,7 @@ else:
     from export_console import build as build_payload
     from job_taxonomy import enrich_job
     from job_details import source_details, duplicate_records
-    from employment_events import event_payload
+    from employment_events import build_daily_digest, event_payload
     from employment_trends import programming_job_trend
     from job_catalog import normalized_filters, select_jobs, summarize_jobs
     from ai_reviewer import execute_auto_review, check_qwen_alive, ensure_qwen_running, get_review_progress, review_single_job
@@ -706,7 +706,12 @@ class Handler(BaseHTTPRequestHandler):
                 server_sha256 = hashlib.sha256(server_path.read_bytes()).hexdigest()
                 return self.send_json({'service': 'ai-employment-monitor', 'workspace': str(ROOT.resolve()), 'pid': os.getpid(), 'server_sha256': server_sha256})
             if path == '/api/employment-events':
-                return self.send_json(event_payload(query))
+                con = connect()
+                try:
+                    with read_snapshot(con):
+                        return self.send_json(event_payload(query, con=con))
+                finally:
+                    con.close()
             if path == '/admin' or path == '/admin/':
                 admin_html = WEB / 'admin' / 'index.html'
                 if not admin_html.exists():
@@ -870,24 +875,32 @@ class Handler(BaseHTTPRequestHandler):
                 con = connect()
                 try:
                     with read_snapshot(con):
-                        s = stats(con, since, query)
-                        approved_signals_count = count_signals(
-                            con, review="approved", since=since,
-                            until=query.get("until", [None])[0])
-                        signal_candidates_count = count_signals(
-                            con, review="pending", since=since,
-                            until=query.get("until", [None])[0])
-                        event_query = dict(query)
                         event_until = query.get('until', [None])[0]
+                        inclusive_until = None
                         if event_until:
                             try:
-                                event_query['until'] = [(datetime.strptime(event_until, '%Y-%m-%d').date()-timedelta(days=1)).isoformat()]
+                                inclusive_until = (datetime.strptime(event_until, '%Y-%m-%d').date() - timedelta(days=1)).isoformat()
                             except ValueError:
                                 return self.send_json({'error': 'invalid date bound'}, 400)
-                        event_result = event_payload(event_query)
+                        report_job_query = dict(query)
+                        report_job_query['status'] = ['open']
+                        if inclusive_until:
+                            report_job_query['until'] = [inclusive_until]
+                        s = stats(con, since, report_job_query)
+                        approved_signals_count = count_signals(
+                            con, review="approved", since=since,
+                            until=event_until)
+                        signal_candidates_count = count_signals(
+                            con, review="pending", since=since,
+                            until=event_until)
+                        event_query = dict(query)
+                        if inclusive_until:
+                            event_query['until'] = [inclusive_until]
+                        event_result = event_payload(event_query, con=con)
                         trend_rows = programming_job_trend(con)
+                    gen_at = datetime.now(TZ).isoformat(timespec="seconds")
                     return self.send_json({
-                        "generated_at": datetime.now(TZ).isoformat(timespec="seconds"),
+                        "generated_at": gen_at,
                         "window_since": s["window_since"],
                         "total": s["ai_total"], "open": s["open"], "build": s["build"],
                         "adjacent": s["adjacent"], "verified": s["verified"],
@@ -899,9 +912,24 @@ class Handler(BaseHTTPRequestHandler):
                         "signals": approved_signals_count,
                         "signal_candidates": signal_candidates_count,
                         "events": event_result['summary']['total'],
+                        "stale_events": event_result['summary']['stale'],
                         "event_items": event_result['items'],
                         "event_ai_relation_labels": event_result['ai_relation_labels'],
                         "programming_trend": trend_rows,
+                        "report_windows": {
+                            "jobs": f"{s['window_since']} 至 {inclusive_until or '当前'}（仅公开 open，含起止日，按 first_seen）",
+                            "events": f"{since or '起始未限定'} 至 {inclusive_until or '当前'}（含起止日）",
+                            "programming_trend": "固定近 30 天（北京时间）",
+                        },
+                        "daily_digest": build_daily_digest(
+                            report_date=gen_at[:10],
+                            stats=s,
+                            events_summary=event_result['summary'],
+                            events_items=event_result['items'],
+                            approved_signals_count=approved_signals_count,
+                            pending_signals_count=signal_candidates_count,
+                            coverage_note=event_result['coverage_note'],
+                        ),
                         "event_window": f"{since or '起始未限定'} 至 {event_until or '结束未限定'}（结束日不含）",
                         "signal_source_status": "手动检索已启用；自动搜索仅由本地操作员显式触发；无后台定时请求",
                         "signal_note": event_result['coverage_note'],

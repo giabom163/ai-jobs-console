@@ -29,6 +29,7 @@ DB = ROOT / "ai_jobs.db"
 sys.path.insert(0, str(ROOT))
 
 from tools.ai_lexicon import classify  # noqa: E402
+from tools.db_conn import connect_rw
 from tools.job_geography import is_domestic_only  # noqa: E402
 from tools.job_fields import ensure_columns as ensure_source_columns, save_source_fields  # noqa: E402
 from tools.request_policy import RequestBudget, DEFAULT_BUDGET, TENCENT_DOMESTIC_CITY_IDS  # noqa: E402, SourceBlocked
@@ -295,8 +296,7 @@ def main():
             staged.append((item, observed_at))
 
         if not args.dry_run:
-            con = sqlite3.connect("file:" + Path(args.db).resolve().as_posix() + "?mode=rw", uri=True)
-            con.row_factory = sqlite3.Row
+            con = connect_rw(args.db)
             batch = begin_batch(con, "tencent_bounded_list")
             cid = TENCENT_COMPANY_ID
             con.execute(
